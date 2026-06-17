@@ -24,6 +24,7 @@ job_applications.db
 *.db-shm
 .test_analyses.json
 search_terms.json
+scrapers/deakin.py
 scraper_plugins/
 external_scrapers/
 *.scraper-plugin.zip
