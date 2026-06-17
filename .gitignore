@@ -4,6 +4,7 @@ build/
 release/
 installer/
 .electron-data/
+.venv/
 .claude/
 .opencode/
 *.log
