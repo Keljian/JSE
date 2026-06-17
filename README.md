@@ -1,8 +1,8 @@
 # JSE — Job Application Assistant (AKA Job Search Engine)
 
-A local-first desktop assistant for the whole job hunt: find listings, score them against one or more resume lanes, manage the application pipeline, research employers, and generate tailored application material — all on your own machine.
+A local-first desktop assistant for the whole job hunt: find listings, score them against one or more career lanes, manage the application pipeline on a Kanban board, research employers, generate tailored application material in your own voice, and read the market around you — all on your own machine.
 
-Your data stays yours. JSE runs locally, stores everything locally, and can run entirely against a local LLM with no cloud calls.
+Your data stays yours. JSE runs locally, stores everything locally, and can run its matching and assessment entirely against a local LLM with no cloud calls. It also gets smarter the more you use it: every application you write becomes part of a private knowledge base it draws on to match and pitch you better next time.
 
 > [!NOTE]
 > Free and staying that way. If it saves you some time or sanity, you can [buy me a coffee](https://ko-fi.com/keljian) — it keeps me caffeinated and the commits coming.
@@ -30,13 +30,38 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 
 ## Features
 
-- **Lane-based matching.** Maintain multiple resume "lanes" and score each job against the most relevant one, rather than one generic profile.
-- **Plugin-driven scraping.** Enable per-source scrapers globally or per lane, with configurable location and page limits.
-- **Local or cloud AI.** Drive analysis and document generation from a local OpenAI-compatible endpoint (LM Studio, Ollama, llama.cpp, vLLM) or from OpenAI, Claude, or Gemini.
-- **Tailored document generation.** Produce resumes and cover letters from your own DOCX templates, tuned to each listing.
-- **Pipeline tracking.** Move jobs through stages and track applications, interviews, follow-ups, outcomes, and feedback in a local SQLite database.
-- **Employer research.** Pull together company context where you need it before applying.
-- **Local-first by design.** Everything — settings, documents, database, browser profiles, backups — lives on your machine.
+### Discovery & matching
+
+- **Plugin-driven scraping.** Pull listings from multiple job sites via per-source scraper plugins, enabled globally or per lane with configurable location and page limits.
+- **Multiple lanes, run in parallel.** Maintain several career pathways (lanes) and search, score, and manage them all at the same time, each against its own resume and rules.
+- **Tiered local-LLM assessment.** A local model triages jobs in stages — quick initial match first, then a deeper fragment/full match with approach notes covering candidate strengths, weaknesses, and how to position against the role — so cheap passes filter before expensive ones run.
+
+### Candidate knowledge base (Fragment / RAG)
+
+- **Your applications become a corpus.** Past applications and documents are broken into fragments and indexed, so the system actually learns about you as a candidate rather than re-reading a single static resume.
+- **Better-fitting matches.** That accumulated knowledge feeds matching, surfacing roles that genuinely fit your background, not just keyword overlap.
+
+### Application generation
+
+- **Company research, including questions to ask.** Pull together employer context before you apply, with suggested questions for the interview.
+- **Documents in your own voice.** Application material is generated through the cloud LLM of your choice (e.g. Gemini, which is cheaper than Claude for this), written in your own words and style by drawing on your fragments and older applications — not generic boilerplate.
+
+### Pipeline & tracking
+
+- **Full Kanban workflow.** Move jobs through every stage on a board, from found to outcome.
+- **Interview & feedback tracking.** Record interviews and capture interview feedback against each application.
+- **Follow-up scheduling.** Keep a follow-up schedule so nothing goes cold by accident.
+- **Auto-archiving.** Applications with no direct follow-up from the employer over a set period are archived automatically, keeping the active board clean.
+- **Database management.** Local SQLite store with backup and management tooling.
+
+### Market intelligence
+
+- **Hidden-market analysis.** See which recruiters are posting the matching jobs in your area, where your resume has gaps against demand, and which companies are hiring most heavily.
+- **Current-market analysis.** A rolling overview of how many available jobs match you over the last week/month, how many applications are out there, and how your own applications are progressing (cut-through rates).
+
+### By design
+
+- **Local-first.** Settings, documents, database, browser profiles, and backups all live on your machine, and matching/assessment can run with no outbound calls.
 
 ---
 
@@ -106,7 +131,7 @@ This starts the Vite frontend and then launches Electron.
 
 ## Local LLM Setup
 
-JSE's Local provider expects an OpenAI-compatible chat completions endpoint:
+JSE uses a local model for job assessment and matching. The Local provider expects an OpenAI-compatible chat completions endpoint:
 
 ```text
 POST <base_url>/chat/completions
@@ -142,11 +167,14 @@ Notes:
 
 ## Cloud AI Setup
 
-Cloud providers are optional. In **Settings -> AI & Credentials**:
+Cloud providers are optional, and mainly used for application-document generation (the heavier "write it in my voice" step). In **Settings -> AI & Credentials**:
 
 - **ChatGPT/OpenAI**: set the API key, optional OpenAI-compatible base URL, and model.
 - **Claude**: set the API key and model.
 - **Gemini**: set the API key and model.
+
+> [!TIP]
+> Document generation runs against whichever cloud model you pick. Gemini is a cost-effective choice here relative to Claude for the volume of generation JSE does.
 
 > [!WARNING]
 > Do not put live API keys in source files. Store them through Settings or another private local mechanism.
@@ -175,7 +203,7 @@ These folders/files are local runtime data and may contain private information:
 | --- | --- |
 | `settings/` | App settings, `local_llm_settings.json`, local database, browser/session profiles, context cache |
 | `applications/` | Generated resumes, cover letters, prompts, and JSON content |
-| `older_applications/` | Prior documents used as evidence/corpus input |
+| `older_applications/` | Prior documents used as evidence/corpus input for the fragment knowledge base |
 | `Application templates/` | Local DOCX templates |
 | `Resumes/` | Managed resume copies |
 | `Backups/` | Database/document backups |
@@ -186,28 +214,30 @@ These folders/files are local runtime data and may contain private information:
 
 ## Privacy & Data
 
-JSE is local-first. Settings, generated documents, the database, browser profiles, and backups all live on your machine, and the app can run entirely against a local LLM with no outbound calls.
+JSE is local-first. Settings, generated documents, the database, browser profiles, and backups all live on your machine, and matching/assessment can run entirely against a local LLM with no outbound calls.
 
 A few things to keep in mind:
 
-- The folders listed above can contain resumes, application history, and session cookies. Do not share them unless you intend to share their contents.
-- If you enable a cloud provider, job and resume content for those workflows is sent to that provider. Use a local endpoint if you want to keep everything on-device.
+- The folders listed above can contain resumes, application history, your fragment knowledge base, and session cookies. Do not share them unless you intend to share their contents.
+- If you enable a cloud provider for document generation, the job and resume/fragment content for those workflows is sent to that provider. Keep generation local-only if you want everything on-device.
 - Keep API keys out of source control. Store them through Settings.
 
 ---
 
 ## Typical Workflow
 
-1. Configure a lane and resume.
-2. Configure a local or cloud AI provider.
-3. Enable scrapers for the lane.
+1. Configure one or more lanes, each with its own resume.
+2. Configure your local model (assessment) and, optionally, a cloud model (document generation).
+3. Enable scrapers for each lane.
 4. Generate or edit search terms.
-5. Run search.
-6. Analyse new jobs.
-7. Move promising jobs through the pipeline.
-8. Research companies where needed.
-9. Generate tailored application documents.
-10. Track applications, interviews, follow-ups, outcomes, and feedback.
+5. Run search across your active lanes.
+6. Let the local LLM triage new jobs — initial match first, then deeper fragment/full match with approach notes.
+7. Move promising jobs across the Kanban board.
+8. Research companies, including questions to ask, where needed.
+9. Generate tailored application documents in your own voice via your cloud model.
+10. Track applications, interviews, interview feedback, follow-ups, outcomes, and feedback.
+11. Work your follow-up schedule; stale, un-actioned applications auto-archive.
+12. Review market intelligence — hidden-market and current-market analysis — to steer where you focus next.
 
 ---
 
@@ -229,10 +259,10 @@ A few things to keep in mind:
 
 **Document generation fails**
 
-- Confirm the selected AI provider is configured.
+- Confirm the selected cloud AI provider is configured.
 - Confirm the resume path is valid.
 - Confirm template paths are valid if using DOCX templates.
-- Try the external prompt workflow if the local model struggles with long JSON output.
+- Try the external prompt workflow if the model struggles with long JSON output.
 
 **App starts but data looks missing**
 
