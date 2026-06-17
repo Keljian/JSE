@@ -25,6 +25,8 @@ job_applications.db
 .test_analyses.json
 search_terms.json
 scrapers/deakin.py
+scrapers/nga_net.py
+scrapers/pageuppeople.py
 scraper_plugins/
 external_scrapers/
 *.scraper-plugin.zip
