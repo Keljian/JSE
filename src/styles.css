@@ -204,8 +204,44 @@ h3 {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
+  background: #f8faf6;
+}
+
+.boot-panel {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  text-align: center;
+  color: #243a33;
+}
+
+.boot-loading {
+  display: inline-flex;
+  align-items: center;
   gap: 10px;
+  font-size: 18px;
   font-weight: 800;
+}
+
+.boot-panel p {
+  margin: 0;
+  max-width: 460px;
+  color: #56635d;
+  font-size: 13px;
+  line-height: 1.55;
+  font-weight: 600;
+}
+
+.boot-panel a {
+  color: #17634f;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.boot-panel a:hover {
+  text-decoration: underline;
 }
 
 .spin {
@@ -2201,7 +2237,7 @@ h3 {
   height: 34px;
   padding: 0 14px;
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr);
+  grid-template-columns: 140px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   border-top: 1px solid #cfd9d2;
@@ -2219,6 +2255,17 @@ h3 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status-strip a {
+  color: #17634f;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.status-strip a:hover {
+  text-decoration: underline;
 }
 
 .workspace-title {
@@ -2703,6 +2750,27 @@ h3 {
 
   .memory-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .status-strip {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 0 10px;
+  }
+}
+
+@media (max-width: 560px) {
+  .status-strip {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .status-strip span {
+    display: none;
+  }
+
+  .status-strip a {
+    justify-self: end;
+    font-size: 11px;
   }
 }
 

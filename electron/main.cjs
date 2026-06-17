@@ -19,9 +19,10 @@ let workerSeq = 0;
 let workerRestartTimer = null;
 const pendingRequests = new Map();
 const userDataDir = path.join(rootDir, "settings");
+const cacheDir = path.join(app.getPath("temp"), `JobApplicationAssistantCache-${process.pid}`);
 
 app.setPath("userData", userDataDir);
-app.setPath("cache", path.join(app.getPath("temp"), "JobApplicationAssistantCache"));
+app.setPath("cache", cacheDir);
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-gpu-compositing");
@@ -127,7 +128,12 @@ function createWindow() {
     const devUrl = process.env.VITE_DEV_SERVER_URL;
     if (!devUrl || !url.startsWith(devUrl)) event.preventDefault();
   });
-  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -257,7 +263,10 @@ ipcMain.handle("dialog:folder", async (_event, title = "Select folder") => {
   return result.canceled ? null : result.filePaths[0];
 });
 
-ipcMain.handle("shell:openExternal", (_event, url) => shell.openExternal(url));
+ipcMain.handle("shell:openExternal", (_event, url) => {
+  if (!/^https?:\/\//i.test(url) && !/^mailto:/i.test(url)) return false;
+  return shell.openExternal(url);
+});
 ipcMain.handle("shell:showPath", (_event, filePath) => {
   const abs = path.isAbsolute(filePath) ? filePath : path.join(rootDir, filePath);
   return shell.showItemInFolder(abs);
@@ -357,6 +366,14 @@ app.on("before-quit", () => {
   }
   killProcessTree(bridgeWorker);
   bridgeWorker = null;
+});
+
+app.on("will-quit", () => {
+  try {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  } catch {
+    // Cache cleanup is best-effort; Chromium may still be releasing files.
+  }
 });
 
 app.on("window-all-closed", () => {

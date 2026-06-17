@@ -2132,89 +2132,6 @@ def command_corpus_set_type(payload):
     return {"updated": 1}
 
 
-def command_apply_seek(payload):
-    """Assisted apply: generate docs → drive Seek Quick Apply → you review & submit → mark applied."""
-    import os, rich_application
-    from datetime import date
-    profile_id = payload.get("profile_id", 1)
-    seek_plugin = scraper_plugins.get_plugin("seek", profile_id=profile_id, include_disabled=False)
-    if seek_plugin and seek_plugin.get("install_path") and seek_plugin["install_path"] not in sys.path:
-        sys.path.insert(0, seek_plugin["install_path"])
-    try:
-        import seek_apply
-    except ImportError as exc:
-        raise ValueError("Seek assisted apply is available only when the local Seek plugin is installed.") from exc
-    job_id = payload["job_id"]
-    job = db.get_job_details(job_id)
-    if not job:
-        raise ValueError(f"Job {job_id} not found.")
-    settings = db.get_lane_settings(profile_id)
-    try:
-        from config import MY_INFO as info
-    except Exception:
-        info = None
-
-    # Reuse existing documents if they're already on disk; only author when missing
-    # (or when the caller explicitly asks to regenerate).
-    regenerate = bool(payload.get("regenerate"))
-    existing_resume = job["resume_used"]
-    existing_cover = job["cover_letter_path"]
-    r_abs = os.path.abspath(existing_resume) if existing_resume else None
-    c_abs = os.path.abspath(existing_cover) if existing_cover else None
-    have_existing = bool(r_abs and c_abs and os.path.exists(r_abs) and os.path.exists(c_abs))
-
-    if have_existing and not regenerate:
-        emit("status", message="Using the existing resume and cover letter…")
-        emit("log", message=f"Reusing existing documents: {os.path.basename(r_abs)} + {os.path.basename(c_abs)}")
-        resume_abs, cover_abs = r_abs, c_abs
-        resume_rel, cover_rel = existing_resume, existing_cover
-        resume_text = job["resume_text"] or ""
-        cover_text = job["cover_letter_text"] or ""
-        review = {}
-        provider = "existing documents"
-    else:
-        emit("status", message="Generating application documents…")
-        gen = rich_application.generate_rich(job_id, profile_id=profile_id, settings=settings,
-                                             personal_info=info, log=lambda m: emit("log", message=m))
-        db.update_job_application(job_id, {
-            "resume_used": gen["resume_path"],
-            "cover_letter_path": gen["cover_letter_path"],
-            "resume_text": gen.get("resume_markdown") or "",
-            "cover_letter_text": gen.get("cover_letter_text") or "",
-        })
-        review = gen.get("review") or {}
-        emit("log", message=f"Review verdict: {review.get('verdict', 'n/a')} — {review.get('summary', '')}")
-        for issue in (review.get("grounding_issues") or [])[:5]:
-            emit("log", message=f"  VERIFY: \"{str(issue.get('text',''))[:70]}\" — {str(issue.get('issue',''))[:80]}")
-        resume_abs = os.path.abspath(gen["resume_path"])
-        cover_abs = os.path.abspath(gen["cover_letter_path"])
-        resume_rel, cover_rel = gen["resume_path"], gen["cover_letter_path"]
-        resume_text = gen.get("resume_markdown") or ""
-        cover_text = gen.get("cover_letter_text") or ""
-        provider = gen["provider"]
-
-    job_url = job["url"] or ""
-    if "seek.com" not in job_url:
-        emit("log", message="Heads up: this job's saved URL isn't a Seek link — opening it anyway.")
-
-    emit("status", message="Opening Seek to apply (review and submit in the browser)…")
-    status = seek_apply.apply_to_seek(
-        job_url, resume_abs, cover_abs,
-        log=lambda m: emit("log", message=m),
-        should_cancel=lambda: concurrency.cancel_event.is_set(),
-    )
-    if status == "submitted":
-        db.update_job_application(job_id, {"status": "applied", "pipeline_stage": "applied",
-                                           "application_date": date.today().isoformat()})
-        db.add_application_event(job_id, "applied", "Applied on Seek",
-                                 f"Submitted via assisted apply ({provider}).")
-        emit("log", message="Marked as Applied. 🎉")
-    return {"apply_status": status, "resume_path": resume_rel, "cover_letter_path": cover_rel,
-            "resume_text": resume_text, "cover_letter_text": cover_text,
-            "review": review, "provider": provider,
-            "reused_documents": bool(have_existing and not regenerate)}
-
-
 COMMANDS = {
     "app:init": command_app_init,
     "app:refresh": command_app_refresh,
@@ -2284,7 +2201,6 @@ COMMANDS = {
     "document:extract": command_document_extract,
     "docs:generate": command_docs_generate,
     "docs:generateRich": command_docs_generate_rich,
-    "apply:seek": command_apply_seek,
     "application:prompt": command_application_prompt_generate,
     "corpus:stats": command_corpus_stats,
     "corpus:reindex": command_corpus_reindex,

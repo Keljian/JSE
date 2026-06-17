@@ -62,8 +62,7 @@ copies.
 - `SCRAPER_PLUGIN.md` documents how to build and validate a scraper plugin.
 - `scraping_helpers.py` contains shared Selenium, HTTP, PDF, and scraper lifecycle
   helpers.
-- `scraper_plugins/seek/` is the local Seek scraper plugin, with `seek_apply.py`
-  for guided application launch when that plugin is present.
+- `scraper_plugins/seek/` is the local Seek scraper plugin when present.
 - `scraper_plugins/linkedin/` is the local LinkedIn scraper plugin when present.
 - `scrapers/` contains built-in or legacy scraper modules retained for source
   compatibility, including Deakin, NGA.NET, and PageUp-powered boards.

@@ -82,6 +82,14 @@ const DOCUMENT_AI_PROVIDERS = [
   { id: "gemini", label: "Gemini" }
 ];
 
+const SUPPORT_MESSAGE = "JSE is open-source and free to use. If it saved you time or sanity on the job hunt, a coffee keeps the project caffeinated and the commits coming:";
+const SUPPORT_URL = "https://ko-fi.com/keljian";
+
+function openSupportLink(event) {
+  event.preventDefault();
+  window.jobAssistant.openExternal(SUPPORT_URL);
+}
+
 const SETTINGS_SECTIONS = [
   { id: "profile", label: "Lane", scope: "lane" },
   { id: "search", label: "Search", scope: "lane" },
@@ -892,7 +900,7 @@ function toDateTimeInputValue(value) {
   return text.replace(" ", "T").slice(0, 16);
 }
 
-function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiveTab, onClose, onSave, onApplicationDateApplied, onGenerateDocs, onApplySeek, onGeneratePrompt, onCompanyResearch, onAddEvent, onAddInterview, onUpdateInterview, onDocumentDrop, onViewDocument, onDownloadDocument, onRevealDocument, onAnalyzeJob, onMoveProfile, analyzing, generatingDocs, researchingCompany, documentAiName, onRejectJob, onMoveInterested }) {
+function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiveTab, onClose, onSave, onApplicationDateApplied, onGenerateDocs, onGeneratePrompt, onCompanyResearch, onAddEvent, onAddInterview, onUpdateInterview, onDocumentDrop, onViewDocument, onDownloadDocument, onRevealDocument, onAnalyzeJob, onMoveProfile, analyzing, generatingDocs, researchingCompany, documentAiName, onRejectJob, onMoveInterested }) {
   const [form, setForm] = useState(job || {});
   const [targetProfileId, setTargetProfileId] = useState(job?.profile_id || "");
   const [profileMoving, setProfileMoving] = useState(false);
@@ -1123,7 +1131,6 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
           <footer className="full button-row">
             <button onClick={save}><Check size={16} /> Save application</button>
             <button className="secondary" disabled={generatingDocs} onClick={onGenerateDocs}>{generatingDocs ? <Loader2 className="spin" size={16} /> : <FileText size={16} />} {generatingDocs ? "Generating..." : "Generate documents"}</button>
-            <button disabled={generatingDocs} onClick={onApplySeek} title="Generate, then open Seek Quick Apply with your docs attached for you to review and submit"><Send size={16} /> Apply on Seek</button>
             <button className="secondary" disabled={!form.resume_used && !form.cover_letter_path} onClick={() => window.jobAssistant.showPath(form.resume_used || form.cover_letter_path || "applications")}><ExternalLink size={16} /> Open documents</button>
             <button className="secondary" onClick={onGeneratePrompt}><FileText size={16} /> Save LLM prompt</button>
           </footer>
@@ -2718,16 +2725,6 @@ function App() {
     );
   };
 
-  const applyOnSeek = () => {
-    if (!workspace.job) return;
-    appendLog("Generating documents and opening Seek — review and submit in the browser.");
-    runTask(
-      "apply:seek",
-      { profile_id: workspace.job.profile_id, job_id: workspace.job.id },
-      "Seek apply flow finished."
-    );
-  };
-
   const downloadDocument = async (filePath) => {
     if (!filePath) return;
     try {
@@ -2998,7 +2995,15 @@ function App() {
     return groups;
   }, [jobs, interestedSort]);
 
-  if (booting) return <main className="boot"><Loader2 className="spin" /> Loading ATS</main>;
+  if (booting) return (
+    <main className="boot">
+      <div className="boot-panel">
+        <div className="boot-loading"><Loader2 className="spin" /> Loading JSE</div>
+        <p>{SUPPORT_MESSAGE}</p>
+        <a href={SUPPORT_URL} onClick={openSupportLink}>☕ ko-fi.com/keljian</a>
+      </div>
+    </main>
+  );
 
   const viewTitle = {
     dashboard: "Dashboard",
@@ -3198,7 +3203,6 @@ function App() {
           onSave={saveWorkspace}
           onApplicationDateApplied={moveToAppliedFromApplicationDate}
           onGenerateDocs={generateDocs}
-          onApplySeek={applyOnSeek}
           onGeneratePrompt={generateApplicationPrompt}
           onCompanyResearch={researchCompany}
           onAddEvent={addWorkspaceEvent}
@@ -3234,6 +3238,7 @@ function App() {
       <footer className="status-strip">
         <strong>{busy ? runningTaskKeys.join(" + ") : "Idle"}</strong>
         <span>{latestLog || "Ready"}</span>
+        <a href={SUPPORT_URL} onClick={openSupportLink} title={SUPPORT_MESSAGE}>☕ ko-fi.com/keljian</a>
       </footer>
     </main>
   );

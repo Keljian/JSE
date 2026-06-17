@@ -5,19 +5,36 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const devUrl = "http://127.0.0.1:5173";
 const isWindows = process.platform === "win32";
+const children = new Set();
+let stopping = false;
 
 function bin(name) {
   return path.join(root, "node_modules", ".bin", isWindows ? `${name}.cmd` : name);
 }
 
 function start(command, args, options = {}) {
-  return spawn(command, args, {
+  const child = spawn(command, args, {
     cwd: root,
     stdio: "inherit",
     shell: isWindows,
     windowsHide: true,
     ...options,
   });
+  children.add(child);
+  child.on("exit", () => children.delete(child));
+  return child;
+}
+
+function killTree(child) {
+  if (!child || child.killed) return;
+  if (isWindows) {
+    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return;
+  }
+  child.kill("SIGTERM");
 }
 
 function waitForUrl(url, timeoutMs = 30000) {
@@ -47,27 +64,32 @@ function waitForUrl(url, timeoutMs = 30000) {
   });
 }
 
-const vite = start(bin("vite"), ["--host", "127.0.0.1"]);
+const vite = start(bin("vite"), ["--host", "127.0.0.1", "--port", "5173", "--strictPort"]);
 let electron;
 
 function stopAll() {
-  if (electron && !electron.killed) electron.kill();
-  if (!vite.killed) vite.kill();
+  if (stopping) return;
+  stopping = true;
+  for (const child of Array.from(children)) {
+    killTree(child);
+  }
+}
+
+function exitCleanly(code) {
+  stopAll();
+  setTimeout(() => process.exit(code), 250);
 }
 
 process.on("SIGINT", () => {
-  stopAll();
-  process.exit(130);
+  exitCleanly(130);
 });
 
 process.on("SIGTERM", () => {
-  stopAll();
-  process.exit(143);
+  exitCleanly(143);
 });
 
 vite.on("exit", (code) => {
-  if (electron) stopAll();
-  process.exit(code || 0);
+  exitCleanly(code || 0);
 });
 
 waitForUrl(devUrl)
@@ -79,12 +101,10 @@ waitForUrl(devUrl)
       },
     });
     electron.on("exit", (code) => {
-      stopAll();
-      process.exit(code || 0);
+      exitCleanly(code || 0);
     });
   })
   .catch((error) => {
     console.error(error.message);
-    stopAll();
-    process.exit(1);
+    exitCleanly(1);
   });
