@@ -1,0 +1,221 @@
+Job Application Assistant - Installation and Distribution Instructions
+=====================================================================
+
+Windows
+-------
+
+Distributor: include this file only:
+
+  installer/Job Application Assistant Setup 1.0.0.exe
+
+Do not include these alongside the installer:
+
+  installer/win-unpacked
+  node_modules
+  dist
+  build
+  source .py files
+  package.json
+  requirements.txt
+  job_applications.db
+  Application templates
+  Resumes
+  applications
+
+The Windows installer already contains:
+
+  Electron desktop app
+  React frontend build
+  Python bridge and app scripts
+  Bundled Python 3.11 runtime
+  Required Python packages from requirements.txt
+  Seed job_applications.db
+  Seed search_terms.json
+  Seed Application templates folder
+  Seed Resumes folder
+  Seed applications folder
+
+Install steps:
+
+  1. Run installer/Job Application Assistant Setup 1.0.0.exe.
+  2. Choose the install location when prompted.
+  3. Launch from the Desktop shortcut or Start Menu shortcut.
+
+On first launch, writable data is created under:
+
+  %APPDATA%\JobApplicationAssistant
+
+Live user data after installation is stored there, including:
+
+  job_applications.db
+  search_terms.json
+  Application templates
+  Resumes
+  applications
+
+Windows external requirements:
+
+  Google Chrome is required for Selenium-based scraping.
+  Internet access is required for live scraping and cloud AI providers.
+  Gemini/OpenAI API keys are required only if those providers are used.
+  A local OpenAI-compatible/Ollama server is required only if local analysis is used.
+
+Windows notes:
+
+  Python does not need to be installed separately.
+  Python packages do not need to be installed separately.
+  The installer is currently unsigned, so Windows SmartScreen may show a warning.
+
+
+macOS
+-----
+
+Build status:
+
+  macOS redistributables must be built on macOS. They cannot be produced on Windows.
+
+To build on a Mac:
+
+  cd /path/to/JSE
+  chmod +x build_installer_mac.sh tools/prepare_python_runtime_mac.sh
+  ./build_installer_mac.sh
+
+Distributor: include the generated macOS files from installer/.
+
+Expected files:
+
+  installer/Job Application Assistant-1.0.0-arm64.dmg
+  installer/Job Application Assistant-1.0.0-arm64-mac.zip
+  installer/Job Application Assistant-1.0.0-x64.dmg
+  installer/Job Application Assistant-1.0.0-x64-mac.zip
+
+If exact filenames differ, include the .dmg or .zip files generated in installer/ for the target Mac architecture.
+
+Recommended distribution:
+
+  For Apple Silicon Macs (M1/M2/M3/M4 and newer):
+    include the arm64 .dmg.
+
+  For Intel Macs:
+    include the x64 .dmg.
+
+  If unsure:
+    include both the arm64 .dmg and x64 .dmg.
+
+Optional:
+
+  Include the matching .zip files only if you want a zip-based app distribution.
+  The .dmg files are the normal user-friendly installer format for macOS.
+
+Do not include these alongside the macOS redistributables:
+
+  node_modules
+  dist
+  build
+  source .py files
+  package.json
+  requirements.txt
+  job_applications.db
+  Application templates
+  Resumes
+  applications
+
+The macOS app bundle is configured to contain:
+
+  Electron desktop app
+  React frontend build
+  Python bridge and app scripts
+  Bundled standalone Python runtime for the relevant Mac architecture
+  Required Python packages from requirements.txt
+  Seed job_applications.db
+  Seed search_terms.json
+  Seed Application templates folder
+  Seed Resumes folder
+  Seed applications folder
+
+Install steps for .dmg:
+
+  1. Open the .dmg file.
+  2. Drag Job Application Assistant.app into Applications.
+  3. Launch Job Application Assistant from Applications.
+
+On first launch, writable data is created under:
+
+  ~/Library/Application Support/JobApplicationAssistant
+
+Live user data after installation is stored there, including:
+
+  job_applications.db
+  search_terms.json
+  Application templates
+  Resumes
+  applications
+
+macOS external requirements:
+
+  Google Chrome is required for Selenium-based scraping.
+  Internet access is required for live scraping and cloud AI providers.
+  Gemini/OpenAI API keys are required only if those providers are used.
+  A local OpenAI-compatible/Ollama server is required only if local analysis is used.
+
+macOS notes:
+
+  Python does not need to be installed separately if the app was built with build_installer_mac.sh.
+  Python packages do not need to be installed separately.
+  The app is currently unsigned and not notarized, so macOS Gatekeeper may block it on first launch.
+  For an unsigned build, users may need to right-click the app, choose Open, then confirm.
+  For broad public distribution, sign and notarize the app with an Apple Developer ID certificate.
+
+
+Rebuilding
+----------
+
+Windows rebuild command, run on Windows:
+
+  powershell -ExecutionPolicy Bypass -File .\build_installer.ps1
+
+Windows output:
+
+  installer/Job Application Assistant Setup 1.0.0.exe
+
+macOS rebuild command, run on macOS:
+
+  ./build_installer_mac.sh
+
+macOS output:
+
+  installer/*.dmg
+  installer/*.zip
+
+
+Quick Distribution Checklist
+----------------------------
+
+Windows only:
+
+  Include:
+    installer/Job Application Assistant Setup 1.0.0.exe
+
+  Nothing else is required for the installer itself.
+
+macOS Apple Silicon only:
+
+  Include:
+    installer/*arm64*.dmg
+
+macOS Intel only:
+
+  Include:
+    installer/*x64*.dmg
+
+macOS mixed audience:
+
+  Include:
+    installer/*arm64*.dmg
+    installer/*x64*.dmg
+
+All platforms:
+
+  Tell users they still need Google Chrome for scraping.
+  Tell users cloud AI features require their chosen API keys.
+  Tell users local AI features require their local model server to be running.

@@ -1,0 +1,86 @@
+{
+  "name": "job-application-assistant",
+  "version": "1.0.0",
+  "description": "Desktop assistant for job searching, analysis, and application document generation.",
+  "author": "",
+  "private": true,
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "electron": "electron .",
+    "start": "node tools/start-dev.cjs",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64"
+  },
+  "dependencies": {
+    "concurrently": "^9.1.2",
+    "lucide-react": "^0.468.0",
+    "wait-on": "^8.0.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^34.0.0",
+    "electron-builder": "^26.0.12",
+    "vite": "^6.0.7"
+  },
+  "build": {
+    "appId": "com.jse.jobapplicationassistant",
+    "productName": "Job Application Assistant",
+    "directories": {
+      "output": "release"
+    },
+    "asar": false,
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "scrapers/**/*",
+      "tools/**/*",
+      "build/python/**/*",
+      "*.py",
+      "requirements.txt",
+      "search_terms.json"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "identity": null,
+      "gatekeeperAssess": false,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Job Application Assistant"
+    }
+  }
+}
