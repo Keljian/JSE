@@ -1,4 +1,4 @@
-# JSE — Job Application Assistant
+# JSE — Job Application Assistant (AKA Job Search Engine)
 
 A local-first desktop assistant for the whole job hunt: find listings, score them against one or more resume lanes, manage the application pipeline, research employers, and generate tailored application material — all on your own machine.
 
