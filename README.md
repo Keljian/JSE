@@ -325,9 +325,6 @@ merge, publish, distribute, sublicense, and sell copies of the software, provide
 the MIT copyright and permission notice are included with copies or substantial
 portions of the software.
 
-JSE is open-source and free to use. If it saved you time or sanity on the job
-hunt, a coffee keeps the project caffeinated and the commits coming:
-[ko-fi.com/keljian](https://ko-fi.com/keljian).
 
 ---
 
