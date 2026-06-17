@@ -1808,7 +1808,95 @@ function EvidenceLibraryPanel({ profileId }) {
   );
 }
 
-function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onApplyFilters, onCompactDatabase, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
+function ScraperPluginBuilder({ profileId, busy, onBuild, onTest }) {
+  const [form, setForm] = useState({
+    source_name: "",
+    company_name: "",
+    careers_url: "",
+    mode: "keyword",
+    platform_hint: "",
+    location: "",
+    test_keyword: "business analyst",
+    max_pages: 2,
+    notes: ""
+  });
+  const [result, setResult] = useState(null);
+  const [testResult, setTestResult] = useState(null);
+  const [error, setError] = useState("");
+  const [working, setWorking] = useState(false);
+
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const disabled = busy || working;
+  const canBuild = form.source_name.trim() && form.careers_url.trim() && !disabled;
+
+  const build = async () => {
+    setError("");
+    setTestResult(null);
+    setWorking(true);
+    try {
+      const data = await onBuild({ ...form, profile_id: profileId });
+      setResult(data);
+    } catch (buildError) {
+      setError(toErrorMessage(buildError));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const test = async () => {
+    if (!result?.plugin?.id) return;
+    setError("");
+    setWorking(true);
+    try {
+      const data = await onTest(result.plugin.id, form.test_keyword, form.max_pages);
+      setTestResult(data);
+    } catch (testError) {
+      setError(toErrorMessage(testError));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div className="scraper-builder">
+      <div className="settings-section-head">
+        <h4>Build A Scraper Plugin</h4>
+        <button className="secondary" disabled={!canBuild} onClick={build}><Sparkles size={16} /> Generate</button>
+      </div>
+      <div className="form-grid compact">
+        <label><span>Source name</span><input value={form.source_name} placeholder="Example Careers" onChange={(event) => update("source_name", event.target.value)} /></label>
+        <label><span>Company</span><input value={form.company_name} placeholder="Example Pty Ltd" onChange={(event) => update("company_name", event.target.value)} /></label>
+        <label className="full"><span>Careers or search URL</span><input value={form.careers_url} placeholder="https://example.com/jobs" onChange={(event) => update("careers_url", event.target.value)} /></label>
+        <label><span>Mode</span><select value={form.mode} onChange={(event) => update("mode", event.target.value)}><option value="keyword">Keyword search</option><option value="sweep">Sweep all listings</option></select></label>
+        <label><span>Platform hint</span><input value={form.platform_hint} placeholder="PageUp, Workday, SmartRecruiters, custom" onChange={(event) => update("platform_hint", event.target.value)} /></label>
+        <label><span>Location default</span><input value={form.location} placeholder="Melbourne VIC" onChange={(event) => update("location", event.target.value)} /></label>
+        <label><span>Test keyword</span><input value={form.test_keyword} onChange={(event) => update("test_keyword", event.target.value)} /></label>
+        <label><span>Page limit</span><input type="number" min="1" max="5" value={form.max_pages} onChange={(event) => update("max_pages", event.target.value)} /></label>
+        <label className="full"><span>Notes for the local LLM</span><textarea rows={3} value={form.notes} placeholder="Known listing card CSS, pagination notes, details page patterns, fields to capture..." onChange={(event) => update("notes", event.target.value)} /></label>
+      </div>
+      {error ? <p className="settings-alert">{error}</p> : null}
+      {result ? (
+        <div className="builder-result">
+          <div>
+            <strong>{result.plugin?.name || result.manifest?.name}</strong>
+            <small>{result.plugin_dir}</small>
+          </div>
+          <button className="secondary" disabled={disabled} onClick={test}><Play size={15} /> Dry run</button>
+          {(result.notes || []).length ? <ul>{result.notes.slice(0, 4).map((note, index) => <li key={`${note}-${index}`}>{note}</li>)}</ul> : null}
+        </div>
+      ) : null}
+      {testResult ? (
+        <div className={`builder-test ${testResult.ok ? "ok" : "bad"}`}>
+          <strong>{testResult.ok ? "Dry run passed" : "Dry run needs review"}</strong>
+          <span>{JSON.stringify(testResult.result || {}).slice(0, 500)}</span>
+          {(testResult.logs || []).length ? <small>{testResult.logs.slice(-4).join(" | ")}</small> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onApplyFilters, onCompactDatabase, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onBuildScraper, onTestScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
   const [form, setForm] = useState(settings || {});
   const [globalForm, setGlobalForm] = useState(globalSettings || {});
   const [profileForm, setProfileForm] = useState({ name: "", resume_path: "" });
@@ -1933,6 +2021,11 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
             <button className="secondary" onClick={onImportScraper}><FolderOpen size={16} /> Import plugin</button>
           </div>
           {scraperError ? <p className="settings-alert">{scraperError}</p> : null}
+          <ScraperPluginBuilder
+            profileId={profile?.id || 1}
+            onBuild={onBuildScraper}
+            onTest={onTestScraper}
+          />
           <div className="scraper-list">
             {(scrapers || []).map((plugin) => (
               <article key={plugin.id} className="scraper-item">
@@ -2927,6 +3020,41 @@ function App() {
       appendLog(message);
     }
   };
+  const buildScraper = async (answers) => {
+    try {
+      setScraperError("");
+      appendLog(`Building scraper plugin for ${answers.source_name || answers.careers_url} with local LLM...`);
+      const data = await invoke("scrapers:build", { profile_id: activeProfileId, answers });
+      setScrapers(data.scrapers || []);
+      await refreshScrapers();
+      appendLog(`Scraper plugin built: ${data.plugin?.name || data.manifest?.name}.`);
+      return data;
+    } catch (error) {
+      const message = `Scraper builder failed: ${toErrorMessage(error)}`;
+      setScraperError(message);
+      appendLog(message);
+      throw error;
+    }
+  };
+  const testScraper = async (pluginId, keyword, maxPages) => {
+    try {
+      setScraperError("");
+      appendLog(`Testing scraper plugin ${pluginId}...`);
+      const data = await invoke("scrapers:test", {
+        profile_id: activeProfileId,
+        id: pluginId,
+        keyword,
+        max_pages: maxPages || 1
+      });
+      appendLog(data.ok ? `Scraper dry run passed: ${pluginId}.` : `Scraper dry run needs review: ${pluginId}.`);
+      return data;
+    } catch (error) {
+      const message = `Scraper test failed: ${toErrorMessage(error)}`;
+      setScraperError(message);
+      appendLog(message);
+      throw error;
+    }
+  };
   const updateScraper = async (pluginId, updates) => {
     try {
       setScraperError("");
@@ -3179,6 +3307,8 @@ function App() {
             onSearchResumes={searchResumes}
             onScanMemory={scanProfileMemory}
             onImportScraper={importScraper}
+            onBuildScraper={buildScraper}
+            onTestScraper={testScraper}
             onUpdateScraper={updateScraper}
             onUpdateLaneScraper={updateLaneScraper}
             onRemoveScraper={removeScraper}

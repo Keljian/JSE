@@ -18,6 +18,29 @@ The plugin folder can be imported through the Settings UI or placed in a local
 plugin directory. User-installed plugin folders and archives should stay out of
 shared source.
 
+## Building Plugins In JSE
+
+JSE includes a guided plugin builder in **Settings > General > Searchers**. It
+asks for the source name, careers URL, mode, platform hints, location, test
+keyword, page limit, and any notes you know about the page structure. The builder
+then sends those answers to the configured local OpenAI-compatible LLM and writes
+a plugin folder under `scraper_plugins/`.
+
+The builder performs a first-pass safety check before installing the generated
+plugin:
+
+- validates the manifest;
+- parses `scraper.py` for syntax errors;
+- blocks shell, subprocess, dynamic execution, and direct filesystem-write
+  patterns;
+- requires a callable `scrape(...)` function;
+- imports the plugin through the normal plugin registry.
+
+Use **Dry run** after generation. Dry runs call the plugin with `dry_run=True`
+and a low page limit so the scraper can fetch and parse a sample without writing
+jobs to the database. Review the sample output before enabling the plugin for a
+real search.
+
 ## Manifest
 
 Every plugin needs a `scraper-plugin.json` file.

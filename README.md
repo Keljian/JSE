@@ -132,9 +132,12 @@ the Vite frontend on `127.0.0.1:5173` and then launches Electron.
 2. In the **Lane/Profile** area, choose or import your resume.
 3. Set your preferred location, work modes, page limits, and matching rules.
 4. In **AI & Credentials**, choose your Document AI provider.
-5. Configure either a local endpoint or cloud provider credentials.
-6. In **Scrapers**, enable the sources you want for the active lane.
-7. Run a small search first, with a low page limit, to confirm everything works.
+5. In **Searchers**, import scraper plugins or use **Build A Scraper Plugin** to
+   generate one with your configured local LLM, then run a dry run before using
+   it in searches.
+6. Configure either a local endpoint or cloud provider credentials.
+7. In **Searchers**, enable the sources you want for the active lane.
+8. Run a small search first, with a low page limit, to confirm everything works.
 
 ---
 
@@ -192,15 +195,39 @@ Cloud providers are optional, and mainly used for application-document generatio
 
 ## Scraper Setup
 
-Scrapers are plugin-driven.
+Scrapers are plugin-driven. Each source can be enabled globally and separately
+for the active lane.
 
-1. Open **Settings -> Scrapers**.
+1. Open **Settings -> General -> Searchers**.
 2. Confirm the desired scraper plugins are registered.
-3. Enable each scraper globally and for the current lane.
-4. Configure location and page limits per scraper where available.
+3. Enable each scraper with **Available** and **This lane**.
+4. Configure location, page limits, or source-specific fields where available.
 5. Run a small search to check selectors, login/session requirements, and duplicate handling.
 
-For building new scrapers, see `SCRAPER_PLUGIN.md`.
+### Build A Scraper Plugin
+
+If JSE does not already have a scraper for a job board or employer careers page,
+use **Build A Scraper Plugin** in **Settings -> General -> Searchers**.
+
+The builder asks for:
+
+- source name and company name;
+- careers/search URL;
+- mode: keyword search or sweep all listings;
+- platform hint, such as PageUp, Workday, SmartRecruiters, or custom;
+- default location, test keyword, and page limit;
+- any notes you know about listing cards, pagination, detail pages, or fields to capture.
+
+The builder uses your configured local OpenAI-compatible LLM to generate a local
+plugin under `scraper_plugins/`. Generated plugins stay local and are ignored by
+Git by default.
+
+After generation, click **Dry run**. A dry run tests the scraper with a low page
+limit and `dry_run=True`, so it can fetch and parse sample listings without
+writing jobs to the database. Review the dry-run output before enabling the
+plugin for real searches.
+
+For the full plugin contract and manual build instructions, see `SCRAPER_PLUGIN.md`.
 
 ---
 
