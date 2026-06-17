@@ -10,8 +10,10 @@ copies.
 
 ## Entry Points
 
-- `Run.bat` / `Run.command` start the desktop app with `npm run start`.
-- `tools/start-dev.cjs` starts Vite, waits for it, then launches Electron.
+- `Run.bat` / `Run.command` prepare first-run dependencies and start the desktop
+  app with `npm run start`.
+- `tools/start-dev.cjs` creates required runtime folders, ensures npm
+  dependencies are present, starts Vite, waits for it, then launches Electron.
 - `electron/main.cjs` owns the Electron main process, app windows, IPC handlers,
   file dialogs, downloads, persistent Python worker supervision, and per-task
   subprocesses for cancellable work.

@@ -82,14 +82,20 @@ The app stores working data locally. Generated documents, settings, databases, b
 
 ## Install Dependencies
 
-From the project folder:
+For a normal first source checkout, use the launcher in the next section. It
+creates the required local folders, creates a Python virtual environment, installs
+Python packages from `requirements.txt`, and installs npm packages when
+`node_modules` is missing.
+
+Manual setup is still supported:
 
 ```powershell
 npm install
-pip install -r requirements.txt
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-If you are using a packaged build, dependencies may already be bundled. For development or a first source checkout, install both the Node and Python dependencies.
+If you are using a packaged build, dependencies may already be bundled.
 
 ---
 
@@ -113,7 +119,10 @@ Both launchers run:
 npm run start
 ```
 
-This starts the Vite frontend and then launches Electron.
+On first run, the launchers also prepare `.venv`, `node_modules`, `settings`,
+`applications`, `older_applications`, `Application templates`, `Resumes`,
+`scraper_plugins`, and `Backups` as needed. After setup, `npm run start` starts
+the Vite frontend on `127.0.0.1:5173` and then launches Electron.
 
 ---
 

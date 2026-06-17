@@ -1,4 +1,5 @@
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 
@@ -12,7 +13,47 @@ function bin(name) {
   return path.join(root, "node_modules", ".bin", isWindows ? `${name}.cmd` : name);
 }
 
+function command(name) {
+  return isWindows ? `${name}.cmd` : name;
+}
+
+function prepareFirstRunFolders() {
+  for (const folder of [
+    "settings",
+    "applications",
+    "older_applications",
+    "Application templates",
+    "Resumes",
+    "scraper_plugins",
+    "Backups",
+  ]) {
+    fs.mkdirSync(path.join(root, folder), { recursive: true });
+  }
+}
+
+function ensureNodeDependencies() {
+  if (fs.existsSync(bin("vite")) && fs.existsSync(bin("electron"))) return;
+
+  console.log("First run setup: installing npm dependencies...");
+  const result = spawnSync(command("npm"), ["install"], {
+    cwd: root,
+    stdio: "inherit",
+    shell: false,
+    windowsHide: true,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`npm install failed with exit code ${result.status}`);
+  }
+}
+
 function start(command, args, options = {}) {
+  if (!fs.existsSync(command) && path.isAbsolute(command)) {
+    throw new Error(`Required command was not found: ${command}`);
+  }
   const child = spawn(command, args, {
     cwd: root,
     stdio: "inherit",
@@ -62,6 +103,14 @@ function waitForUrl(url, timeoutMs = 30000) {
 
     tryOnce();
   });
+}
+
+try {
+  prepareFirstRunFolders();
+  ensureNodeDependencies();
+} catch (error) {
+  console.error(`Startup setup failed: ${error.message}`);
+  process.exit(1);
 }
 
 const vite = start(bin("vite"), ["--host", "127.0.0.1", "--port", "5173", "--strictPort"]);

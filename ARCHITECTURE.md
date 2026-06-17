@@ -83,7 +83,8 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Start["Run.bat / Run.command"] --> Npm["npm run start"]
+    Start["Run.bat / Run.command"] --> Bootstrap["First-run bootstrap: folders, .venv, npm packages"]
+    Bootstrap --> Npm["npm run start"]
     Npm --> DevServer["Vite dev server"]
     Npm --> Electron["Electron app"]
     Electron --> Window["Create BrowserWindow"]
