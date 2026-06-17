@@ -4,6 +4,11 @@ This guide explains how to build a scraper plugin for JSE. A plugin is a folder
 containing a `scraper-plugin.json` manifest and a Python module with one callable
 scrape function.
 
+JSE itself is distributed under the MIT License. Scraper plugins you create can
+use MIT as well unless you choose a different license for your own plugin.
+If JSE saved you time or sanity on the job hunt, a coffee keeps the project
+caffeinated and the commits coming: https://ko-fi.com/keljian
+
 ## Plugin Folder Shape
 
 ```text

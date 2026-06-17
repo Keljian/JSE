@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "description": "Desktop assistant for job searching, analysis, and application document generation.",
   "author": "",
+  "license": "MIT",
+  "funding": {
+    "type": "ko-fi",
+    "url": "https://ko-fi.com/keljian"
+  },
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
@@ -41,6 +46,7 @@
       "tools/**/*",
       "build/python/**/*",
       "*.py",
+      "LICENSE",
       "requirements.txt",
       "search_terms.json"
     ],

@@ -5,6 +5,10 @@ pipeline management, employer research, and tailored application document
 generation. The app is split into an Electron + React frontend and a Python
 backend reached only through a JSON command bridge.
 
+JSE is distributed under the MIT License; see `LICENSE` in the repository root.
+If it saved you time or sanity on the job hunt, a coffee keeps the project
+caffeinated and the commits coming: https://ko-fi.com/keljian
+
 ## System Overview
 
 ```mermaid

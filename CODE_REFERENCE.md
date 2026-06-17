@@ -8,6 +8,10 @@ The frontend calls the Python bridge; it does not import Python modules directly
 This reference covers app-owned source files, not generated installer/vendor
 copies.
 
+JSE is distributed under the MIT License; see `LICENSE` in the repository root.
+If it saved you time or sanity on the job hunt, a coffee keeps the project
+caffeinated and the commits coming: https://ko-fi.com/keljian
+
 ## Entry Points
 
 - `Run.bat` / `Run.command` prepare first-run dependencies and start the desktop
