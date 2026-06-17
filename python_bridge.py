@@ -1627,6 +1627,8 @@ def command_terms_generate(payload):
 def command_scrape_run(payload):
     app_logic = import_app_logic()
     sources = payload.get("sources") or scraper_plugins.source_names(profile_id=payload.get("profile_id"), include_disabled=False)
+    if not sources:
+        raise ValueError("No scraper plugins are available. Import a plugin or create one in Settings > Searchers.")
     include_all = bool(payload.get("include_all_profiles"))
     profiles = db.get_all_profiles() if include_all else [db.get_profile_by_id(payload.get("profile_id", 1))]
     run_id = db.record_scraper_run(payload.get("profile_id"), "all_profiles" if include_all else "profile", sources, "running")

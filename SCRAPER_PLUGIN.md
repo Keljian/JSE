@@ -89,8 +89,8 @@ Required fields:
 - `id`: stable unique identifier, lowercase snake/kebab style recommended.
 - `name`: display name in Settings.
 - `source_name`: source value stored on jobs and shown in the UI.
-- `module`: Python module path. For user plugins this can be a file such as
-  `scraper.py`; bundled plugins can use import paths such as `scrapers.nga_net`.
+- `module`: Python module path. For local custom plugins this is usually a file
+  such as `scraper.py`.
 
 Optional fields:
 

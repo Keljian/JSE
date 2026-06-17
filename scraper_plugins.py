@@ -16,117 +16,13 @@ LOCAL_PLUGIN_DIR = Path(os.environ.get("JSE_LOCAL_PLUGIN_DIR") or APP_ROOT / "sc
 USER_PLUGIN_DIR = DATA_DIR / "scraper_plugins"
 
 
-BUILTIN_PLUGINS = [
-    {
-        "id": "deakin",
-        "name": "Deakin University",
-        "source_name": "Deakin University",
-        "version": "1.0.0",
-        "install_type": "bundled",
-        "module": "scrapers.deakin",
-        "callable": "scrape_deakin_all_jobs",
-        "mode": "sweep",
-        "aliases": ["Deakin"],
-        "config_schema": [
-            {"key": "company_name", "label": "Company", "type": "text", "default": "Deakin University"},
-        ],
-    },
-    {
-        "id": "monash",
-        "name": "Monash University",
-        "source_name": "Monash University",
-        "version": "1.0.0",
-        "install_type": "bundled",
-        "module": "scrapers.pageuppeople",
-        "callable": "scrape_pageuppeople",
-        "mode": "sweep",
-        "aliases": ["Monash"],
-        "config_schema": [
-            {"key": "base_url", "label": "Base URL", "type": "text", "default": "https://careers.pageuppeople.com/513/cw/en/listing"},
-            {"key": "company_name", "label": "Company", "type": "text", "default": "Monash University"},
-            {"key": "location", "label": "Location", "type": "text", "default": "Victoria"},
-            {"key": "max_pages", "label": "Page limit", "type": "number", "default": 30, "legacy_key": "max_pages"},
-        ],
-    },
-    {
-        "id": "latrobe",
-        "name": "LaTrobe University",
-        "source_name": "LaTrobe University",
-        "version": "1.0.0",
-        "install_type": "bundled",
-        "module": "scrapers.pageuppeople",
-        "callable": "scrape_pageuppeople",
-        "mode": "sweep",
-        "aliases": ["La Trobe University", "La Trobe", "LaTrobe"],
-        "config_schema": [
-            {"key": "base_url", "label": "Base URL", "type": "text", "default": "https://careers.pageuppeople.com/533/caw/en/listing/"},
-            {"key": "company_name", "label": "Company", "type": "text", "default": "LaTrobe University"},
-            {"key": "location", "label": "Location", "type": "text", "default": "Victoria"},
-            {"key": "max_pages", "label": "Page limit", "type": "number", "default": 30, "legacy_key": "max_pages"},
-        ],
-    },
-    {
-        "id": "knox",
-        "name": "Knox City Council",
-        "source_name": "Knox City Council",
-        "version": "1.0.0",
-        "install_type": "bundled",
-        "module": "scrapers.pageuppeople",
-        "callable": "scrape_pageuppeople",
-        "mode": "sweep",
-        "aliases": ["Knox"],
-        "config_schema": [
-            {"key": "base_url", "label": "Base URL", "type": "text", "default": "https://careers.pageuppeople.com/904/ci/en/listing"},
-            {"key": "company_name", "label": "Company", "type": "text", "default": "Knox City Council"},
-            {"key": "location", "label": "Location", "type": "text", "default": "Victoria"},
-            {"key": "max_pages", "label": "Page limit", "type": "number", "default": 30, "legacy_key": "max_pages"},
-        ],
-    },
-    {
-        "id": "swinburne",
-        "name": "Swinburne University",
-        "source_name": "Swinburne University",
-        "version": "1.0.0",
-        "install_type": "bundled",
-        "module": "scrapers.nga_net",
-        "callable": "scrape_nga_net",
-        "mode": "sweep",
-        "aliases": ["Swinburne"],
-        "config_schema": [
-            {"key": "base_url", "label": "Base URL", "type": "text", "default": "https://swinjobs.nga.net.au/cp/index.cfm?event=jobs.list"},
-            {"key": "company_name", "label": "Company", "type": "text", "default": "Swinburne University"},
-            {"key": "location", "label": "Location", "type": "text", "default": "Victoria"},
-            {"key": "max_pages", "label": "Page limit", "type": "number", "default": 30, "legacy_key": "max_pages"},
-        ],
-    },
-    {
-        "id": "maroondah",
-        "name": "Maroondah City Council",
-        "source_name": "Maroondah City Council",
-        "version": "1.0.0",
-        "install_type": "bundled",
-        "module": "scrapers.nga_net",
-        "callable": "scrape_nga_net",
-        "mode": "sweep",
-        "aliases": ["Maroondah"],
-        "config_schema": [
-            {"key": "base_url", "label": "Base URL", "type": "text", "default": "https://maroondahjobs.nga.net.au/cp/index.cfm?event=jobs.list"},
-            {"key": "company_name", "label": "Company", "type": "text", "default": "Maroondah City Council"},
-            {"key": "location", "label": "Location", "type": "text", "default": "Victoria"},
-            {"key": "max_pages", "label": "Page limit", "type": "number", "default": 30, "legacy_key": "max_pages"},
-        ],
-    },
-]
-
-
 def _json(data):
     return json.dumps(data or {}, separators=(",", ":"), sort_keys=True)
 
 
 def ensure_registered():
-    db.ensure_builtin_scraper_plugins(BUILTIN_PLUGINS)
-    db.disable_removed_builtin_scraper_plugins([plugin["id"] for plugin in BUILTIN_PLUGINS])
     discover_user_plugins()
+    db.disable_removed_builtin_scraper_plugins([])
     migrate_legacy_lane_configs()
 
 

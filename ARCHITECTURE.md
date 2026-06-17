@@ -44,8 +44,7 @@ flowchart LR
 - Document generation: `application_doc_builder.py`, `rich_application.py`,
   `hybrid_renderer.py`, and `generate_application.py`.
 - Scraping: `scraper_plugins.py`, `scraper_dispatcher.py`,
-  `scraping_helpers.py`, `scraper_plugins/`, and legacy built-ins under
-  `scrapers/`.
+  `scraping_helpers.py`, and custom plugin folders under `scraper_plugins/`.
 - Runtime/generated data: `settings/`, `applications/`, `older_applications/`,
   `Application templates/`, `Resumes/`, `Backups/`, `.electron-data/`, `dist/`,
   `build/`, `release/`, `installer/`, and `node_modules/`.

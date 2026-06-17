@@ -113,8 +113,7 @@ includes:
   `generate_application.py`: application document generation and rendering.
 - `src/main.jsx`: Electron frontend application.
 - `electron/`: desktop shell and preload/main process integration.
-- `scrapers/` and `scraper_plugins/`: legacy built-ins and active plugin
-  scrapers.
+- `scraper_plugins/`: custom scraper plugin folders and manifests.
 
 ## Data Stored Locally
 

@@ -1371,8 +1371,12 @@ def get_scraper_plugins(include_disabled=True, profile_id=None):
 
 def upsert_scraper_plugin(plugin, preserve_existing=True):
     existing = get_scraper_plugin(plugin["id"]) if preserve_existing else None
-    same_install_type = existing and existing.get("install_type") == (plugin.get("install_type") or "user")
-    enabled = int(existing["enabled"]) if same_install_type and "enabled" in existing else int(plugin.get("enabled", 1))
+    enabled = int(existing["enabled"]) if existing and "enabled" in existing else int(plugin.get("enabled", 1))
+    config_json = (
+        json.dumps(existing.get("config") or {}, separators=(",", ":"), sort_keys=True)
+        if existing
+        else plugin.get("config_json") or "{}"
+    )
     with get_db_connection() as conn:
         conn.execute(
             """
@@ -1399,7 +1403,7 @@ def upsert_scraper_plugin(plugin, preserve_existing=True):
                 plugin.get("install_type") or "user",
                 plugin.get("install_path"),
                 plugin["manifest_json"],
-                plugin.get("config_json") or "{}",
+                config_json,
             ),
         )
         conn.commit()

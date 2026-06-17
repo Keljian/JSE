@@ -394,6 +394,7 @@ function RunSearchModal({ sources, activeProfileId, busy, onRun, onClose }) {
   const [selectedSources, setSelectedSources] = useState(sources);
   const [includeAllProfiles, setIncludeAllProfiles] = useState(false);
   const [optimism, setOptimism] = useState(3);
+  const hasSources = sources.length > 0;
 
   useEffect(() => {
     setSelectedSources((current) => {
@@ -409,7 +410,7 @@ function RunSearchModal({ sources, activeProfileId, busy, onRun, onClose }) {
       <label className="check-row"><input type="checkbox" checked={includeAllProfiles} onChange={(event) => setIncludeAllProfiles(event.target.checked)} /> Run across all lanes</label>
       <label className="field"><span>Optimism for generated terms</span><input type="range" min="1" max="5" value={optimism} onChange={(event) => setOptimism(Number(event.target.value))} /></label>
       <div className="source-grid">
-        {sources.map((source) => (
+        {hasSources ? sources.map((source) => (
           <label key={source} className="check-row">
             <input
               type="checkbox"
@@ -418,11 +419,11 @@ function RunSearchModal({ sources, activeProfileId, busy, onRun, onClose }) {
             />
             {source}
           </label>
-        ))}
+        )) : <p className="empty-inline">No scraper plugins are available. Import a plugin or create one in Settings &gt; Searchers.</p>}
       </div>
       <footer className="modal-actions">
         <button className="secondary" onClick={onClose}>Cancel</button>
-        <button disabled={busy || selectedSources.length === 0} onClick={() => onRun({ profile_id: activeProfileId, include_all_profiles: includeAllProfiles, sources: selectedSources, optimism })}><Play size={16} /> Run search</button>
+        <button disabled={busy || !hasSources || selectedSources.length === 0} onClick={() => onRun({ profile_id: activeProfileId, include_all_profiles: includeAllProfiles, sources: selectedSources, optimism })}><Play size={16} /> Run search</button>
       </footer>
     </Modal>
   );
@@ -2055,7 +2056,7 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
                 ) : null}
               </article>
             ))}
-            {!(scrapers || []).length ? <p className="empty-inline">No scraper plugins registered yet.</p> : null}
+            {!(scrapers || []).length ? <p className="empty-inline">No scraper plugins registered yet. Import one or use the builder above to create a custom scraper plugin.</p> : null}
           </div>
         </section>
         ) : null}

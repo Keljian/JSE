@@ -42,7 +42,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "scrapers/**/*",
+      "scraper_plugins/**/*",
       "tools/**/*",
       "build/python/**/*",
       "*.py",
