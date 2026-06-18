@@ -791,14 +791,36 @@ def _update_existing_scraped_job(conn, job_id, job_data, metadata, fingerprint=N
     conn.execute(f"UPDATE jobs SET {', '.join(assignments)} WHERE id = ?", params)
 
 
+# journal_mode=WAL is persisted in the database header, so it only needs to be
+# set once per process rather than on every connection open.
+_wal_enabled = False
+
+
 @contextmanager
 def get_db_connection():
-    """Context manager for database connections that enables WAL mode for concurrency."""
-    conn = sqlite3.connect(DB_FILE, timeout=10, check_same_thread=False)
+    """Context manager for SQLite connections tuned for a large local database.
+
+    WAL is enabled once per process (it persists in the DB header). The other
+    PRAGMAs are per-connection and are applied on every open:
+      - busy_timeout lets SQLite wait on locks instead of raising immediately
+        (the 6-worker scrape path hits contention).
+      - synchronous=NORMAL is safe under WAL and is the biggest write speedup;
+        only a power loss (not an app crash) risks the last commit.
+      - temp_store=MEMORY keeps sorts/temp tables off disk.
+      - cache_size (~64MB) and mmap_size (256MB) cut I/O against the ~200MB DB.
+    """
+    global _wal_enabled
+    conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
-        # Enable Write-Ahead Logging for better concurrency
-        conn.execute("PRAGMA journal_mode=WAL")
+        if not _wal_enabled:
+            conn.execute("PRAGMA journal_mode=WAL")
+            _wal_enabled = True
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-65536")
+        conn.execute("PRAGMA mmap_size=268435456")
         yield conn
     finally:
         conn.close()
@@ -5424,9 +5446,13 @@ def dedupe_database(log_callback=None):
     count_before_query = "SELECT COUNT(*) FROM jobs"
     with get_db_connection() as conn:
         count_before = conn.execute(count_before_query).fetchone()[0]
-        rows = conn.execute("SELECT id, profile_id, url, description FROM jobs ORDER BY id").fetchall()
+        # Use the stored description_fingerprint instead of recomputing it from
+        # the (large) description text for every row on every call. add_job()
+        # populates it on insert and the backfill pass below fills any NULLs, so
+        # this avoids reading essentially all descriptions on each dedupe.
+        rows = conn.execute("SELECT id, profile_id, url, description_fingerprint FROM jobs ORDER BY id").fetchall()
         normalized_by_id = {row["id"]: normalize_job_url(row["url"]) for row in rows}
-        fingerprint_by_id = {row["id"]: description_fingerprint(row["description"]) for row in rows}
+        fingerprint_by_id = {row["id"]: row["description_fingerprint"] for row in rows}
         keep_ids = set()
         seen_urls = set()
         seen_fingerprints = set()
@@ -5469,16 +5495,34 @@ def dedupe_database(log_callback=None):
             placeholders = ",".join("?" for _ in delete_identity_ids)
             conn.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(delete_identity_ids))
 
-        # Only rewrite rows whose url/fingerprint actually changes; the old
-        # unconditional per-row UPDATE rewrote the entire table on every run.
-        rows = conn.execute("SELECT id, url, description, description_fingerprint FROM jobs").fetchall()
+        # Normalize URLs and backfill any missing fingerprints. In steady state
+        # both columns are already correct, so this touches nothing — and it only
+        # reads description text for the (usually zero) rows missing a fingerprint.
+        rows = conn.execute("SELECT id, url, description_fingerprint FROM jobs").fetchall()
+        url_updates = []
+        missing_fingerprint_ids = []
         for row in rows:
             normalized_url = normalize_job_url(row["url"])
-            fingerprint = row["description_fingerprint"] or description_fingerprint(row["description"])
-            if normalized_url != row["url"] or fingerprint != row["description_fingerprint"]:
-                conn.execute(
-                    "UPDATE jobs SET url = ?, description_fingerprint = ? WHERE id = ?",
-                    (normalized_url, fingerprint, row["id"]),
+            if normalized_url != row["url"]:
+                url_updates.append((normalized_url, row["id"]))
+            if not row["description_fingerprint"]:
+                missing_fingerprint_ids.append(row["id"])
+        if url_updates:
+            conn.executemany("UPDATE jobs SET url = ? WHERE id = ?", url_updates)
+        if missing_fingerprint_ids:
+            placeholders = ",".join("?" for _ in missing_fingerprint_ids)
+            fp_rows = conn.execute(
+                f"SELECT id, description FROM jobs WHERE id IN ({placeholders})",
+                tuple(missing_fingerprint_ids),
+            ).fetchall()
+            fp_updates = []
+            for fp_row in fp_rows:
+                fingerprint = description_fingerprint(fp_row["description"])
+                if fingerprint:
+                    fp_updates.append((fingerprint, fp_row["id"]))
+            if fp_updates:
+                conn.executemany(
+                    "UPDATE jobs SET description_fingerprint = ? WHERE id = ?", fp_updates
                 )
         conn.commit()
         count_after = conn.execute(count_before_query).fetchone()[0]

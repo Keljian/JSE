@@ -24,6 +24,12 @@ def _add_column(cursor, table, column, definition):
 
 def setup_database():
     conn = sqlite3.connect(DB_FILE)
+    # Schema setup/migrations run on every startup; tune the same way as the
+    # main connection helper so the DDL pass is not throttled by FULL sync.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-65536")
     cursor = conn.cursor()
     
     # Create table to store job listings
@@ -285,37 +291,52 @@ def setup_database():
         WHERE closing_date IS NULL
     """)
 
-    cursor.execute("""
-        SELECT id, title, company, description, pdf_text
-        FROM jobs
-        WHERE contact_person IS NULL OR contact_email IS NULL OR contact_phone IS NULL OR salary IS NULL
-    """)
-    for row in cursor.fetchall():
-        metadata = extract_job_metadata(
-            {
-                "title": row[1],
-                "company": row[2],
-                "description": row[3],
-                "pdf_text": row[4],
-            }
-        )
-        cursor.execute(
-            """
-            UPDATE jobs
-            SET contact_person = COALESCE(contact_person, ?),
-                contact_email = COALESCE(contact_email, ?),
-                contact_phone = COALESCE(contact_phone, ?),
-                salary = COALESCE(salary, ?)
-            WHERE id = ?
-            """,
-            (
-                metadata.get("contact_person"),
-                metadata.get("contact_email"),
-                metadata.get("contact_phone"),
-                metadata.get("salary"),
-                row[0],
-            ),
-        )
+    # One-time legacy data backfills are gated behind user_version: add_job()
+    # and sync_legacy_job_to_lane_model() keep every new job's metadata and the
+    # lane-model tables current, so re-running these whole-table passes on each
+    # startup is pure waste (the per-row metadata loop below alone cost ~8s on a
+    # large DB, and never "completed" because a missing phone/salary is normal,
+    # so the same rows were re-scanned every launch).
+    LEGACY_BACKFILL_VERSION = 1
+    legacy_backfill_done = cursor.execute("PRAGMA user_version").fetchone()[0] >= LEGACY_BACKFILL_VERSION
+
+    if not legacy_backfill_done:
+        cursor.execute("""
+            SELECT id, title, company, description, pdf_text
+            FROM jobs
+            WHERE contact_person IS NULL OR contact_email IS NULL OR contact_phone IS NULL OR salary IS NULL
+        """)
+        metadata_updates = []
+        for row in cursor.fetchall():
+            metadata = extract_job_metadata(
+                {
+                    "title": row[1],
+                    "company": row[2],
+                    "description": row[3],
+                    "pdf_text": row[4],
+                }
+            )
+            metadata_updates.append(
+                (
+                    metadata.get("contact_person"),
+                    metadata.get("contact_email"),
+                    metadata.get("contact_phone"),
+                    metadata.get("salary"),
+                    row[0],
+                )
+            )
+        if metadata_updates:
+            cursor.executemany(
+                """
+                UPDATE jobs
+                SET contact_person = COALESCE(contact_person, ?),
+                    contact_email = COALESCE(contact_email, ?),
+                    contact_phone = COALESCE(contact_phone, ?),
+                    salary = COALESCE(salary, ?)
+                WHERE id = ?
+                """,
+                metadata_updates,
+            )
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS application_events (
@@ -774,110 +795,116 @@ def setup_database():
         )
     cursor.execute("UPDATE profiles SET person_id = COALESCE(person_id, 1), active = COALESCE(active, 1)")
 
-    cursor.execute('''
-        INSERT OR IGNORE INTO candidate_fragments (
-            person_id, fragment_type, theme, claim, supporting_detail, skills_json,
-            domains_json, seniority, source_job_ids_json, source_doc_paths_json,
-            reuse_guidance, confidence, fingerprint, last_seen_at, created_at, updated_at
-        )
-        SELECT
-            COALESCE(profiles.person_id, 1), profile_memory_fragments.fragment_type,
-            profile_memory_fragments.theme, profile_memory_fragments.claim,
-            profile_memory_fragments.supporting_detail, profile_memory_fragments.skills_json,
-            profile_memory_fragments.domains_json, profile_memory_fragments.seniority,
-            profile_memory_fragments.source_job_ids_json, profile_memory_fragments.source_doc_paths_json,
-            profile_memory_fragments.reuse_guidance, profile_memory_fragments.confidence,
-            profile_memory_fragments.fingerprint, profile_memory_fragments.last_seen_at,
-            profile_memory_fragments.created_at, profile_memory_fragments.updated_at
-        FROM profile_memory_fragments
-        JOIN profiles ON profiles.id = profile_memory_fragments.profile_id
-    ''')
+    # Continue the one-time legacy -> lane-model port (gated above via
+    # legacy_backfill_done). These INSERT ... SELECT FROM jobs passes are kept by
+    # add_job()/sync_legacy_job_to_lane_model() thereafter, so they only run once.
+    if not legacy_backfill_done:
+        cursor.execute('''
+            INSERT OR IGNORE INTO candidate_fragments (
+                person_id, fragment_type, theme, claim, supporting_detail, skills_json,
+                domains_json, seniority, source_job_ids_json, source_doc_paths_json,
+                reuse_guidance, confidence, fingerprint, last_seen_at, created_at, updated_at
+            )
+            SELECT
+                COALESCE(profiles.person_id, 1), profile_memory_fragments.fragment_type,
+                profile_memory_fragments.theme, profile_memory_fragments.claim,
+                profile_memory_fragments.supporting_detail, profile_memory_fragments.skills_json,
+                profile_memory_fragments.domains_json, profile_memory_fragments.seniority,
+                profile_memory_fragments.source_job_ids_json, profile_memory_fragments.source_doc_paths_json,
+                profile_memory_fragments.reuse_guidance, profile_memory_fragments.confidence,
+                profile_memory_fragments.fingerprint, profile_memory_fragments.last_seen_at,
+                profile_memory_fragments.created_at, profile_memory_fragments.updated_at
+            FROM profile_memory_fragments
+            JOIN profiles ON profiles.id = profile_memory_fragments.profile_id
+        ''')
 
-    cursor.execute('''
-        INSERT OR IGNORE INTO lane_fragment_affinity (lane_id, fragment_id, weight, reason, source)
-        SELECT
-            profile_memory_fragments.profile_id,
-            candidate_fragments.id,
-            0.9,
-            'Backfilled from existing profile memory.',
-            'migration'
-        FROM profile_memory_fragments
-        JOIN profiles ON profiles.id = profile_memory_fragments.profile_id
-        JOIN candidate_fragments
-          ON candidate_fragments.person_id = COALESCE(profiles.person_id, 1)
-         AND candidate_fragments.fingerprint = profile_memory_fragments.fingerprint
-    ''')
+        cursor.execute('''
+            INSERT OR IGNORE INTO lane_fragment_affinity (lane_id, fragment_id, weight, reason, source)
+            SELECT
+                profile_memory_fragments.profile_id,
+                candidate_fragments.id,
+                0.9,
+                'Backfilled from existing profile memory.',
+                'migration'
+            FROM profile_memory_fragments
+            JOIN profiles ON profiles.id = profile_memory_fragments.profile_id
+            JOIN candidate_fragments
+              ON candidate_fragments.person_id = COALESCE(profiles.person_id, 1)
+             AND candidate_fragments.fingerprint = profile_memory_fragments.fingerprint
+        ''')
 
-    cursor.execute('''
-        INSERT OR IGNORE INTO lane_terms (lane_id, term, source, confidence)
-        SELECT profile_id, keyword, 'legacy_profile_terms', 0.7
-        FROM profile_terms
-    ''')
+        cursor.execute('''
+            INSERT OR IGNORE INTO lane_terms (lane_id, term, source, confidence)
+            SELECT profile_id, keyword, 'legacy_profile_terms', 0.7
+            FROM profile_terms
+        ''')
 
-    cursor.execute('''
-        INSERT OR IGNORE INTO job_postings (
-            legacy_job_id, title, company, location, url, description, source, pdf_text,
-            date_scraped, closing_date, closing_date_source, contact_person, contact_email,
-            contact_phone, salary, description_fingerprint, advertiser_company, actual_company,
-            employer_type, company_confidence, company_intelligence, company_research_updated_at,
-            job_intelligence_json, job_intelligence_updated_at, created_at, updated_at
-        )
-        SELECT
-            id, title, company, location, url, description, source, pdf_text,
-            date_scraped, closing_date, closing_date_source, contact_person, contact_email,
-            contact_phone, salary, description_fingerprint, advertiser_company, actual_company,
-            employer_type, company_confidence, company_intelligence, company_research_updated_at,
-            NULL, NULL,
-            COALESCE(date_scraped, updated_at, last_interaction_at, datetime('now')),
-            COALESCE(updated_at, last_interaction_at, date_scraped, datetime('now'))
-        FROM jobs
-    ''')
+        cursor.execute('''
+            INSERT OR IGNORE INTO job_postings (
+                legacy_job_id, title, company, location, url, description, source, pdf_text,
+                date_scraped, closing_date, closing_date_source, contact_person, contact_email,
+                contact_phone, salary, description_fingerprint, advertiser_company, actual_company,
+                employer_type, company_confidence, company_intelligence, company_research_updated_at,
+                job_intelligence_json, job_intelligence_updated_at, created_at, updated_at
+            )
+            SELECT
+                id, title, company, location, url, description, source, pdf_text,
+                date_scraped, closing_date, closing_date_source, contact_person, contact_email,
+                contact_phone, salary, description_fingerprint, advertiser_company, actual_company,
+                employer_type, company_confidence, company_intelligence, company_research_updated_at,
+                NULL, NULL,
+                COALESCE(date_scraped, updated_at, last_interaction_at, datetime('now')),
+                COALESCE(updated_at, last_interaction_at, date_scraped, datetime('now'))
+            FROM jobs
+        ''')
 
-    cursor.execute('''
-        INSERT OR IGNORE INTO lane_opportunities (
-            legacy_job_id, lane_id, job_posting_id, pipeline_stage, status, match_score,
-            ai_analysis, analysis_signature, priority, notes, next_action, next_action_date,
-            application_date, feedback, retired_reason, discovered_at, last_interaction_at, updated_at
-        )
-        SELECT
-            jobs.id, jobs.profile_id, job_postings.id,
-            COALESCE(jobs.pipeline_stage, jobs.status, 'new'),
-            COALESCE(jobs.status, jobs.pipeline_stage, 'new'),
-            jobs.match_score, jobs.ai_analysis, jobs.analysis_signature,
-            COALESCE(jobs.priority, 'normal'), jobs.notes, jobs.next_action,
-            jobs.next_action_date, jobs.application_date, jobs.feedback,
-            jobs.retired_reason, COALESCE(jobs.date_scraped, jobs.updated_at, datetime('now')),
-            COALESCE(jobs.last_interaction_at, jobs.updated_at, datetime('now')),
-            COALESCE(jobs.updated_at, jobs.last_interaction_at, datetime('now'))
-        FROM jobs
-        JOIN job_postings ON job_postings.legacy_job_id = jobs.id
-    ''')
+        cursor.execute('''
+            INSERT OR IGNORE INTO lane_opportunities (
+                legacy_job_id, lane_id, job_posting_id, pipeline_stage, status, match_score,
+                ai_analysis, analysis_signature, priority, notes, next_action, next_action_date,
+                application_date, feedback, retired_reason, discovered_at, last_interaction_at, updated_at
+            )
+            SELECT
+                jobs.id, jobs.profile_id, job_postings.id,
+                COALESCE(jobs.pipeline_stage, jobs.status, 'new'),
+                COALESCE(jobs.status, jobs.pipeline_stage, 'new'),
+                jobs.match_score, jobs.ai_analysis, jobs.analysis_signature,
+                COALESCE(jobs.priority, 'normal'), jobs.notes, jobs.next_action,
+                jobs.next_action_date, jobs.application_date, jobs.feedback,
+                jobs.retired_reason, COALESCE(jobs.date_scraped, jobs.updated_at, datetime('now')),
+                COALESCE(jobs.last_interaction_at, jobs.updated_at, datetime('now')),
+                COALESCE(jobs.updated_at, jobs.last_interaction_at, datetime('now'))
+            FROM jobs
+            JOIN job_postings ON job_postings.legacy_job_id = jobs.id
+        ''')
 
-    cursor.execute('''
-        INSERT INTO application_kits (
-            legacy_job_id, lane_opportunity_id, lane_id, job_posting_id,
-            resume_path, resume_text, cover_letter_path, cover_letter_text,
-            position_description_path, position_description_text, generated_at,
-            applied_at, outcome, notes
-        )
-        SELECT
-            jobs.id, lane_opportunities.id, jobs.profile_id, job_postings.id,
-            jobs.resume_used, jobs.resume_text, jobs.cover_letter_path, jobs.cover_letter_text,
-            jobs.position_description_path, jobs.position_description_text,
-            COALESCE(jobs.updated_at, jobs.last_interaction_at, datetime('now')),
-            jobs.application_date, jobs.status, 'Backfilled from legacy job document fields.'
-        FROM jobs
-        JOIN job_postings ON job_postings.legacy_job_id = jobs.id
-        JOIN lane_opportunities ON lane_opportunities.legacy_job_id = jobs.id
-        WHERE (NULLIF(jobs.resume_used, '') IS NOT NULL OR NULLIF(jobs.cover_letter_path, '') IS NOT NULL)
-        AND NOT EXISTS (
-            SELECT 1 FROM application_kits
-            WHERE application_kits.legacy_job_id = jobs.id
-              AND COALESCE(application_kits.resume_path, '') = COALESCE(jobs.resume_used, '')
-              AND COALESCE(application_kits.cover_letter_path, '') = COALESCE(jobs.cover_letter_path, '')
-        )
-    ''')
-    
+        cursor.execute('''
+            INSERT INTO application_kits (
+                legacy_job_id, lane_opportunity_id, lane_id, job_posting_id,
+                resume_path, resume_text, cover_letter_path, cover_letter_text,
+                position_description_path, position_description_text, generated_at,
+                applied_at, outcome, notes
+            )
+            SELECT
+                jobs.id, lane_opportunities.id, jobs.profile_id, job_postings.id,
+                jobs.resume_used, jobs.resume_text, jobs.cover_letter_path, jobs.cover_letter_text,
+                jobs.position_description_path, jobs.position_description_text,
+                COALESCE(jobs.updated_at, jobs.last_interaction_at, datetime('now')),
+                jobs.application_date, jobs.status, 'Backfilled from legacy job document fields.'
+            FROM jobs
+            JOIN job_postings ON job_postings.legacy_job_id = jobs.id
+            JOIN lane_opportunities ON lane_opportunities.legacy_job_id = jobs.id
+            WHERE (NULLIF(jobs.resume_used, '') IS NOT NULL OR NULLIF(jobs.cover_letter_path, '') IS NOT NULL)
+            AND NOT EXISTS (
+                SELECT 1 FROM application_kits
+                WHERE application_kits.legacy_job_id = jobs.id
+                  AND COALESCE(application_kits.resume_path, '') = COALESCE(jobs.resume_used, '')
+                  AND COALESCE(application_kits.cover_letter_path, '') = COALESCE(jobs.cover_letter_path, '')
+            )
+        ''')
+
+        cursor.execute(f"PRAGMA user_version = {LEGACY_BACKFILL_VERSION}")
+
     conn.commit()
     conn.close()
     print("Database 'job_applications.db' is ready.", file=sys.stderr)
