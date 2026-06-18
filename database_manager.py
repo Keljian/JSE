@@ -2116,6 +2116,34 @@ def update_job_fragment_alignment(job_id, fragment_score, composite_score, align
         conn.commit()
 
 
+def calculate_composite_score(match_score, fragment_score):
+    """Canonical score formula: 65% final match + 35% fragment alignment."""
+    if match_score is None:
+        return None
+    if fragment_score is None:
+        return int(round(float(match_score)))
+    return int(round(0.65 * float(match_score) + 0.35 * float(fragment_score)))
+
+
+def recalculate_composite_scores():
+    """Repair stale composites left by older analysis/gatekeeper write ordering."""
+    changed = 0
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, match_score, fragment_score, composite_score FROM jobs WHERE match_score IS NOT NULL"
+        ).fetchall()
+        updates = []
+        for row in rows:
+            expected = calculate_composite_score(row["match_score"], row["fragment_score"])
+            if row["composite_score"] != expected:
+                updates.append((expected, row["id"]))
+        if updates:
+            conn.executemany("UPDATE jobs SET composite_score = ? WHERE id = ?", updates)
+            conn.commit()
+            changed = len(updates)
+    return changed
+
+
 def merge_lane_terms(lane_id, keywords, source="memory_evolution", confidence=0.78, protected_sources=("manual", "interview_validated")):
     """Insert/update lane terms without clobbering manual or validated entries.
 
@@ -2899,7 +2927,11 @@ def add_job(job_data, source, profile_id=1, log_callback=None):
 def update_job_analysis(job_id, analysis_text, score, analysis_signature=None):
     """Updates a job record with the AI analysis results."""
     with get_db_connection() as conn:
-        row = conn.execute("SELECT pipeline_stage, status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        row = conn.execute(
+            "SELECT pipeline_stage, status, fragment_score FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        composite_score = calculate_composite_score(score, row["fragment_score"] if row else None)
         normalized_stage = normalize_stage(row["pipeline_stage"] or row["status"]) if row else "new"
         if score is not None and int(score) < AUTO_REJECT_THRESHOLD and normalized_stage not in {"applied", "interviewing", "offer", "rejected", "rejected_by_company", "archived"}:
             conn.execute(
@@ -2907,6 +2939,7 @@ def update_job_analysis(job_id, analysis_text, score, analysis_signature=None):
                 UPDATE jobs
                 SET ai_analysis = ?,
                     match_score = ?,
+                    composite_score = ?,
                     analysis_signature = ?,
                     status = 'rejected',
                     pipeline_stage = 'rejected',
@@ -2916,7 +2949,7 @@ def update_job_analysis(job_id, analysis_text, score, analysis_signature=None):
                     last_interaction_at = datetime('now')
                 WHERE id = ?
                 """,
-                (analysis_text, score, analysis_signature, job_id),
+                (analysis_text, score, composite_score, analysis_signature, job_id),
             )
             conn.execute(
                 "INSERT INTO application_events (job_id, event_type, title, details) VALUES (?, ?, ?, ?)",
@@ -2926,8 +2959,8 @@ def update_job_analysis(job_id, analysis_text, score, analysis_signature=None):
         else:
             _execute_with_retry(
                 conn,
-                "UPDATE jobs SET ai_analysis = ?, match_score = ?, analysis_signature = ?, updated_at = datetime('now') WHERE id = ?",
-                (analysis_text, score, analysis_signature, job_id),
+                "UPDATE jobs SET ai_analysis = ?, match_score = ?, composite_score = ?, analysis_signature = ?, updated_at = datetime('now') WHERE id = ?",
+                (analysis_text, score, composite_score, analysis_signature, job_id),
                 is_commit=True,
             )
     sync_legacy_job_to_lane_model(job_id)

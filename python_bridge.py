@@ -651,6 +651,9 @@ def command_app_init(_payload):
         db.migrate_profile_credentials_to_app_settings()
         scraper_plugins.ensure_registered()
     app_settings = db.get_app_settings()
+    repaired_composites = db.recalculate_composite_scores()
+    if repaired_composites:
+        emit("log", message=f"Recalculated {repaired_composites} stale composite score(s).")
     db.dedupe_database(lambda message: emit("log", message=message))
     updated_company = db.backfill_missing_company_intelligence()
     if updated_company:

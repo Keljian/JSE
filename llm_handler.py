@@ -960,8 +960,9 @@ REQUIRED JSON SHAPE
 }""" + "\n\n" + POSITIONING_DOCTRINE
 
 
-def _format_gatekeeper_section(data, original_score):
-    score = max(0, min(100, int(data.get("gate_score", original_score) or original_score)))
+def _format_gatekeeper_section(data, original_score, enforced_score=None):
+    score = (max(0, min(100, int(enforced_score))) if enforced_score is not None
+             else max(0, min(100, int(data.get("gate_score", original_score) or original_score))))
     decision = data.get("decision", "research_first")
     cap = data.get("score_cap")
     sections = [
@@ -1029,7 +1030,7 @@ JOB DESCRIPTION:
         log(f"Deep gatekeeper response was not valid JSON. Keeping original score. Response: {response[:180]}...")
         return "", original_score
 
-    gate_section, gate_score = _format_gatekeeper_section(data, original_score)
+    gate_score = max(0, min(100, int(data.get("gate_score", original_score) or original_score)))
     decision = str(data.get("decision") or "").lower()
     cap = data.get("score_cap")
     if cap is not None:
@@ -1059,6 +1060,9 @@ JOB DESCRIPTION:
         if generic_angle:
             gate_score = min(gate_score, 76)
     final_score = min(original_score, gate_score)
+    # Format only after every decision invariant and cap has been applied, so
+    # the visible Gate Score is the same number persisted as match_score.
+    gate_section, _ = _format_gatekeeper_section(data, original_score, final_score)
     log(f"Deep gatekeeper: {decision or 'unknown'} at {final_score}% for originally {original_score}%.")
     return gate_section, final_score
 
@@ -1662,6 +1666,12 @@ JOB ADVERTISEMENT:
                     if gatekeeper_text:
                         analysis_text = f"{analysis_text}\n\n{gatekeeper_text}"
                         score = gated_score
+                        analysis_text = re.sub(
+                            r"^Match Score:\s*\d+%",
+                            f"Match Score: {score}%",
+                            analysis_text,
+                            count=1,
+                        )
             else:
                 log(f"Could not find JSON in response for job ID {job_id}.")
                 analysis_text = "Failed to find JSON in response.\n\n" + llm_response_text

@@ -156,7 +156,9 @@ function scoreClass(value) {
 }
 
 function primaryScore(job) {
-  return Number(job?.composite_score ?? job?.match_score ?? 0);
+  const match = Number(job?.match_score || 0);
+  const hasFragment = job?.fragment_score !== null && job?.fragment_score !== undefined;
+  return hasFragment ? Math.round((0.65 * match) + (0.35 * Number(job.fragment_score || 0))) : match;
 }
 
 function Score({ value, label = "" }) {
@@ -166,14 +168,15 @@ function Score({ value, label = "" }) {
 }
 
 function ScoreStack({ job, compact = false }) {
-  const composite = Number(job?.composite_score || 0);
   const match = Number(job?.match_score || 0);
   const fragment = Number(job?.fragment_score || 0);
-  const hasComposite = composite > 0;
+  const hasFragment = job?.fragment_score !== null && job?.fragment_score !== undefined;
+  const composite = hasFragment ? Math.round((0.65 * match) + (0.35 * fragment)) : match;
+  const hasComposite = hasFragment && composite > 0;
   const primary = hasComposite ? composite : match;
   if (!primary && !fragment) return <span className="muted">Unscored</span>;
   return (
-    <span className={`score-stack ${compact ? "compact" : ""}`} title={fragment ? `Fragment alignment ${fragment}%` : undefined}>
+    <span className={`score-stack ${compact ? "compact" : ""}`} title={hasFragment ? `Composite = 65% match (${match}) + 35% fragment alignment (${fragment})` : "Final match score"}>
       {primary ? <Score value={primary} label={hasComposite ? "Comp" : "Match"} /> : null}
       {!compact && hasComposite && match ? <span className="score-chip">Match {match}%</span> : null}
       {fragment ? <span className={`score-chip ${scoreClass(fragment)}`}>Frag {fragment}%</span> : null}
@@ -780,14 +783,15 @@ function EvidenceMatches({ items }) {
   );
 }
 
-function AnalysisReport({ text }) {
+function AnalysisReport({ text, matchScore = null }) {
   const report = useMemo(() => parseAnalysisReport(text), [text]);
   if (!String(text || "").trim()) return <p className="empty-inline">No analysis yet. Run Analyze to score this role.</p>;
   if (!report) return <pre className="analysis">{text}</pre>;
 
   const fields = report.fields;
   const triageOnly = !fields["Match Score"] && Boolean(fields["Triage Match Score"]);
-  const score = parseInt(fields["Match Score"] || fields["Triage Match Score"], 10) || 0;
+  const reportScore = parseInt(fields["Match Score"] || fields["Triage Match Score"], 10) || 0;
+  const score = matchScore === null || matchScore === undefined ? reportScore : Number(matchScore);
   const para = (holder, name) => (holder.sections[name]?.text || []).join(" ");
   const bullets = (holder, name) => holder.sections[name]?.bullets || [];
   const gate = report.gate;
@@ -800,7 +804,7 @@ function AnalysisReport({ text }) {
       <header className="analysis-head">
         <span className={`analysis-score ${scoreClass(score)}`}>{score}%</span>
         <div className="analysis-head-meta">
-          <strong>{triageOnly ? "Triage score" : (fields["Fit Level"] || "analysed")}</strong>
+          <strong>{triageOnly ? "Triage score" : `Final match · ${fields["Fit Level"] || "analysed"}`}</strong>
           {fields["Recommended Action"] ? (
             <span className={`action-pill ${actionMeta(fields["Recommended Action"])}`}>{fields["Recommended Action"]}</span>
           ) : null}
@@ -1045,7 +1049,7 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
       <div className="workspace-title">
         <div>
           <h2>{job.title}</h2>
-          <p>{job.company || "Unknown company"} · {job.profile_name || "Lane"} · <ScoreStack job={job} compact /></p>
+          <p>{job.company || "Unknown company"} · {job.profile_name || "Lane"} · <ScoreStack job={job} /></p>
         </div>
         <div className="button-row">
           <button className="secondary" disabled={analyzing} onClick={onAnalyzeJob}>{analyzing ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />} {analyzing ? "Thinking..." : job.ai_analysis ? "Re-analyze" : "Analyze"}</button>
@@ -1068,7 +1072,7 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
                 <div><strong>Analyzing fit...</strong><span>Running triage and full fit analysis if the role clears the threshold.</span></div>
               </div>
             ) : null}
-            <AnalysisReport text={job.ai_analysis} />
+            <AnalysisReport text={job.ai_analysis} matchScore={job.match_score} />
             <h3>Description</h3>
             <p className="description"><LinkedText text={job.description || "No description captured."} /></p>
           </section>
