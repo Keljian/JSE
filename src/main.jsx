@@ -2894,13 +2894,6 @@ function App() {
     loadCampaignPlan();
   }, [view, booting, jobs, loadCampaignPlan]);
 
-  // Auto-load the Hidden Market tab on open and whenever the lane, scope, or
-  // window changes.
-  useEffect(() => {
-    if (view !== "hiddenMarket" || booting) return;
-    loadHiddenMarket();
-  }, [view, booting, loadHiddenMarket]);
-
   useEffect(() => {
     if (view !== "stats" || booting) return undefined;
     let active = true;
@@ -3289,6 +3282,14 @@ function App() {
       setHiddenMarketBusy(false);
     }
   }, [activeProfileId, includeAllProfiles, hiddenMarketDays, invoke, appendLog]);
+
+  // Auto-load the Hidden Market tab on open and whenever the lane, scope, or
+  // window changes. Declared after loadHiddenMarket so the dependency is not in
+  // the temporal dead zone on first render.
+  useEffect(() => {
+    if (view !== "hiddenMarket" || booting) return;
+    loadHiddenMarket();
+  }, [view, booting, loadHiddenMarket]);
 
   const trackHiddenTarget = async (target) => {
     try {
