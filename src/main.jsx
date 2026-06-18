@@ -158,7 +158,7 @@ function scoreClass(value) {
 function primaryScore(job) {
   const match = Number(job?.match_score || 0);
   const hasFragment = job?.fragment_score !== null && job?.fragment_score !== undefined;
-  return hasFragment ? Math.round((0.65 * match) + (0.35 * Number(job.fragment_score || 0))) : match;
+  return hasFragment ? Math.round((0.80 * match) + (0.20 * Number(job.fragment_score || 0))) : match;
 }
 
 function Score({ value, label = "" }) {
@@ -171,12 +171,12 @@ function ScoreStack({ job, compact = false }) {
   const match = Number(job?.match_score || 0);
   const fragment = Number(job?.fragment_score || 0);
   const hasFragment = job?.fragment_score !== null && job?.fragment_score !== undefined;
-  const composite = hasFragment ? Math.round((0.65 * match) + (0.35 * fragment)) : match;
+  const composite = hasFragment ? Math.round((0.80 * match) + (0.20 * fragment)) : match;
   const hasComposite = hasFragment && composite > 0;
   const primary = hasComposite ? composite : match;
   if (!primary && !fragment) return <span className="muted">Unscored</span>;
   return (
-    <span className={`score-stack ${compact ? "compact" : ""}`} title={hasFragment ? `Composite = 65% match (${match}) + 35% fragment alignment (${fragment})` : "Final match score"}>
+    <span className={`score-stack ${compact ? "compact" : ""}`} title={hasFragment ? `Composite = 80% match (${match}) + 20% fragment alignment (${fragment})` : "Final match score"}>
       {primary ? <Score value={primary} label={hasComposite ? "Comp" : "Match"} /> : null}
       {!compact && hasComposite && match ? <span className="score-chip">Match {match}%</span> : null}
       {fragment ? <span className={`score-chip ${scoreClass(fragment)}`}>Frag {fragment}%</span> : null}

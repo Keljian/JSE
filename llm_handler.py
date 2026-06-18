@@ -1472,14 +1472,12 @@ def _format_fragment_context(fragments):
     return "\n".join(lines)
 
 
-def _compose_score(match_score, fragment_score, match_weight=0.65, fragment_weight=0.35):
+def _compose_score(match_score, fragment_score, match_weight=0.80, fragment_weight=0.20):
     """Blend the resume-vs-ad match score with the fragment-bank alignment score.
 
     Tuning rationale: match_score still dominates because it grounds in current
-    truth (this resume vs this ad), but the fragment bank is the long-memory
-    signal about which capabilities actually carry the user's applications.
-    A 35% weight is enough to move borderline jobs into or out of the "worth
-    applying" band without overwhelming the analysis-pass calibration.
+    truth (this resume vs this ad), while the fragment bank remains a secondary
+    long-memory signal about which capabilities carry prior applications.
     """
     if fragment_score is None:
         return int(round(match_score))

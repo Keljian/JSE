@@ -2117,12 +2117,12 @@ def update_job_fragment_alignment(job_id, fragment_score, composite_score, align
 
 
 def calculate_composite_score(match_score, fragment_score):
-    """Canonical score formula: 65% final match + 35% fragment alignment."""
+    """Canonical score formula: 80% final match + 20% fragment alignment."""
     if match_score is None:
         return None
     if fragment_score is None:
         return int(round(float(match_score)))
-    return int(round(0.65 * float(match_score) + 0.35 * float(fragment_score)))
+    return int(round(0.80 * float(match_score) + 0.20 * float(fragment_score)))
 
 
 def recalculate_composite_scores():
