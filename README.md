@@ -81,7 +81,7 @@ The fastest path to a working search. This assumes Node.js, Python 3.11+, and Go
 
 5. **Enable one scraper (~2 min).** Go to **Settings -> General -> Searchers**. Enable a single source with **Available** and **This lane**, and set a low page limit (1–2 pages).
 
-6. **Run a small search (~3 min).** Trigger a search on the active lane and watch the local LLM triage the results. If jobs come in and get scored, your pipeline works end to end.
+6. **Run a small search (~3 min).** Trigger a search on the active lane and then hit Run Analysis to watch the local LLM triage the results. If jobs come in and get scored, your pipeline works end to end.
 
 From here you can add more lanes, more scrapers, and a cloud provider for document generation when you're ready. The rest of this README covers each piece in depth.
 
