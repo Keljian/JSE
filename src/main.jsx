@@ -2196,7 +2196,7 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
               <header><div><span className="provider-mark claude">C</span><div><strong>Claude</strong><small>Anthropic models</small></div></div><div className="provider-card-actions"><span className={`provider-status ${providerStatusClass("claude")}`}><i />{providerStatus("claude")}</span><button type="button" className="secondary ai-test-button" disabled={providerTests.claude?.testing} onClick={() => testProvider("claude")}>{providerTests.claude?.testing ? <Loader2 className="spin" size={12} /> : <Play size={12} />}Test</button></div></header>
               <div className="ai-provider-fields">
                 <label><span>API key</span><input type="password" value={globalForm.claude_api_key || ""} placeholder="Required" onChange={(event) => updateGlobal("claude_api_key", event.target.value)} /></label>
-                <label><span>Model</span><input value={globalForm.claude_model || ""} placeholder="claude-3-5-sonnet-latest" onChange={(event) => updateGlobal("claude_model", event.target.value)} /></label>
+                <label><span>Model</span><input value={globalForm.claude_model || ""} placeholder="claude-sonnet-4-6" onChange={(event) => updateGlobal("claude_model", event.target.value)} /></label>
               </div>
               {providerTests.claude && !providerTests.claude.testing ? <div className={`ai-test-result ${providerTests.claude.ok ? "ok" : "bad"}`}>{providerTests.claude.message}</div> : null}
             </article>
@@ -3396,36 +3396,41 @@ function App() {
         </header>
 
         <section className={view === "settings" ? "filter-bar settings-filter-bar" : "filter-bar"}>
-          <div className="filter-primary">
+          <div className="filter-search-row">
             <label className="profile-filter"><span>Lane</span><select value={activeProfileId} onChange={(event) => setActiveProfileId(Number(event.target.value))}>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
-          {view !== "settings" ? (
-          <>
-          <label className="search-field"><span>Search</span><input value={filters.query} placeholder="Title, company, notes, analysis, lane..." onChange={(event) => updateFilter("query", event.target.value)} /></label>
-          <label className="inline-check all-profiles"><input type="checkbox" checked={includeAllProfiles} onChange={(event) => setIncludeAllProfiles(event.target.checked)} /> Search all lanes</label>
-          </>
-          ) : null}
+            {view !== "settings" ? (
+              <>
+                <label className="search-field"><span>Search</span><input value={filters.query} placeholder="Title, company, notes, analysis, lane..." onChange={(event) => updateFilter("query", event.target.value)} /></label>
+                <label className="filter-chip all-profiles"><input type="checkbox" checked={includeAllProfiles} onChange={(event) => setIncludeAllProfiles(event.target.checked)} /> All lanes</label>
+              </>
+            ) : null}
           </div>
           {view !== "settings" ? (
-          <div className="filter-secondary">
-          <label><span>Stage</span><select value={filters.stage} onChange={(event) => updateFilter("stage", event.target.value)}><option value="">All stages</option>{PIPELINE.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
-          <label><span>Source</span><select value={filters.source} onChange={(event) => updateFilter("source", event.target.value)}><option value="">All</option>{sources.map((source) => <option key={source} value={source}>{source}</option>)}</select></label>
-          <label><span>Location</span><input value={filters.location} placeholder="Melbourne VIC" onChange={(event) => updateFilter("location", event.target.value)} /></label>
-          <div className="mode-filter">
-            <span>Mode</span>
-            <div>
-              {WORK_MODES.map((mode) => (
-                <label key={mode.id} className="inline-check">
-                  <input type="checkbox" checked={(filters.work_modes || []).includes(mode.id)} onChange={(event) => toggleFilterMode(mode.id, event.target.checked)} />
-                  {mode.label}
-                </label>
-              ))}
+            <div className="filter-options-row">
+              <label className="stage-filter"><span>Stage</span><select value={filters.stage} onChange={(event) => updateFilter("stage", event.target.value)}><option value="">All stages</option>{PIPELINE.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
+              <label className="source-filter"><span>Source</span><select value={filters.source} onChange={(event) => updateFilter("source", event.target.value)}><option value="">All sources</option>{sources.map((source) => <option key={source} value={source}>{source}</option>)}</select></label>
+              <label className="location-filter"><span>Location</span><input value={filters.location} placeholder="Melbourne VIC" onChange={(event) => updateFilter("location", event.target.value)} /></label>
+              <label className="score-filter"><span>Min score</span><input type="number" min="0" max="100" value={filters.min_score} placeholder="Any" onChange={(event) => updateFilter("min_score", event.target.value)} /></label>
+              <label className="date-filter"><span>Posted since</span><input type="date" value={filters.date_from} onChange={(event) => updateFilter("date_from", event.target.value)} /></label>
+              <div className="filter-choice-group" role="group" aria-label="Work mode">
+                <span>Work mode</span>
+                <div className="filter-choice-options">
+                  {WORK_MODES.map((mode) => (
+                    <label key={mode.id} className="filter-chip">
+                      <input type="checkbox" checked={(filters.work_modes || []).includes(mode.id)} onChange={(event) => toggleFilterMode(mode.id, event.target.checked)} />
+                      {mode.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="filter-choice-group activity-filter" role="group" aria-label="Activity">
+                <span>Activity</span>
+                <div className="filter-choice-options">
+                  <label className="filter-chip"><input type="checkbox" checked={filters.has_interview} onChange={(event) => updateFilter("has_interview", event.target.checked)} /> Interviews</label>
+                  <label className="filter-chip"><input type="checkbox" checked={filters.has_feedback} onChange={(event) => updateFilter("has_feedback", event.target.checked)} /> Feedback</label>
+                </div>
+              </div>
             </div>
-          </div>
-          <label><span>Score</span><input value={filters.min_score} placeholder="Min" onChange={(event) => updateFilter("min_score", event.target.value)} /></label>
-          <label><span>From</span><input type="date" value={filters.date_from} onChange={(event) => updateFilter("date_from", event.target.value)} /></label>
-          <label className="inline-check filter-toggle"><input type="checkbox" checked={filters.has_interview} onChange={(event) => updateFilter("has_interview", event.target.checked)} /> Interviews</label>
-          <label className="inline-check filter-toggle"><input type="checkbox" checked={filters.has_feedback} onChange={(event) => updateFilter("has_feedback", event.target.checked)} /> Feedback</label>
-          </div>
           ) : null}
         </section>
 

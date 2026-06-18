@@ -252,7 +252,7 @@ def _model_name(settings, provider):
     if provider == "chatgpt":
         return "gpt-4o"
     if provider == "claude":
-        return (settings or {}).get("claude_model") or "claude-3-5-sonnet-latest"
+        return (settings or {}).get("claude_model") or "claude-sonnet-4-6"
     if provider == "gemini":
         return (settings or {}).get("gemini_model") or "gemini-2.5-pro"
     return (settings or {}).get("local_model") or DEFAULT_LOCAL_MODEL

@@ -59,7 +59,7 @@ DEFAULT_PROFILE_SETTINGS = {
     "openai_api_key": "",
     "openai_base_url": "https://api.openai.com/v1",
     "claude_api_key": "",
-    "claude_model": "claude-3-5-sonnet-latest",
+    "claude_model": "claude-sonnet-4-6",
     "gemini_api_key": "",
     "gemini_model": "gemini-3.1-pro-preview",
     "local_base_url": "http://localhost:1234/v1",
@@ -591,6 +591,7 @@ def _role_tokens(value):
 # belt-and-braces so a stale name can never reach an API call.
 RETIRED_GEMINI_MODELS = {"gemini-pro", "gemini-pro-vision"}
 RETIRED_GEMINI_MODEL_PREFIXES = ("gemini-1.0", "gemini-1.5", "gemini-2.0")
+RETIRED_CLAUDE_MODELS = {"claude-3-5-sonnet-latest", "claude-3-5-sonnet-20241022"}
 
 
 def sanitize_gemini_model(value):
@@ -598,6 +599,13 @@ def sanitize_gemini_model(value):
     lowered = model.lower()
     if not model or lowered in RETIRED_GEMINI_MODELS or lowered.startswith(RETIRED_GEMINI_MODEL_PREFIXES):
         return DEFAULT_PROFILE_SETTINGS["gemini_model"]
+    return model
+
+
+def sanitize_claude_model(value):
+    model = _clean(str(value or ""))
+    if not model or model.lower() in RETIRED_CLAUDE_MODELS:
+        return DEFAULT_PROFILE_SETTINGS["claude_model"]
     return model
 
 
@@ -620,6 +628,7 @@ def _settings_from_profile(row):
     settings["boost_terms"] = row["boost_terms"] or ""
     settings["penalty_terms"] = row["penalty_terms"] or ""
     settings["gemini_model"] = sanitize_gemini_model(settings.get("gemini_model"))
+    settings["claude_model"] = sanitize_claude_model(settings.get("claude_model"))
     return settings
 
 
@@ -1050,6 +1059,7 @@ def get_profile_settings(profile_id):
     # the active lane and credentials are not duplicated across profile rows.
     settings.update(_get_global_ai_settings())
     settings["gemini_model"] = sanitize_gemini_model(settings.get("gemini_model"))
+    settings["claude_model"] = sanitize_claude_model(settings.get("claude_model"))
     return settings
 
 
@@ -1177,6 +1187,7 @@ def get_app_settings():
         or settings.get("local_base_url") != DEFAULT_APP_SETTINGS.get("local_base_url")
     ):
         settings.update(_save_local_llm_settings({key: settings.get(key, "") for key in LOCAL_LLM_SETTING_FIELDS}))
+    settings["claude_model"] = sanitize_claude_model(settings.get("claude_model"))
     return settings
 
 
@@ -1209,6 +1220,8 @@ def update_app_settings(settings):
                 sanitized[key] = text
         elif key == "gemini_model":
             sanitized[key] = sanitize_gemini_model(text)
+        elif key == "claude_model":
+            sanitized[key] = sanitize_claude_model(text)
         else:
             sanitized[key] = text
     if local_llm_updates:

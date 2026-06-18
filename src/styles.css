@@ -366,75 +366,51 @@ h3 {
 
 .filter-bar {
   display: grid;
-  grid-template-columns: minmax(340px, 1fr) auto;
-  gap: 10px 14px;
-  align-items: center;
-  padding: 10px 16px;
+  gap: 12px;
+  padding: 12px 16px 14px;
   border-bottom: 1px solid #dce3dd;
-  background: #fff;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .settings-filter-bar {
-  grid-template-columns: 220px;
-  align-items: end;
   padding-top: 8px;
   padding-bottom: 8px;
 }
 
-.filter-primary,
-.filter-secondary {
+.filter-search-row {
   min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 180px minmax(260px, 680px) auto;
   align-items: end;
-  gap: 8px;
+  gap: 12px;
 }
 
-.filter-primary {
-  flex-wrap: wrap;
+.settings-filter-bar .filter-search-row {
+  grid-template-columns: 220px;
 }
 
-.filter-secondary {
-  justify-content: flex-end;
-  gap: 10px 14px;
+.filter-options-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(140px, .9fr) minmax(130px, .8fr) minmax(160px, 1fr) 86px 156px minmax(310px, 1.65fr) minmax(190px, 1fr);
+  align-items: end;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #edf0ed;
 }
 
 .profile-filter {
-  flex: 0 0 150px;
+  min-width: 0;
 }
 
 .search-field {
-  flex: 1 1 300px;
-  min-width: 220px;
+  min-width: 0;
 }
 
 .all-profiles {
-  flex: 0 0 auto;
-  padding-bottom: 1px;
-  white-space: nowrap;
-}
-
-.filter-secondary > label {
-  width: 118px;
-}
-
-.filter-secondary > label:nth-child(2),
-.filter-secondary > label:nth-child(3) {
-  width: 140px;
-}
-
-.filter-secondary > label:nth-last-child(-n + 2) {
-  width: auto;
-}
-
-.filter-secondary > label:nth-child(6) {
-  width: 156px;
-}
-
-.filter-secondary > .filter-toggle {
-  flex: 0 0 118px;
-  width: 118px;
-  padding-bottom: 8px;
+  align-self: end;
+  margin-bottom: 1px;
   white-space: nowrap;
 }
 
@@ -499,24 +475,58 @@ h3 {
   min-height: auto;
 }
 
-.mode-filter {
+.filter-choice-group {
   display: grid;
   gap: 5px;
-  width: 280px;
+  min-width: 0;
 }
 
-.mode-filter > span {
+.filter-choice-group > span {
   color: #56615b;
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
 }
 
-.mode-filter > div,
+.filter-choice-options,
 .mode-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
+  gap: 6px;
+}
+
+.filter-chip {
+  min-height: 33px;
+  display: inline-flex !important;
+  grid-template-columns: none !important;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px !important;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: #34423d;
+  background: var(--surface-alt);
+  cursor: pointer;
+  transition: background var(--ease), border-color var(--ease), color var(--ease);
+}
+
+.filter-chip:hover {
+  border-color: #aebfb4;
+  background: #f4f7f4;
+}
+
+.filter-chip:has(input:checked) {
+  color: var(--accent-strong);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.filter-chip input {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  min-height: auto;
 }
 
 .dashboard {
@@ -3243,12 +3253,12 @@ h3 {
 }
 
 @media (max-width: 1280px) {
-  .filter-bar {
-    grid-template-columns: 1fr;
+  .filter-options-row {
+    grid-template-columns: repeat(5, minmax(120px, 1fr));
   }
 
-  .filter-secondary {
-    justify-content: flex-start;
+  .filter-choice-group {
+    grid-column: span 2;
   }
 
   .metric-grid {
@@ -3305,12 +3315,12 @@ h3 {
     justify-content: flex-start;
   }
 
-  .filter-bar {
-    grid-template-columns: 1fr;
+  .filter-search-row {
+    grid-template-columns: 160px minmax(220px, 1fr) auto;
   }
 
-  .filter-primary {
-    flex-wrap: wrap;
+  .filter-options-row {
+    grid-template-columns: repeat(3, minmax(130px, 1fr));
   }
 
   .memory-head,
@@ -3332,6 +3342,15 @@ h3 {
 }
 
 @media (max-width: 560px) {
+  .filter-search-row,
+  .filter-options-row {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-choice-group {
+    grid-column: auto;
+  }
+
   .status-strip {
     grid-template-columns: auto minmax(0, 1fr);
   }

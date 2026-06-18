@@ -133,7 +133,7 @@ def setup_database():
     _add_column(cursor, "profiles", "openai_api_key", "TEXT")
     _add_column(cursor, "profiles", "openai_base_url", "TEXT DEFAULT 'https://api.openai.com/v1'")
     _add_column(cursor, "profiles", "claude_api_key", "TEXT")
-    _add_column(cursor, "profiles", "claude_model", "TEXT DEFAULT 'claude-3-5-sonnet-latest'")
+    _add_column(cursor, "profiles", "claude_model", "TEXT DEFAULT 'claude-sonnet-4-6'")
     _add_column(cursor, "profiles", "gemini_api_key", "TEXT")
     _add_column(cursor, "profiles", "gemini_model", "TEXT DEFAULT 'gemini-2.5-pro'")
     _add_column(cursor, "profiles", "local_model", "TEXT")
@@ -205,6 +205,16 @@ def setup_database():
            OR gemini_model LIKE 'gemini-2.0%'
         """,
         (DEFAULT_PROFILE_SETTINGS["gemini_model"],),
+    )
+    cursor.execute(
+        """
+        UPDATE profiles
+        SET claude_model = ?
+        WHERE claude_model IS NULL
+           OR TRIM(claude_model) = ''
+           OR LOWER(claude_model) IN ('claude-3-5-sonnet-latest', 'claude-3-5-sonnet-20241022')
+        """,
+        (DEFAULT_PROFILE_SETTINGS["claude_model"],),
     )
 
     cursor.execute(
