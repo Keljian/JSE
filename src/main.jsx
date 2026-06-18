@@ -2010,6 +2010,20 @@ function ScraperPluginBuilder({ profileId, busy, onBuild, onTest }) {
             <strong>{result.plugin?.name || result.manifest?.name}</strong>
             <small>{result.plugin_dir}</small>
           </div>
+          {result.reconnaissance ? (
+            <small className="builder-recon">
+              {result.reconnaissance.fetched
+                ? `Recon: ${result.reconnaissance.jsonld_jobposting ? "JSON-LD JobPosting found · " : ""}${result.reconnaissance.candidate_links} job link(s)${(result.reconnaissance.embedded_state || []).length ? ` · ${result.reconnaissance.embedded_state.join(", ")}` : ""} · ${result.reconnaissance.render_hint || ""}`
+                : `Recon unavailable — generated without live page evidence${result.reconnaissance.error ? ` (${result.reconnaissance.error})` : ""}`}
+            </small>
+          ) : null}
+          {typeof result.verified === "boolean" ? (
+            <small className={result.verified ? "builder-verified ok" : "builder-verified warn"}>
+              {result.verified
+                ? `Verified by dry run after ${result.attempts} attempt(s)`
+                : `Not verified after ${result.attempts} attempt(s) — review and edit before relying on it`}
+            </small>
+          ) : null}
           <button className="secondary" disabled={disabled} onClick={test}><Play size={15} /> Dry run</button>
           {(result.notes || []).length ? <ul>{result.notes.slice(0, 4).map((note, index) => <li key={`${note}-${index}`}>{note}</li>)}</ul> : null}
         </div>

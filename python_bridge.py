@@ -1380,7 +1380,11 @@ def command_scrapers_lane_update(payload):
 def command_scrapers_build(payload):
     import scraper_plugin_builder
 
-    result = scraper_plugin_builder.build_and_install(payload.get("answers") or payload)
+    answers = payload.get("answers") or payload
+    result = scraper_plugin_builder.build_and_install(
+        answers,
+        log_callback=lambda message: emit("log", message=message),
+    )
     profile_id = payload.get("profile_id")
     result["scrapers"] = scraper_plugins.all_plugins(include_disabled=True, profile_id=profile_id)
     return result
