@@ -1810,6 +1810,21 @@ function StatsPanel({ stats, period, onPeriodChange, busy }) {
     .filter((band) => band.band === "78+" || band.band === "70-77")
     .reduce((sum, band) => sum + band.count, 0);
   const conversion = current.applied ? Math.round((current.interviews / current.applied) * 100) : 0;
+  const hm = stats?.hidden_market || null;
+  const hmCurrent = hm?.current || {};
+  const hmPrevious = hm?.previous || {};
+  const hmFunnel = hm ? [
+    { label: "Surfaced", count: hm.funnel?.surfaced || 0 },
+    { label: "Tracked", count: hm.funnel?.tracked || 0 },
+    { label: "Contacted+", count: hm.funnel?.contacted_plus || 0 },
+    { label: "Replied/meeting", count: hm.funnel?.replied_plus || 0 },
+    { label: "Converted", count: hm.funnel?.converted || 0 },
+  ] : [];
+  const hmMix = hm ? [
+    { label: "Recruiter-carried", count: hm.market_mix?.recruiter_carried || 0 },
+    { label: "Direct employer", count: hm.market_mix?.direct || 0 },
+    { label: "Leadership gap", count: hm.market_mix?.leadership_gaps || 0 },
+  ] : [];
 
   return (
     <section className="stats-view">
@@ -1831,6 +1846,8 @@ function StatsPanel({ stats, period, onPeriodChange, busy }) {
             <article className="metric"><span>Applied</span><strong>{current.applied || 0}</strong><StatDelta current={current.applied} previous={previous.applied} /></article>
             <article className="metric"><span>Interviews</span><strong>{current.interviews || 0}</strong><StatDelta current={current.interviews} previous={previous.interviews} /></article>
             <article className="metric"><span>Offers</span><strong>{current.offers || 0}</strong><StatDelta current={current.offers} previous={previous.offers} /></article>
+            {hm ? <article className="metric"><span>Outreach touches</span><strong>{hmCurrent.touchpoints || 0}</strong><StatDelta current={hmCurrent.touchpoints} previous={hmPrevious.touchpoints} /></article> : null}
+            {hm ? <article className="metric"><span>Leads converted</span><strong>{hmCurrent.conversions || 0}</strong><StatDelta current={hmCurrent.conversions} previous={hmPrevious.conversions} /></article> : null}
           </div>
 
           <div className="stats-grid">
@@ -1903,6 +1920,32 @@ function StatsPanel({ stats, period, onPeriodChange, busy }) {
                 </p>
               ) : null}
             </section>
+
+            {hm ? (
+              <section className="dash-section">
+                <h2><Radar size={18} /> Hidden Market</h2>
+                <h3>Outreach funnel</h3>
+                <StatBars items={hmFunnel} labelKey="label" countKey="count" />
+                <div className="stats-kv">
+                  <div><span>Targets tracked</span><strong>{hm.coverage?.tracked || 0} / {hm.coverage?.surfaced || 0}</strong></div>
+                  <div><span>Response rate</span><strong>{hm.funnel?.contacted_plus ? `${hm.response_rate}%` : "—"}</strong></div>
+                  <div><span>Conversion rate</span><strong>{hm.funnel?.tracked ? `${hm.conversion_rate}%` : "—"}</strong></div>
+                  <div><span>Follow-ups due</span><strong>{hm.coverage?.due_followups || 0}</strong></div>
+                </div>
+                {hm.market_mix?.targets ? (
+                  <>
+                    <h3>Market mix (last 60 days)</h3>
+                    <StatBars items={hmMix} labelKey="label" countKey="count" />
+                  </>
+                ) : null}
+                {(hm.reads || []).length ? (
+                  <>
+                    <h3>Read on outreach</h3>
+                    {(hm.reads || []).map((item) => <p key={item} className="settings-hint">{item}</p>)}
+                  </>
+                ) : null}
+              </section>
+            ) : null}
           </div>
         </>
       )}
@@ -3816,7 +3859,7 @@ function App() {
       <aside className="nav-rail">
         <div className="brand">
           <BriefcaseBusiness />
-          <div><strong>Job Assistant</strong><span>Application ATS</span></div>
+          <div><strong>JSE</strong><span>Application ATS</span></div>
         </div>
         <button className={view === "dashboard" ? "active nav-btn" : "nav-btn"} onClick={() => setView("dashboard")}><BarChart3 size={18} /> Dashboard</button>
         <button className={view === "campaign" ? "active nav-btn" : "nav-btn"} onClick={() => setView("campaign")}><Target size={18} /> Campaign</button>

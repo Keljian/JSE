@@ -763,6 +763,7 @@ def setup_database():
             next_step_date TEXT,
             touchpoints TEXT,
             converted_job_id INTEGER,
+            converted_at TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now')),
             UNIQUE(profile_id, target_type, target_key),
@@ -781,6 +782,7 @@ def setup_database():
     _add_column(cursor, "application_kits", "review_json", "TEXT")
     _add_column(cursor, "application_kits", "review_updated_at", "TEXT")
     _add_column(cursor, "application_kits", "additional_candidate_context", "TEXT")
+    _add_column(cursor, "hidden_market_leads", "converted_at", "TEXT")
 
     # Typed fragment fields the LLM produces but the original schema dropped.
     # `keywords` drive activation, `anti_keywords` block misuse, `status`

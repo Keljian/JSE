@@ -1888,6 +1888,15 @@ def command_stats_summary(payload):
         stats["recommendations"] = report.get("recommendations") or []
     except Exception as exc:
         emit("log", message=f"Conversion calibration unavailable: {exc}")
+    # Hidden-market outreach performance (funnel, rates, market mix, activity).
+    try:
+        stats["hidden_market"] = db.get_hidden_market_stats(
+            payload.get("profile_id"),
+            bool(payload.get("include_all_profiles")),
+            days,
+        )
+    except Exception as exc:
+        emit("log", message=f"Hidden-market stats unavailable: {exc}")
     return stats
 
 

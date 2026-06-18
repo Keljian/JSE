@@ -1079,6 +1079,10 @@ h3 {
   gap: 2px;
 }
 
+.hidden-market-view .campaign-actions {
+  align-items: flex-end;
+}
+
 .gate-chip.warn {
   background: #fbf0dc;
   border-color: #e9d2a3;

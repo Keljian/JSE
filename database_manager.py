@@ -5033,13 +5033,110 @@ def convert_hidden_market_lead_to_job(lead_id):
         conn.execute(
             """
             UPDATE hidden_market_leads
-            SET status = 'done', outcome = 'converted', converted_job_id = ?, updated_at = datetime('now')
+            SET status = 'done', outcome = 'converted', converted_job_id = ?,
+                converted_at = ?, updated_at = datetime('now')
             WHERE id = ?
             """,
-            (job_id, lead_id),
+            (job_id, datetime.now().isoformat(timespec="seconds"), lead_id),
         )
         conn.commit()
     return {"job_id": job_id, "lead": get_hidden_market_lead(lead_id), "already": False}
+
+
+def get_hidden_market_stats(profile_id=None, include_all_profiles=False, days=7):
+    """Outreach performance for the Stats tab: a snapshot funnel + effectiveness
+    rates and market mix, plus period-over-period activity (new leads,
+    touchpoints, conversions) for the metric-card deltas.
+
+    All hidden-market timestamps (created_at, touchpoints[].at, converted_at) are
+    written as local-time isoformat with seconds precision, so lexicographic
+    string comparison against the window bounds is correct."""
+    days = max(1, int(days or 7))
+    leads = list_hidden_market_leads(profile_id, include_all_profiles)
+    intel = get_hidden_market_intel(profile_id, include_all_profiles, days=60)
+
+    now = datetime.now()
+    cur_start = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    prev_start = (now - timedelta(days=days * 2)).isoformat(timespec="seconds")
+    today = now.date().isoformat()
+
+    replied_outcomes = {"replied", "meeting", "converted"}
+    status_counts = {status: 0 for status in HIDDEN_MARKET_STATUSES}
+    contacted_plus = 0
+    replied_plus = 0
+    converted_total = 0
+    due_followups = 0
+    current = {"new_leads": 0, "touchpoints": 0, "conversions": 0}
+    previous = {"new_leads": 0, "touchpoints": 0, "conversions": 0}
+
+    def bump(bucket_current, bucket_previous, timestamp, key):
+        if not timestamp:
+            return
+        if timestamp >= cur_start:
+            bucket_current[key] += 1
+        elif prev_start <= timestamp < cur_start:
+            bucket_previous[key] += 1
+
+    for lead in leads:
+        status = lead.get("status") or "todo"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if status != "todo" or lead.get("touchpoints"):
+            contacted_plus += 1
+        outcome = lead.get("outcome") or ""
+        if outcome in replied_outcomes:
+            replied_plus += 1
+        if outcome == "converted":
+            converted_total += 1
+        next_step = lead.get("next_step_date")
+        if next_step and status != "done" and next_step <= today:
+            due_followups += 1
+
+        bump(current, previous, lead.get("created_at"), "new_leads")
+        bump(current, previous, lead.get("converted_at"), "conversions")
+        for touch in lead.get("touchpoints") or []:
+            bump(current, previous, touch.get("at"), "touchpoints")
+
+    tracked = len(leads)
+    targets = sum(len(intel.get(section, [])) for section in ("recruiters", "direct_employers", "leadership_gaps"))
+    market_mix = {
+        "recruiter_carried": len(intel.get("recruiters", [])),
+        "direct": len(intel.get("direct_employers", [])),
+        "leadership_gaps": len(intel.get("leadership_gaps", [])),
+        "targets": targets,
+    }
+    response_rate = round(replied_plus / contacted_plus * 100) if contacted_plus else 0
+    conversion_rate = round(converted_total / tracked * 100) if tracked else 0
+
+    reads = []
+    if targets and tracked == 0:
+        reads.append(f"{targets} hidden-market targets surfaced but none tracked — the hidden market is untouched.")
+    elif targets and tracked / targets < 0.25:
+        reads.append(f"Only {tracked} of {targets} surfaced targets are tracked — most of the hidden market is untouched.")
+    if contacted_plus >= 5 and replied_plus == 0:
+        reads.append(f"{contacted_plus} targets contacted with no replies yet — try a different angle or channel.")
+    if due_followups:
+        reads.append(f"{due_followups} outreach follow-up{'s' if due_followups != 1 else ''} due now.")
+    if converted_total:
+        reads.append(f"{converted_total} lead{'s' if converted_total != 1 else ''} converted to applications.")
+
+    return {
+        "window_days": days,
+        "funnel": {
+            "surfaced": targets,
+            "tracked": tracked,
+            "contacted_plus": contacted_plus,
+            "replied_plus": replied_plus,
+            "converted": converted_total,
+        },
+        "status_counts": status_counts,
+        "response_rate": response_rate,
+        "conversion_rate": conversion_rate,
+        "coverage": {"surfaced": targets, "tracked": tracked, "due_followups": due_followups},
+        "market_mix": market_mix,
+        "current": current,
+        "previous": previous,
+        "reads": reads,
+    }
 
 
 def get_activity_stats(profile_id=None, include_all_profiles=False, days=7):
