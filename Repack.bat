@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo Repacking Job Application Assistant (fast path: UI build + package)...
+echo Repacking JSE unsigned beta (fast path: UI build + package)...
 echo.
 
 if not exist "build\python\python.exe" (

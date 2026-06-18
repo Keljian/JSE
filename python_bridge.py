@@ -663,6 +663,7 @@ def command_app_init(_payload):
     db.reject_low_match_jobs(50, log_callback=lambda message: emit("log", message=message))
     db.retire_expired_pipeline_jobs(lambda message: emit("log", message=message))
     profiles = [row_to_dict(row) for row in db.get_all_profiles()]
+    has_existing_setup = any(str(profile.get("resume_path") or "").strip() for profile in profiles)
     active_profile_id = profiles[0]["id"] if profiles else 1
     search_sources = scraper_plugins.source_names(include_disabled=False)
     return {
@@ -671,6 +672,7 @@ def command_app_init(_payload):
         "sources": search_sources,
         "search_sources": search_sources,
         "app_settings": app_settings,
+        "needs_onboarding": not bool(app_settings.get("onboarding_completed")) and not has_existing_setup,
     }
 
 

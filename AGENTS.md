@@ -1,4 +1,4 @@
-# AI Job Application Assistant - Project Context
+# JSE - Project Context
 
 ## Overview
 

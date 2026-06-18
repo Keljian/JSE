@@ -25,6 +25,8 @@ DEFAULT_APP_SETTINGS = {
     "settings_dir": str(DATA_DIR),
     "applications_dir": str(APP_ROOT / "applications"),
     "older_applications_dir": str(APP_ROOT / "older_applications"),
+    "onboarding_completed": False,
+    "onboarding_version": 0,
 }
 
 PIPELINE_STAGES = [
@@ -1245,12 +1247,25 @@ def get_app_setting(key, default=None):
 
 
 def update_app_settings(settings):
-    allowed = {"applications_dir", "older_applications_dir", *GLOBAL_AI_SETTING_FIELDS}
+    allowed = {
+        "applications_dir", "older_applications_dir",
+        "onboarding_completed", "onboarding_version",
+        *GLOBAL_AI_SETTING_FIELDS,
+    }
     defaults = _app_setting_defaults()
     sanitized = {}
     local_llm_updates = {}
     for key, value in (settings or {}).items():
         if key not in allowed:
+            continue
+        if key == "onboarding_completed":
+            sanitized[key] = bool(value)
+            continue
+        if key == "onboarding_version":
+            try:
+                sanitized[key] = max(0, int(value or 0))
+            except (TypeError, ValueError):
+                sanitized[key] = 0
             continue
         text = str(value or "").strip()
         if not text:

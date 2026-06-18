@@ -1,6 +1,6 @@
 {
-  "name": "job-application-assistant",
-  "version": "1.0.0",
+  "name": "jse",
+  "version": "1.0.0-beta.1",
   "description": "Desktop assistant for job searching, analysis, and application document generation.",
   "author": "",
   "license": "MIT",
@@ -34,7 +34,8 @@
   },
   "build": {
     "appId": "com.jse.jobapplicationassistant",
-    "productName": "Job Application Assistant",
+    "productName": "JSE",
+    "artifactName": "JSE-${version}-${arch}-unsigned-beta.${ext}",
     "directories": {
       "output": "release"
     },
@@ -47,6 +48,8 @@
       "build/python/**/*",
       "*.py",
       "LICENSE",
+      "README.md",
+      "INSTALL_WINDOWS.md",
       "requirements.txt",
       "search_terms.json"
     ],
@@ -83,10 +86,14 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Job Application Assistant"
+      "shortcutName": "JSE",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "license": "LICENSE"
     }
   }
 }

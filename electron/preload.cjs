@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("jobAssistant", {
   invoke: (command, payload) => ipcRenderer.invoke("bridge:invoke", command, payload),
+  getPrerequisites: () => ipcRenderer.invoke("system:prerequisites"),
   chooseResume: () => ipcRenderer.invoke("dialog:resume"),
   chooseTemplate: () => ipcRenderer.invoke("dialog:template"),
   chooseScraperPlugin: () => ipcRenderer.invoke("dialog:scraperPlugin"),

@@ -262,7 +262,7 @@ if __name__ == "__main__":
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    data = os.environ.get("JSE_DATA_DIR") or os.path.join(os.environ["APPDATA"], "JobApplicationAssistant")
+    data = os.environ.get("JSE_DATA_DIR") or os.path.join(os.environ["APPDATA"], "JSE")
     conn = sqlite3.connect(os.path.join(data, "job_applications.db"))
     conn.row_factory = sqlite3.Row
     # render a real resume + a real cover letter from the corpus to show formatting

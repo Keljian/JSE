@@ -22,7 +22,7 @@ const apiUrl = "https://api.github.com/repos/astral-sh/python-build-standalone/r
 
 https.get(apiUrl, {
   headers: {
-    "User-Agent": "job-application-assistant-installer",
+    "User-Agent": "jse-installer",
     "Accept": "application/vnd.github+json"
   }
 }, (response) => {

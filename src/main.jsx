@@ -59,6 +59,21 @@ const WORK_MODES = [
   { id: "onsite", label: "On site" }
 ];
 
+const LOCAL_AI_RUNTIMES = {
+  lmstudio: {
+    label: "LM Studio",
+    downloadUrl: "https://lmstudio.ai/download",
+    baseUrl: "http://localhost:1234/v1",
+    model: "",
+  },
+  ollama: {
+    label: "Ollama",
+    downloadUrl: "https://ollama.com/download/windows",
+    baseUrl: "http://localhost:11434/v1",
+    model: "qwen2.5:7b",
+  },
+};
+
 function normalizeStage(stage, status) {
   const value = String(stage || status || "new").toLowerCase();
   const mapping = {
@@ -450,6 +465,92 @@ function AnalysisModal({ activeProfileId, busy, onRun, onClose }) {
         <button disabled={busy} onClick={() => onRun({ profile_id: activeProfileId, include_all_profiles: includeAllProfiles, stage, re_analyze: false })}><Sparkles size={16} /> Run analysis</button>
       </footer>
     </Modal>
+  );
+}
+
+function OnboardingWizard({ prerequisites, profile, busy, onComplete, onSkip }) {
+  const [step, setStep] = useState(0);
+  const [name, setName] = useState(profile?.name === "General" ? "My search" : (profile?.name || "My search"));
+  const [resumePath, setResumePath] = useState(profile?.resume_path || "");
+  const [error, setError] = useState("");
+  const [localRuntime, setLocalRuntime] = useState("lmstudio");
+  const chromeReady = Boolean(prerequisites?.chrome?.found);
+  const pythonReady = Boolean(prerequisites?.python?.found);
+
+  const chooseResume = async () => {
+    const selected = await window.jobAssistant.chooseResume?.();
+    if (selected) setResumePath(selected);
+  };
+  const finish = async () => {
+    setError("");
+    try {
+      const runtime = LOCAL_AI_RUNTIMES[localRuntime];
+      await onComplete({
+        name: name.trim() || "My search",
+        resume_path: resumePath.trim(),
+        local_base_url: runtime.baseUrl,
+        local_model: runtime.model,
+      });
+    } catch (nextError) {
+      setError(toErrorMessage(nextError));
+    }
+  };
+
+  return (
+    <div className="modal-backdrop onboarding-backdrop" role="presentation">
+      <section className="modal onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+        <div className="onboarding-brand"><BriefcaseBusiness size={24} /><strong>JSE setup</strong><span>Step {step + 1} of 3</span></div>
+        {step === 0 ? (
+          <>
+            <h2 id="onboarding-title">Welcome to JSE</h2>
+            <p className="modal-copy">Let’s check the two things JSE needs before you start searching.</p>
+            <div className="prerequisite-list">
+              <article className={pythonReady ? "prerequisite-card ready" : "prerequisite-card warning"}>
+                {pythonReady ? <Check /> : <X />}<div><strong>JSE runtime</strong><span>{pythonReady ? "Bundled and ready" : "Runtime not found — reinstall this build"}</span></div>
+              </article>
+              <article className={chromeReady ? "prerequisite-card ready" : "prerequisite-card warning"}>
+                {chromeReady ? <Check /> : <ExternalLink />}<div><strong>Google Chrome</strong><span>{chromeReady ? "Detected and ready for job searches" : "Required by browser-based searchers"}</span></div>
+                {!chromeReady ? <button className="secondary" onClick={() => window.jobAssistant.openExternal("https://www.google.com/chrome/")}>Get Chrome</button> : null}
+              </article>
+            </div>
+            {prerequisites?.unsigned_build ? <div className="unsigned-note"><strong>Unsigned beta</strong><span>Windows may show SmartScreen. If you downloaded JSE from the official release, choose <b>More info</b>, then <b>Run anyway</b>. Never disable SmartScreen globally.</span></div> : null}
+          </>
+        ) : null}
+        {step === 1 ? (
+          <>
+            <h2 id="onboarding-title">Set up your first search lane</h2>
+            <p className="modal-copy">JSE keeps each kind of role in its own lane. Your base resume anchors matching and document generation.</p>
+            <label className="field"><span>Lane name</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Product leadership" /></label>
+            <label className="field"><span>Base resume</span><div className="resume-picker"><input value={resumePath} readOnly placeholder="Choose a .docx resume" /><button className="secondary" onClick={chooseResume}><FolderOpen size={16} /> Choose</button></div></label>
+            <p className="onboarding-privacy">Your database, resumes, templates, and generated applications stay inside the JSE installation folder. Nothing is uploaded unless you configure an AI provider or open an employer site.</p>
+          </>
+        ) : null}
+        {step === 2 ? (
+          <>
+            <h2 id="onboarding-title">Choose your local AI</h2>
+            <p className="modal-copy">JSE uses a local model for private, high-volume job matching. Choose and install <strong>one</strong> runtime below—you do not need both—then download a chat/instruct model inside it and start its local server.</p>
+            <div className="local-runtime-options">
+              {Object.entries(LOCAL_AI_RUNTIMES).map(([id, runtime]) => (
+                <article key={id} className={localRuntime === id ? "local-runtime-card selected" : "local-runtime-card"}>
+                  <label><input type="radio" name="local-runtime" checked={localRuntime === id} onChange={() => setLocalRuntime(id)} /><strong>{runtime.label}</strong></label>
+                  <span>{id === "lmstudio" ? "Friendly desktop UI; load a model and start the Local Server." : "Lightweight service; install, then pull and run a model."}</span>
+                  <button className="secondary" onClick={() => window.jobAssistant.openExternal(runtime.downloadUrl)}><ExternalLink size={15} /> Install {runtime.label}</button>
+                </article>
+              ))}
+            </div>
+            <div className="onboarding-ready"><Check size={32} /><div><strong>Then test the connection in Settings</strong><span>The preset endpoint will be saved now. The first browser search can also take longer while Selenium prepares Chrome’s matching driver.</span></div></div>
+            <div className="install-location"><span>Local data location</span><code>{prerequisites?.data_dir || "JSE/settings"}</code></div>
+            {error ? <p className="settings-alert">{error}</p> : null}
+          </>
+        ) : null}
+        <div className="modal-actions onboarding-actions">
+          <button className="ghost" disabled={busy} onClick={onSkip}>Set up later</button>
+          <div />
+          {step > 0 ? <button className="secondary" disabled={busy} onClick={() => setStep((value) => value - 1)}>Back</button> : null}
+          {step < 2 ? <button disabled={step === 1 && !resumePath.trim()} onClick={() => setStep((value) => value + 1)}>Continue <ChevronRight size={16} /></button> : <button disabled={busy || !resumePath.trim()} onClick={finish}>{busy ? <Loader2 className="spin" size={16} /> : <Check size={16} />} Finish setup</button>}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -2535,6 +2636,18 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
                 <label><span>Model</span><input value={globalForm.local_model || ""} placeholder="Loaded model name" onChange={(event) => updateGlobal("local_model", event.target.value)} /></label>
                 <label><span>API key</span><input type="password" value={globalForm.local_api_key || ""} placeholder="Optional" onChange={(event) => updateGlobal("local_api_key", event.target.value)} /></label>
               </div>
+              <div className="local-ai-quickstart">
+                <span>Choose one local model server:</span>
+                {Object.entries(LOCAL_AI_RUNTIMES).map(([id, runtime]) => (
+                  <div key={id}>
+                    <button type="button" className="ghost" onClick={() => {
+                      updateGlobal("local_base_url", runtime.baseUrl);
+                      if (runtime.model) updateGlobal("local_model", runtime.model);
+                    }}>Use {runtime.label} preset</button>
+                    <button type="button" className="ghost" onClick={() => window.jobAssistant.openExternal(runtime.downloadUrl)}><ExternalLink size={13} /> Install</button>
+                  </div>
+                ))}
+              </div>
               {providerTests.local && !providerTests.local.testing ? <div className={`ai-test-result ${providerTests.local.ok ? "ok" : providerTests.local.warning ? "warning" : "bad"}`}>{providerTests.local.message}</div> : null}
             </article>
             <article className={`ai-provider-card ${providerIsUsed("gemini") ? "in-use" : ""}`}>
@@ -2804,6 +2917,9 @@ function App() {
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [campaignBusy, setCampaignBusy] = useState(false);
   const [dialog, setDialog] = useState(null);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
+  const [prerequisites, setPrerequisites] = useState(null);
   const refreshRequestId = useRef(0);
 
   // Host for appConfirm / appPrompt / appNotice (replaces Electron-breaking
@@ -2890,13 +3006,15 @@ function App() {
   }, [activeProfileId, includeAllProfiles, invoke, requestPayload]);
 
   useEffect(() => {
-    invoke("app:init")
-      .then((data) => {
+    Promise.all([invoke("app:init"), window.jobAssistant.getPrerequisites?.() || Promise.resolve(null)])
+      .then(([data, prerequisiteData]) => {
         setProfiles(data.profiles);
         setActiveProfileId(data.active_profile_id);
         setSources(Array.from(new Set(data.sources || [])));
         setSearchSources(Array.from(new Set(data.search_sources || data.sources || [])));
         setGlobalSettings(data.app_settings || {});
+        setPrerequisites(prerequisiteData);
+        setOnboardingOpen(Boolean(data.needs_onboarding));
       })
       .catch((error) => appendLog(`Startup failed: ${toErrorMessage(error)}`))
       .finally(() => setBooting(false));
@@ -3691,6 +3809,36 @@ function App() {
     appendLog("Global settings saved.");
   };
 
+  const finishOnboarding = async ({ name, resume_path, local_base_url, local_model }) => {
+    setOnboardingBusy(true);
+    try {
+      const data = await invoke("profiles:update", {
+        profile_id: activeProfileId,
+        name,
+        resume_path,
+      });
+      setProfiles(data.profiles || []);
+      const saved = await invoke("settings:globalUpdate", { settings: {
+        onboarding_completed: true,
+        onboarding_version: 1,
+        local_base_url,
+        local_model,
+      } });
+      setGlobalSettings(saved.settings || {});
+      setOnboardingOpen(false);
+      appendLog("First-run setup complete.");
+      await refresh(activeProfileId);
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const skipOnboarding = async () => {
+    await invoke("settings:globalUpdate", { settings: { onboarding_completed: true, onboarding_version: 1 } });
+    setOnboardingOpen(false);
+    appendLog("First-run setup skipped. You can finish configuration in Settings.");
+  };
+
   const saveProfile = async (profileUpdates) => {
     const data = await invoke("profiles:update", {
       profile_id: activeProfileId,
@@ -3856,6 +4004,7 @@ function App() {
 
   return (
     <main className="ats-shell">
+      {onboardingOpen ? <OnboardingWizard prerequisites={prerequisites} profile={activeProfile} busy={onboardingBusy} onComplete={finishOnboarding} onSkip={skipOnboarding} /> : null}
       <aside className="nav-rail">
         <div className="brand">
           <BriefcaseBusiness />

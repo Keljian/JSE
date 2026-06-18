@@ -19,7 +19,7 @@ let workerSeq = 0;
 let workerRestartTimer = null;
 const pendingRequests = new Map();
 const userDataDir = path.join(rootDir, "settings");
-const cacheDir = path.join(app.getPath("temp"), `JobApplicationAssistantCache-${process.pid}`);
+const cacheDir = path.join(app.getPath("temp"), `JSECache-${process.pid}`);
 
 app.setPath("userData", userDataDir);
 app.setPath("cache", cacheDir);
@@ -42,6 +42,20 @@ function getPythonCommand() {
     }
   }
   return process.env.PYTHON || "python";
+}
+
+function detectChrome() {
+  const candidates = process.platform === "win32"
+    ? [
+        process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+        process.env["PROGRAMFILES(X86)"] && path.join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+        process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe")
+      ]
+    : process.platform === "darwin"
+      ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+      : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
+  const chromePath = candidates.filter(Boolean).find((candidate) => fs.existsSync(candidate));
+  return { found: Boolean(chromePath), path: chromePath || "" };
 }
 
 function copySeedItem(source, destination) {
@@ -227,6 +241,14 @@ function invokeViaWorker(command, payload = {}) {
 }
 
 ipcMain.handle("bridge:invoke", (_event, command, payload) => invokeViaWorker(command, payload));
+ipcMain.handle("system:prerequisites", () => ({
+  app_version: app.getVersion(),
+  packaged: app.isPackaged,
+  unsigned_build: true,
+  data_dir: userDataDir,
+  chrome: detectChrome(),
+  python: { found: fs.existsSync(getPythonCommand()), path: getPythonCommand() }
+}));
 
 ipcMain.handle("dialog:resume", async () => {
   const result = await dialog.showOpenDialog({

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "Building Job Application Assistant macOS redistributables..."
+echo "Building JSE macOS redistributables..."
 
 export CSC_IDENTITY_AUTO_DISCOVERY=false
 
