@@ -12,7 +12,11 @@ import {
   FileText,
   Filter,
   FolderOpen,
+  ArrowRightLeft,
+  CalendarClock,
   KanbanSquare,
+  Lightbulb,
+  ListTodo,
   Loader2,
   NotebookTabs,
   Play,
@@ -1427,7 +1431,7 @@ function CampaignSection({ title, icon, items, empty, children }) {
   );
 }
 
-function HiddenMarketTarget({ name, meta, detail, titles, chip }) {
+function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack, onStrategy, strategy, strategyBusy }) {
   return (
     <article className="hidden-target">
       <div>
@@ -1437,7 +1441,232 @@ function HiddenMarketTarget({ name, meta, detail, titles, chip }) {
       </div>
       {detail ? <p><LinkedText text={detail} /></p> : null}
       {titles?.length ? <small>{titles.join(" · ")}</small> : null}
+      {(onTrack || onStrategy) ? (
+        <div className="hidden-target-actions">
+          {onTrack ? (
+            <button className="secondary" disabled={tracked} onClick={onTrack}>
+              {tracked ? <><Check size={14} /> Tracking</> : <><Plus size={14} /> Track</>}
+            </button>
+          ) : null}
+          {onStrategy ? (
+            <button className="secondary" disabled={strategyBusy} onClick={onStrategy}>
+              {strategyBusy ? <Loader2 className="spin" size={14} /> : <Lightbulb size={14} />} AI angle
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {strategy ? <div className="hm-strategy"><LinkedText text={strategy} /></div> : null}
     </article>
+  );
+}
+
+const HM_STATUS_LABELS = { todo: "To do", contacted: "Contacted", awaiting: "Awaiting reply", done: "Done" };
+const HM_OUTCOME_LABELS = {
+  "": "—",
+  replied: "Replied",
+  meeting: "Meeting booked",
+  no_response: "No response",
+  dead_end: "Dead end",
+  converted: "Converted",
+};
+const HM_TYPE_LABELS = { recruiter: "Recruiter", direct_employer: "Direct employer", leadership_gap: "Leadership gap" };
+
+function HiddenMarketLeadCard({ lead, onUpdate, onTouch, onConvert, onDelete, onOpenJob }) {
+  const [note, setNote] = useState("");
+  const [touchStatus, setTouchStatus] = useState(lead.status === "done" ? "contacted" : lead.status || "contacted");
+  const [touchDate, setTouchDate] = useState("");
+  const [showLog, setShowLog] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const touchpoints = lead.touchpoints || [];
+  const isDone = lead.status === "done";
+
+  const logTouch = async () => {
+    if (!note.trim()) return;
+    setBusy(true);
+    try {
+      await onTouch(lead.id, { note: note.trim(), status: touchStatus, next_step_date: touchDate || null });
+      setNote(""); setTouchDate("");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <article className={`hm-lead ${isDone ? "done" : ""}`}>
+      <div className="hm-lead-head">
+        <div className="hm-lead-title">
+          <strong>{lead.target_name}</strong>
+          <span className="hm-chip soft">{HM_TYPE_LABELS[lead.target_type] || lead.target_type}</span>
+          {lead.outcome ? <span className={`hm-chip ${lead.outcome === "converted" ? "good" : ""}`}>{HM_OUTCOME_LABELS[lead.outcome] || lead.outcome}</span> : null}
+        </div>
+        <div className="hm-lead-controls">
+          <select value={lead.status || "todo"} aria-label="Lead status" onChange={(event) => onUpdate(lead.id, { status: event.target.value })}>
+            {Object.entries(HM_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+          {isDone ? (
+            <select value={lead.outcome || ""} aria-label="Outcome" onChange={(event) => onUpdate(lead.id, { outcome: event.target.value })}>
+              {Object.entries(HM_OUTCOME_LABELS).map(([value, label]) => <option key={value || "none"} value={value}>{label}</option>)}
+            </select>
+          ) : null}
+        </div>
+      </div>
+
+      {lead.action ? <p className="hm-lead-action">{lead.action}</p> : null}
+      {[lead.contact_person, lead.contact_email, lead.contact_phone].filter(Boolean).length ? (
+        <p className="hm-lead-contact"><LinkedText text={[lead.contact_person, lead.contact_email, lead.contact_phone].filter(Boolean).join(" · ")} /></p>
+      ) : null}
+
+      <label className="hm-lead-notes"><span>Notes</span>
+        <textarea rows={2} defaultValue={lead.notes || ""} placeholder="Running notes about this lead..."
+          onBlur={(event) => { if ((event.target.value || "") !== (lead.notes || "")) onUpdate(lead.id, { notes: event.target.value }); }} />
+      </label>
+
+      {touchpoints.length ? (
+        <button className="hm-log-toggle" onClick={() => setShowLog((value) => !value)}>
+          <ChevronRight size={13} className={showLog ? "rot90" : ""} /> {touchpoints.length} touchpoint{touchpoints.length === 1 ? "" : "s"}
+        </button>
+      ) : null}
+      {showLog ? (
+        <ul className="hm-touchlog">
+          {touchpoints.map((tp, index) => (
+            <li key={index}>
+              <time>{formatDate(tp.at)}</time>
+              {tp.status ? <span className="hm-chip soft">{HM_STATUS_LABELS[tp.status] || tp.status}</span> : null}
+              <span>{tp.note}</span>
+              {tp.next_step_date ? <em>next: {formatDate(tp.next_step_date)}</em> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {!isDone ? (
+        <div className="hm-touch-form">
+          <input value={note} placeholder="Log a touchpoint (what happened)..." onChange={(event) => setNote(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") logTouch(); }} />
+          <select value={touchStatus} aria-label="Touch status" onChange={(event) => setTouchStatus(event.target.value)}>
+            <option value="contacted">Contacted</option>
+            <option value="awaiting">Awaiting reply</option>
+          </select>
+          <input type="date" value={touchDate} aria-label="Next step date" title="Next step date" onChange={(event) => setTouchDate(event.target.value)} />
+          <button className="secondary" disabled={busy || !note.trim()} onClick={logTouch}>{busy ? <Loader2 className="spin" size={14} /> : <Send size={14} />} Log</button>
+        </div>
+      ) : null}
+
+      <div className="hm-lead-footer">
+        {lead.next_step_date && !isDone ? <span className="hm-next"><CalendarClock size={13} /> next {formatDate(lead.next_step_date)}</span> : <span />}
+        <div className="hm-lead-actions">
+          {lead.converted_job_id ? (
+            <button className="secondary" onClick={() => onOpenJob(lead.converted_job_id)}><ExternalLink size={14} /> Open job</button>
+          ) : (
+            <button className="secondary" onClick={() => onConvert(lead)}><ArrowRightLeft size={14} /> Convert to applied</button>
+          )}
+          <button className="icon danger" aria-label="Delete lead" title="Delete lead" onClick={() => onDelete(lead)}><Trash2 size={14} /></button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack, onStrategy, onLeadUpdate, onTouch, onConvert, onDeleteLead, onOpenJob }) {
+  const [strategies, setStrategies] = useState({});
+  const [strategyBusy, setStrategyBusy] = useState("");
+  const intel = data?.intel || {};
+  const overview = data?.overview || {};
+  const leads = data?.leads || [];
+  const counts = overview.status_counts || {};
+
+  const runStrategy = async (target) => {
+    const key = target.target_key || target.name;
+    setStrategyBusy(key);
+    try {
+      const text = await onStrategy(target);
+      if (text) setStrategies((current) => ({ ...current, [key]: text }));
+    } finally { setStrategyBusy(""); }
+  };
+
+  const renderTarget = (item, extra) => (
+    <HiddenMarketTarget
+      key={item.target_key || item.name}
+      name={item.name}
+      tracked={item.tracked}
+      onTrack={() => onTrack(item)}
+      onStrategy={() => runStrategy(item)}
+      strategy={strategies[item.target_key || item.name]}
+      strategyBusy={strategyBusy === (item.target_key || item.name)}
+      {...extra}
+    />
+  );
+
+  return (
+    <section className="campaign-view hidden-market-view">
+      <div className="campaign-hero">
+        <div className="plan-hero-main">
+          <h2><Radar size={20} /> Hidden Market</h2>
+          <p>Outreach intelligence mined from every advert seen — including the reject pile. Track leads here; they have their own to-do flow, separate from the application pipeline.</p>
+          <div className="plan-progress hm-overview">
+            <span className="gate-chip">{overview.targets_surfaced || 0} targets surfaced</span>
+            <span className="gate-chip">{overview.tracked_total || 0} tracked</span>
+            <span className="gate-chip">{overview.open_total || 0} open</span>
+            <span className="gate-chip">{counts.todo || 0} to do · {counts.contacted || 0} contacted · {counts.awaiting || 0} awaiting · {counts.done || 0} done</span>
+            {overview.due_followups ? <span className="gate-chip warn">{overview.due_followups} follow-up{overview.due_followups === 1 ? "" : "s"} due</span> : null}
+            {overview.converted ? <span className="gate-chip good">{overview.converted} converted</span> : null}
+          </div>
+        </div>
+        <div className="campaign-actions">
+          <label className="hm-window"><span>Window</span>
+            <select value={days} onChange={(event) => onDaysChange(Number(event.target.value))}>
+              <option value={30}>30 days</option>
+              <option value={60}>60 days</option>
+              <option value={90}>90 days</option>
+            </select>
+          </label>
+          <button className="secondary" disabled={busy} onClick={onRefresh}>{busy ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />} Rescan</button>
+        </div>
+      </div>
+
+      <section className="campaign-section hm-todo">
+        <header>
+          <h2><ListTodo size={18} /> Outreach To-Do</h2>
+          <strong>{leads.length}</strong>
+        </header>
+        {!leads.length ? (
+          <p className="empty-inline">No outreach leads yet. Track a recruiter, employer, or leadership-gap target below to start a to-do.</p>
+        ) : (
+          <div className="hm-lead-list">
+            {leads.map((lead) => (
+              <HiddenMarketLeadCard key={lead.id} lead={lead} onUpdate={onLeadUpdate} onTouch={onTouch} onConvert={onConvert} onDelete={onDeleteLead} onOpenJob={onOpenJob} />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <header className="hm-head">
+        <span>Mined from the last {overview.window_days || days} days. Identities are cross-checked against contact domains and ad language. "Track" adds a target to the to-do above; "AI angle" asks the local model for an approach.</span>
+      </header>
+      <div className="hm-grid">
+        <CampaignSection title="Recruiter Ledger" icon={<Send size={18} />} items={intel.recruiters} empty="No recruiters carrying relevant roles in the window yet.">
+          {(intel.recruiters || []).map((recruiter) => renderTarget(recruiter, {
+            meta: `${recruiter.roles} relevant role${recruiter.roles === 1 ? "" : "s"} · best ${recruiter.best_score}% · ${formatDate(recruiter.last_seen)}`,
+            detail: [recruiter.contact_person, recruiter.contact_email, recruiter.contact_phone].filter(Boolean).join(" · ") || "No direct contact captured — find the consultant on the agency site.",
+            titles: recruiter.sample_titles,
+          }))}
+        </CampaignSection>
+
+        <CampaignSection title="Direct Employer Watchlist" icon={<BriefcaseBusiness size={18} />} items={intel.direct_employers} empty="No verified direct employers with relevant roles in the window yet.">
+          {(intel.direct_employers || []).map((employer) => renderTarget(employer, {
+            chip: employer.verified === "contact domain" ? { label: "Verified · contact domain", tone: "good" } : { label: "Unconfirmed · ad signals", tone: "soft" },
+            meta: `${employer.roles} relevant role${employer.roles === 1 ? "" : "s"} · best ${employer.best_score}% · ${formatDate(employer.last_seen)}${employer.domain ? ` · ${employer.domain}` : ""}`,
+            detail: `Has hired this role family${employer.locations?.length ? ` (${employer.locations.join(", ")})` : ""} — a direct approach beats the next ad.`,
+            titles: employer.sample_titles,
+          }))}
+        </CampaignSection>
+
+        <CampaignSection title="Leadership Gap Signals" icon={<Target size={18} />} items={intel.leadership_gaps} empty="No employers showing a junior-heavy, leaderless hiring pattern in the window.">
+          {(intel.leadership_gaps || []).map((gap) => renderTarget(gap, {
+            meta: `${gap.ic_count} junior/IC tech hires, no leadership posting · ${formatDate(gap.last_seen)}${gap.domain ? ` · ${gap.domain}` : ""}`,
+            detail: "Hiring hands without a head — a speculative leadership approach may land before any ad exists.",
+            titles: gap.sample_titles,
+          }))}
+        </CampaignSection>
+      </div>
+    </section>
   );
 }
 
@@ -1496,7 +1725,7 @@ function PlanItem({ item, rank, docsBusy, onOpenJob, onStageJob, onFollowedUp, o
   );
 }
 
-function CampaignPanel({ plan, hiddenMarket, busy, docsBusy, onStageAttack, onRefreshActions, onHiddenMarket, onOpenJob, onStageJob, onFollowedUp, onGenerateDocs, onGeneratePack }) {
+function CampaignPanel({ plan, busy, docsBusy, onStageAttack, onRefreshActions, onOpenJob, onStageJob, onFollowedUp, onGenerateDocs, onGeneratePack }) {
   const progress = plan?.progress || {};
   const goal = progress.weekly_goal || 6;
   const goalPct = Math.min(100, Math.round(((progress.applied_week || 0) / goal) * 100));
@@ -1520,14 +1749,13 @@ function CampaignPanel({ plan, hiddenMarket, busy, docsBusy, onStageAttack, onRe
         <div className="campaign-actions">
           <button disabled={busy} onClick={onStageAttack}><Target size={16} /> Stage Top Roles</button>
           <button className="secondary" disabled={busy} onClick={onRefreshActions}><Send size={16} /> Refresh Follow-Ups</button>
-          <button className="secondary" disabled={busy} onClick={onHiddenMarket}><Radar size={16} /> Hidden Market</button>
         </div>
       </div>
 
       <section className="plan-list">
         {!plan ? <p className="empty-inline">{busy ? "Building today's plan..." : "Loading today's plan..."}</p> : null}
         {plan && !(plan.plan || []).length ? (
-          <p className="empty-inline">Nothing urgent on the board. Run a search to feed the queue, or open Hidden Market for outreach targets.</p>
+          <p className="empty-inline">Nothing urgent on the board. Run a search to feed the queue, or open the Hidden Market tab for outreach targets.</p>
         ) : null}
         {(plan?.plan || []).map((item, index) => (
           <PlanItem
@@ -1544,53 +1772,6 @@ function CampaignPanel({ plan, hiddenMarket, busy, docsBusy, onStageAttack, onRe
         ))}
       </section>
 
-      {hiddenMarket ? (
-        <section className="hm-block">
-          <header className="hm-head">
-            <h2><Radar size={18} /> Hidden Market</h2>
-            <span>Mined from every advert seen in the last {hiddenMarket.window_days} days — including the reject pile. Identities are cross-checked against contact domains and ad language.</span>
-          </header>
-          <div className="hm-grid">
-            <CampaignSection title="Recruiter Ledger" icon={<Send size={18} />} items={hiddenMarket.recruiters} empty="No recruiters carrying relevant roles in the window yet.">
-              {(hiddenMarket.recruiters || []).map((recruiter) => (
-                <HiddenMarketTarget
-                  key={recruiter.name}
-                  name={recruiter.name}
-                  meta={`${recruiter.roles} relevant role${recruiter.roles === 1 ? "" : "s"} · best ${recruiter.best_score}% · ${formatDate(recruiter.last_seen)}`}
-                  detail={[recruiter.contact_person, recruiter.contact_email, recruiter.contact_phone].filter(Boolean).join(" · ")
-                    || "No direct contact captured — find the consultant on the agency site."}
-                  titles={recruiter.sample_titles}
-                />
-              ))}
-            </CampaignSection>
-
-            <CampaignSection title="Direct Employer Watchlist" icon={<BriefcaseBusiness size={18} />} items={hiddenMarket.direct_employers} empty="No verified direct employers with relevant roles in the window yet.">
-              {(hiddenMarket.direct_employers || []).map((employer) => (
-                <HiddenMarketTarget
-                  key={employer.name}
-                  name={employer.name}
-                  chip={employer.verified === "contact domain" ? { label: "Verified · contact domain", tone: "good" } : { label: "Unconfirmed · ad signals", tone: "soft" }}
-                  meta={`${employer.roles} relevant role${employer.roles === 1 ? "" : "s"} · best ${employer.best_score}% · ${formatDate(employer.last_seen)}${employer.domain ? ` · ${employer.domain}` : ""}`}
-                  detail={`Has hired this role family${employer.locations?.length ? ` (${employer.locations.join(", ")})` : ""} — a direct approach beats the next ad.`}
-                  titles={employer.sample_titles}
-                />
-              ))}
-            </CampaignSection>
-
-            <CampaignSection title="Leadership Gap Signals" icon={<Target size={18} />} items={hiddenMarket.leadership_gaps} empty="No employers showing a junior-heavy, leaderless hiring pattern in the window.">
-              {(hiddenMarket.leadership_gaps || []).map((gap) => (
-                <HiddenMarketTarget
-                  key={gap.name}
-                  name={gap.name}
-                  meta={`${gap.ic_count} junior/IC tech hires, no leadership posting · ${formatDate(gap.last_seen)}${gap.domain ? ` · ${gap.domain}` : ""}`}
-                  detail="Hiring hands without a head — a speculative leadership approach may land before any ad exists."
-                  titles={gap.sample_titles}
-                />
-              ))}
-            </CampaignSection>
-          </div>
-        </section>
-      ) : null}
     </section>
   );
 }
@@ -2551,6 +2732,8 @@ function App() {
   const [calendar, setCalendar] = useState([]);
   const [campaignPlan, setCampaignPlan] = useState(null);
   const [hiddenMarket, setHiddenMarket] = useState(null);
+  const [hiddenMarketDays, setHiddenMarketDays] = useState(60);
+  const [hiddenMarketBusy, setHiddenMarketBusy] = useState(false);
   const [stats, setStats] = useState(null);
   const [statsPeriod, setStatsPeriod] = useState(7);
   const [statsBusy, setStatsBusy] = useState(false);
@@ -2710,6 +2893,13 @@ function App() {
     if (view !== "campaign" || booting) return;
     loadCampaignPlan();
   }, [view, booting, jobs, loadCampaignPlan]);
+
+  // Auto-load the Hidden Market tab on open and whenever the lane, scope, or
+  // window changes.
+  useEffect(() => {
+    if (view !== "hiddenMarket" || booting) return;
+    loadHiddenMarket();
+  }, [view, booting, loadHiddenMarket]);
 
   useEffect(() => {
     if (view !== "stats" || booting) return undefined;
@@ -3084,20 +3274,93 @@ function App() {
     setActiveTasks((current) => ({ ...current, docs: task }));
   };
 
-  const loadHiddenMarket = async () => {
-    setCampaignBusy(true);
+  const loadHiddenMarket = useCallback(async () => {
+    setHiddenMarketBusy(true);
     try {
-      const data = await invoke("campaign:hiddenMarket", {
+      const data = await invoke("hiddenMarket:get", {
         profile_id: activeProfileId,
         include_all_profiles: includeAllProfiles,
-        days: 60,
+        days: hiddenMarketDays,
       });
       setHiddenMarket(data);
-      appendLog(`Hidden market scan: ${data.recruiters?.length || 0} recruiters, ${data.direct_employers?.length || 0} employers, ${data.leadership_gaps?.length || 0} leadership-gap signals from the last ${data.window_days} days.`);
     } catch (error) {
       appendLog(`Hidden market scan failed: ${toErrorMessage(error)}`);
     } finally {
-      setCampaignBusy(false);
+      setHiddenMarketBusy(false);
+    }
+  }, [activeProfileId, includeAllProfiles, hiddenMarketDays, invoke, appendLog]);
+
+  const trackHiddenTarget = async (target) => {
+    try {
+      await invoke("hiddenMarket:track", {
+        profile_id: activeProfileId,
+        target_type: target.target_type,
+        target_name: target.name,
+        contact_person: target.contact_person,
+        contact_email: target.contact_email,
+        contact_phone: target.contact_phone,
+        domain: target.domain,
+      });
+      await loadHiddenMarket();
+    } catch (error) {
+      appendLog(`Could not track target: ${toErrorMessage(error)}`);
+    }
+  };
+
+  const hiddenLeadUpdate = async (leadId, updates) => {
+    try {
+      await invoke("hiddenMarket:leadUpdate", { id: leadId, updates });
+      await loadHiddenMarket();
+    } catch (error) {
+      appendLog(`Lead update failed: ${toErrorMessage(error)}`);
+    }
+  };
+
+  const hiddenLeadTouch = async (leadId, touch) => {
+    await invoke("hiddenMarket:touch", { id: leadId, ...touch });
+    await loadHiddenMarket();
+  };
+
+  const hiddenLeadConvert = async (lead) => {
+    const ok = await appConfirm({
+      title: "Convert to applied",
+      message: `Convert "${lead.target_name}" into a tracked job at the Applied stage?`,
+      confirmLabel: "Convert",
+    });
+    if (!ok) return;
+    try {
+      const result = await invoke("hiddenMarket:convert", { id: lead.id });
+      appendLog(`Converted "${lead.target_name}" to an applied job.`);
+      await Promise.all([loadHiddenMarket(), refresh()]);
+      if (result?.job_id) openJob(result.job_id);
+    } catch (error) {
+      appendLog(`Convert failed: ${toErrorMessage(error)}`);
+    }
+  };
+
+  const hiddenLeadDelete = async (lead) => {
+    const ok = await appConfirm({
+      title: "Delete outreach lead",
+      message: `Delete the outreach lead for "${lead.target_name}"? This does not affect any converted job.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await invoke("hiddenMarket:leadDelete", { id: lead.id });
+      await loadHiddenMarket();
+    } catch (error) {
+      appendLog(`Delete failed: ${toErrorMessage(error)}`);
+    }
+  };
+
+  const hiddenStrategy = async (target) => {
+    try {
+      const data = await invoke("hiddenMarket:strategy", { profile_id: activeProfileId, target });
+      return data?.strategy || "";
+    } catch (error) {
+      appendLog(`AI angle failed: ${toErrorMessage(error)}`);
+      return "";
     }
   };
 
@@ -3540,6 +3803,7 @@ function App() {
   const viewTitle = {
     dashboard: "Dashboard",
     campaign: "Campaign",
+    hiddenMarket: "Hidden Market",
     pipeline: "Pipeline",
     stats: "Stats",
     activity: "Activity",
@@ -3555,6 +3819,7 @@ function App() {
         </div>
         <button className={view === "dashboard" ? "active nav-btn" : "nav-btn"} onClick={() => setView("dashboard")}><BarChart3 size={18} /> Dashboard</button>
         <button className={view === "campaign" ? "active nav-btn" : "nav-btn"} onClick={() => setView("campaign")}><Target size={18} /> Campaign</button>
+        <button className={view === "hiddenMarket" ? "active nav-btn" : "nav-btn"} onClick={() => setView("hiddenMarket")}><Radar size={18} /> Hidden Market</button>
         <button className={view === "pipeline" ? "active nav-btn" : "nav-btn"} onClick={() => setView("pipeline")}><KanbanSquare size={18} /> Pipeline</button>
         <button className={view === "stats" ? "active nav-btn" : "nav-btn"} onClick={() => setView("stats")}><TrendingUp size={18} /> Stats</button>
         <button className={view === "activity" ? "active nav-btn" : "nav-btn"} onClick={() => setView("activity")}><NotebookTabs size={18} /> Activity</button>
@@ -3622,17 +3887,32 @@ function App() {
         {view === "campaign" ? (
           <CampaignPanel
             plan={campaignPlan}
-            hiddenMarket={hiddenMarket}
             busy={campaignBusy}
             docsBusy={docsBusy}
             onStageAttack={stageCampaignAttackQueue}
             onRefreshActions={refreshCampaignActions}
-            onHiddenMarket={loadHiddenMarket}
             onOpenJob={openJob}
             onStageJob={stageJobFromPlan}
             onFollowedUp={markFollowedUp}
             onGenerateDocs={generateDocsForJob}
             onGeneratePack={generateCampaignPack}
+          />
+        ) : null}
+
+        {view === "hiddenMarket" ? (
+          <HiddenMarketPanel
+            data={hiddenMarket}
+            busy={hiddenMarketBusy}
+            days={hiddenMarketDays}
+            onDaysChange={setHiddenMarketDays}
+            onRefresh={loadHiddenMarket}
+            onTrack={trackHiddenTarget}
+            onStrategy={hiddenStrategy}
+            onLeadUpdate={hiddenLeadUpdate}
+            onTouch={hiddenLeadTouch}
+            onConvert={hiddenLeadConvert}
+            onDeleteLead={hiddenLeadDelete}
+            onOpenJob={openJob}
           />
         ) : null}
 

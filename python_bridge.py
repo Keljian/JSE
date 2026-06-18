@@ -1747,12 +1747,125 @@ def command_campaign_weekly_report(payload):
     )
 
 
-def command_campaign_hidden_market(payload):
-    return db.get_hidden_market_intel(
-        payload.get("profile_id"),
-        bool(payload.get("include_all_profiles")),
-        payload.get("days") or 60,
+_HIDDEN_MARKET_SECTIONS = (
+    ("recruiters", "recruiter"),
+    ("direct_employers", "direct_employer"),
+    ("leadership_gaps", "leadership_gap"),
+)
+
+
+def command_hidden_market_get(payload):
+    """Full Hidden Market tab payload: the mined intel ledgers (with a 'tracked'
+    flag per target), the outreach to-do leads, and an overview rollup."""
+    from datetime import date
+
+    profile_id = payload.get("profile_id")
+    include_all = bool(payload.get("include_all_profiles"))
+    intel = db.get_hidden_market_intel(profile_id, include_all, payload.get("days") or 60)
+    leads = db.list_hidden_market_leads(profile_id, include_all)
+
+    tracked_keys = {(lead["target_type"], lead["target_key"]) for lead in leads}
+    for section, target_type in _HIDDEN_MARKET_SECTIONS:
+        for item in intel.get(section, []):
+            item["target_type"] = target_type
+            item["target_key"] = db.hidden_market_target_key(target_type, item["name"])
+            item["tracked"] = (target_type, item["target_key"]) in tracked_keys
+
+    today = date.today().isoformat()
+    status_counts = {status: 0 for status in db.HIDDEN_MARKET_STATUSES}
+    due_followups = 0
+    for lead in leads:
+        status = lead.get("status") or "todo"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        next_step = lead.get("next_step_date")
+        if next_step and status != "done" and next_step <= today:
+            due_followups += 1
+
+    overview = {
+        "window_days": intel.get("window_days"),
+        "recruiters": len(intel.get("recruiters", [])),
+        "direct_employers": len(intel.get("direct_employers", [])),
+        "leadership_gaps": len(intel.get("leadership_gaps", [])),
+        "targets_surfaced": sum(len(intel.get(section, [])) for section, _ in _HIDDEN_MARKET_SECTIONS),
+        "tracked_total": len(leads),
+        "open_total": len(leads) - status_counts.get("done", 0),
+        "status_counts": status_counts,
+        "due_followups": due_followups,
+        "converted": sum(1 for lead in leads if lead.get("outcome") == "converted"),
+    }
+    return {"intel": intel, "leads": leads, "overview": overview}
+
+
+def command_hidden_market_track(payload):
+    lead = db.add_hidden_market_lead(
+        payload.get("profile_id", 1),
+        payload.get("target_type"),
+        payload.get("target_name") or payload.get("name"),
+        action=payload.get("action"),
+        contact_person=payload.get("contact_person"),
+        contact_email=payload.get("contact_email"),
+        contact_phone=payload.get("contact_phone"),
+        domain=payload.get("domain"),
     )
+    return {"lead": lead}
+
+
+def _hidden_market_lead_id(payload):
+    lead_id = payload.get("id") or payload.get("lead_id")
+    if not lead_id:
+        raise ValueError("Missing hidden-market lead id.")
+    return lead_id
+
+
+def command_hidden_market_lead_update(payload):
+    return {"lead": db.update_hidden_market_lead(_hidden_market_lead_id(payload), payload.get("updates") or {})}
+
+
+def command_hidden_market_touch(payload):
+    lead = db.add_hidden_market_touchpoint(
+        _hidden_market_lead_id(payload),
+        payload.get("note"),
+        status=payload.get("status"),
+        next_step_date=payload.get("next_step_date"),
+    )
+    return {"lead": lead}
+
+
+def command_hidden_market_lead_delete(payload):
+    db.delete_hidden_market_lead(_hidden_market_lead_id(payload))
+    return {"ok": True}
+
+
+def command_hidden_market_convert(payload):
+    return db.convert_hidden_market_lead_to_job(_hidden_market_lead_id(payload))
+
+
+def _hidden_market_lane_context(profile_id):
+    try:
+        settings = db.get_lane_settings(profile_id) or {}
+    except Exception:
+        return ""
+    parts = []
+    for label, key in (
+        ("Intent", "lane_intent"), ("Target titles", "target_titles"),
+        ("Target domains", "target_domains"), ("Seniority", "seniority"),
+        ("Must-have", "must_have_terms"), ("Preferred location", "preferred_location"),
+    ):
+        value = settings.get(key)
+        if value:
+            parts.append(f"{label}: {value}")
+    return "\n".join(parts)
+
+
+def command_hidden_market_strategy(payload):
+    import llm_handler
+
+    profile_id = payload.get("profile_id", 1)
+    text = llm_handler.hidden_market_strategy(
+        payload.get("target") or {},
+        lane_context=_hidden_market_lane_context(profile_id),
+    )
+    return {"strategy": text}
 
 
 def command_stats_summary(payload):
@@ -2527,7 +2640,13 @@ COMMANDS = {
     "campaign:stageAttackQueue": command_campaign_stage_attack_queue,
     "campaign:refreshActions": command_campaign_refresh_actions,
     "campaign:weeklyReport": command_campaign_weekly_report,
-    "campaign:hiddenMarket": command_campaign_hidden_market,
+    "hiddenMarket:get": command_hidden_market_get,
+    "hiddenMarket:track": command_hidden_market_track,
+    "hiddenMarket:leadUpdate": command_hidden_market_lead_update,
+    "hiddenMarket:touch": command_hidden_market_touch,
+    "hiddenMarket:leadDelete": command_hidden_market_lead_delete,
+    "hiddenMarket:convert": command_hidden_market_convert,
+    "hiddenMarket:strategy": command_hidden_market_strategy,
     "stats:summary": command_stats_summary,
     "scrape:run": command_scrape_run,
     "analysis:run": command_analysis_run,

@@ -1044,6 +1044,219 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+/* --- Hidden Market tab --- */
+.hidden-target-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.hidden-target-actions button {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+.hm-strategy {
+  margin-top: 2px;
+  padding: 8px 10px;
+  background: #f5f8fb;
+  border: 1px solid #d8e3ee;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: #344251;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.hm-overview {
+  flex-wrap: wrap;
+}
+
+.hm-window {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  gap: 2px;
+}
+
+.gate-chip.warn {
+  background: #fbf0dc;
+  border-color: #e9d2a3;
+  color: #8a5a1b;
+}
+
+.gate-chip.good {
+  background: #e1f2e8;
+  border-color: #b8dac8;
+  color: #1b5c3c;
+}
+
+.hm-todo .hm-lead-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.hm-lead {
+  border: 1px solid #dfe6e1;
+  border-left: 4px solid #6e87b8;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+  background: #fff;
+}
+
+.hm-lead.done {
+  border-left-color: #b8c2bc;
+  opacity: 0.85;
+}
+
+.hm-lead-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hm-lead-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.hm-lead-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.hm-lead-controls select {
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.hm-lead-action {
+  margin: 0;
+  font-size: 13px;
+  color: #2f3a34;
+}
+
+.hm-lead-contact {
+  margin: 0;
+  font-size: 12px;
+  color: #66716b;
+  overflow-wrap: anywhere;
+}
+
+.hm-lead-notes {
+  display: grid;
+  gap: 2px;
+  font-size: 11px;
+  color: #66716b;
+}
+
+.hm-lead-notes textarea {
+  font-size: 12px;
+  resize: vertical;
+}
+
+.hm-log-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #4a6b9a;
+  cursor: pointer;
+}
+
+.hm-log-toggle .rot90 {
+  transform: rotate(90deg);
+}
+
+.hm-touchlog {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  border-left: 2px solid #e2e8e4;
+  padding-left: 8px;
+}
+
+.hm-touchlog li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #44524b;
+}
+
+.hm-touchlog time {
+  font-size: 11px;
+  color: #8a948e;
+}
+
+.hm-touchlog em {
+  font-style: normal;
+  font-size: 11px;
+  color: #8a5a1b;
+}
+
+.hm-touch-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.hm-touch-form input[type="text"],
+.hm-touch-form input:not([type]) {
+  flex: 1 1 160px;
+  font-size: 12px;
+}
+
+.hm-touch-form select,
+.hm-touch-form input[type="date"] {
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+.hm-lead-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hm-next {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #8a5a1b;
+}
+
+.hm-lead-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.hm-lead-actions button {
+  font-size: 12px;
+  padding: 3px 9px;
+}
+
 .campaign-row-actions {
   display: flex;
   justify-content: flex-end;

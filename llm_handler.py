@@ -2788,3 +2788,59 @@ JOB ADVERTISEMENT:
         raise ValueError(f"Company research did not return valid JSON. Response started: {response[:250]}")
     log(f"Company intelligence researched with {provider_label}.")
     return data, provider_label
+
+
+def hidden_market_strategy(target, lane_context="", settings=None):
+    """Generate a short, tailored outreach angle + concrete next steps for a
+    hidden-market target using the local model. Returns plain prose (not JSON)."""
+    target = target or {}
+    target_type = target.get("target_type") or "target"
+    type_label = {
+        "recruiter": "recruitment agency / consultant who repeatedly carries this role family",
+        "direct_employer": "direct employer that keeps hiring this role family",
+        "leadership_gap": "employer hiring junior/IC staff with no leadership role advertised (possible unadvertised leadership need)",
+    }.get(target_type, "hidden-market target")
+
+    facts = [
+        f"Target type: {type_label}",
+        f"Name: {target.get('name') or target.get('target_name') or 'Unknown'}",
+    ]
+    if target.get("sample_titles"):
+        facts.append("Roles seen: " + ", ".join(str(t) for t in (target.get("sample_titles") or [])))
+    for label, key in (("Best fit score", "best_score"), ("Relevant roles in window", "roles"),
+                       ("Junior/IC hires with no leader", "ic_count"), ("Domain", "domain"),
+                       ("Locations", "locations")):
+        value = target.get(key)
+        if isinstance(value, list):
+            value = ", ".join(str(v) for v in value)
+        if value:
+            facts.append(f"{label}: {value}")
+    contact = " · ".join(
+        str(target.get(field)) for field in ("contact_person", "contact_email", "contact_phone") if target.get(field)
+    )
+    if contact:
+        facts.append(f"Known contact: {contact}")
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a pragmatic outreach strategist for the Australian hidden job market "
+                "(unadvertised roles). Give specific, actionable advice the candidate can use today. "
+                "Australian English. Plain text only — no markdown headings, no preamble, no <think> tags."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Candidate / lane context:\n"
+                + (lane_context or "Experienced candidate; specific context not provided.")
+                + "\n\nHidden-market target:\n" + "\n".join(facts)
+                + "\n\nIn under 140 words give: (1) one or two sentences on the angle — why approach this "
+                "target now and how to position; (2) 2 to 4 concrete next steps (who to contact, which channel, "
+                "and what to say). Be specific to this target, not generic advice."
+            ),
+        },
+    ]
+    text = _call_unsloth(messages, temperature=0.3, max_tokens=600, json_mode=False, settings=settings)
+    return (text or "").strip()

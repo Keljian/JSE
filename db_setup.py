@@ -740,6 +740,37 @@ def setup_database():
         )
     ''')
 
+    # Hidden-market outreach leads. These are tracked separately from the job
+    # pipeline because outreach has a different lifecycle (multiple contact/wait
+    # touchpoints, and most never become interviews). touchpoints holds a JSON
+    # interaction log; converted_job_id links a lead that became a real
+    # application (created directly at the 'applied' stage).
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hidden_market_leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL,
+            target_type TEXT NOT NULL,
+            target_key TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            action TEXT,
+            status TEXT DEFAULT 'todo',
+            outcome TEXT,
+            notes TEXT,
+            contact_person TEXT,
+            contact_email TEXT,
+            contact_phone TEXT,
+            domain TEXT,
+            next_step_date TEXT,
+            touchpoints TEXT,
+            converted_job_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(profile_id, target_type, target_key),
+            FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+            FOREIGN KEY (converted_job_id) REFERENCES jobs(id) ON DELETE SET NULL
+        )
+    ''')
+
     # Migrations for tables created above. These must run AFTER the CREATE TABLE
     # statements: on a fresh database the ALTERs would otherwise silently no-op
     # (table missing) and the fragment tables would be created without the
@@ -790,7 +821,8 @@ def setup_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_application_kits_lane ON application_kits(lane_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_llm_tasks_status ON local_llm_tasks(status, task_type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_llm_tasks_entity ON local_llm_tasks(entity_type, entity_id)")
-    
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_hidden_market_leads_profile_status ON hidden_market_leads(profile_id, status)")
+
     # Create default "General" profile if it doesn't exist
     cursor.execute("SELECT COUNT(*) FROM profiles")
     if cursor.fetchone()[0] == 0:

@@ -4852,6 +4852,196 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
     }
 
 
+# ---------------------------------------------------------------------------
+# Hidden-market outreach leads (the to-do tracker). Outreach has its own
+# lifecycle: a lead may go through several contact/wait touchpoints and most
+# never become interviews, so leads live outside the job pipeline. A lead that
+# does convert is pushed straight to the 'applied' stage (it is not pre-triage).
+# ---------------------------------------------------------------------------
+
+HIDDEN_MARKET_STATUSES = ("todo", "contacted", "awaiting", "done")
+
+
+def hidden_market_target_key(target_type, name):
+    return f"{target_type}:{_company_key(name)}"
+
+
+def _hidden_market_lead_to_dict(row):
+    lead = dict(row)
+    try:
+        lead["touchpoints"] = json.loads(row["touchpoints"]) if row["touchpoints"] else []
+    except (TypeError, ValueError):
+        lead["touchpoints"] = []
+    return lead
+
+
+def get_hidden_market_lead(lead_id):
+    with get_db_connection() as conn:
+        row = conn.execute("SELECT * FROM hidden_market_leads WHERE id = ?", (lead_id,)).fetchone()
+        return _hidden_market_lead_to_dict(row) if row else None
+
+
+def list_hidden_market_leads(profile_id=None, include_all_profiles=False):
+    clause, params = _profile_filter_clause(profile_id, include_all_profiles, alias="hidden_market_leads")
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT * FROM hidden_market_leads
+            WHERE 1=1 {clause}
+            ORDER BY
+                CASE status WHEN 'done' THEN 1 ELSE 0 END,
+                CASE WHEN next_step_date IS NULL OR next_step_date = '' THEN 1 ELSE 0 END,
+                next_step_date ASC,
+                updated_at DESC
+            """,
+            params,
+        ).fetchall()
+        return [_hidden_market_lead_to_dict(row) for row in rows]
+
+
+def add_hidden_market_lead(profile_id, target_type, target_name, action=None,
+                           contact_person=None, contact_email=None, contact_phone=None, domain=None):
+    """Start tracking a hidden-market target. Idempotent on (profile, type, key):
+    re-tracking an existing target returns the existing lead untouched."""
+    target_type = str(target_type or "").strip() or "target"
+    target_name = _clean(str(target_name or "")) or "Unknown target"
+    target_key = hidden_market_target_key(target_type, target_name)
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_db_connection() as conn:
+        existing = conn.execute(
+            "SELECT * FROM hidden_market_leads WHERE profile_id = ? AND target_type = ? AND target_key = ?",
+            (profile_id, target_type, target_key),
+        ).fetchone()
+        if existing:
+            return _hidden_market_lead_to_dict(existing)
+        cursor = conn.execute(
+            """
+            INSERT INTO hidden_market_leads
+                (profile_id, target_type, target_key, target_name, action, status,
+                 contact_person, contact_email, contact_phone, domain, touchpoints, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, '[]', ?, ?)
+            """,
+            (profile_id, target_type, target_key, target_name, _clean(str(action or "")) or None,
+             _clean(str(contact_person or "")) or None, _clean(str(contact_email or "")) or None,
+             _clean(str(contact_phone or "")) or None, _clean(str(domain or "")) or None, now, now),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM hidden_market_leads WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        return _hidden_market_lead_to_dict(row)
+
+
+def update_hidden_market_lead(lead_id, updates):
+    allowed = {"action", "status", "outcome", "notes", "next_step_date",
+               "contact_person", "contact_email", "contact_phone", "domain"}
+    fields = {key: value for key, value in (updates or {}).items() if key in allowed}
+    if "status" in fields and fields["status"] not in HIDDEN_MARKET_STATUSES:
+        raise ValueError(f"Invalid hidden-market status: {fields['status']}")
+    if not fields:
+        return get_hidden_market_lead(lead_id)
+    assignments = ", ".join(f"{key} = ?" for key in fields)
+    params = list(fields.values()) + [lead_id]
+    with get_db_connection() as conn:
+        conn.execute(
+            f"UPDATE hidden_market_leads SET {assignments}, updated_at = datetime('now') WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    return get_hidden_market_lead(lead_id)
+
+
+def add_hidden_market_touchpoint(lead_id, note, status=None, next_step_date=None):
+    """Append an interaction to the lead's log. Outreach is iterative, so this
+    can be called many times (contact -> wait -> contact again) before 'done'."""
+    lead = get_hidden_market_lead(lead_id)
+    if not lead:
+        raise ValueError("Hidden-market lead not found.")
+    touchpoints = lead.get("touchpoints") or []
+    entry = {
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "note": _clean(str(note or "")),
+        "status": status if status in HIDDEN_MARKET_STATUSES else None,
+        "next_step_date": str(next_step_date)[:10] if next_step_date else None,
+    }
+    touchpoints.append(entry)
+    new_status = status if status in HIDDEN_MARKET_STATUSES else lead.get("status")
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE hidden_market_leads
+            SET touchpoints = ?, status = ?, next_step_date = ?, updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (json.dumps(touchpoints), new_status, entry["next_step_date"], lead_id),
+        )
+        conn.commit()
+    return get_hidden_market_lead(lead_id)
+
+
+def delete_hidden_market_lead(lead_id):
+    with get_db_connection() as conn:
+        conn.execute("DELETE FROM hidden_market_leads WHERE id = ?", (lead_id,))
+        conn.commit()
+    return True
+
+
+def convert_hidden_market_lead_to_job(lead_id):
+    """Turn a converted lead into a tracked job straight at the 'applied' stage
+    (hidden-market outreach is post-engagement, not pre-triage), and mark the
+    lead done/converted with a link to the new job."""
+    lead = get_hidden_market_lead(lead_id)
+    if not lead:
+        raise ValueError("Hidden-market lead not found.")
+    if lead.get("converted_job_id"):
+        return {"job_id": lead["converted_job_id"], "lead": lead, "already": True}
+
+    profile_id = lead["profile_id"]
+    target_name = lead["target_name"]
+    role_hint = lead.get("action") or "Hidden-market opportunity"
+    title = f"{target_name} — hidden-market lead"
+    note_bits = [b for b in [lead.get("action"), lead.get("notes")] if b]
+    for tp in lead.get("touchpoints") or []:
+        stamp = (tp.get("at") or "")[:10]
+        if tp.get("note"):
+            note_bits.append(f"[{stamp}] {tp['note']}")
+    job_data = {
+        "title": title,
+        "company": target_name,
+        "location": "",
+        "url": f"hiddenmarket://{profile_id}/{lead['target_key']}",
+        "description": f"Converted hidden-market outreach lead. {role_hint}",
+        "pdf_text": "",
+        "search_keyword": "hidden market",  # guarantees add_job storage gating passes
+        "contact_person": lead.get("contact_person"),
+        "contact_email": lead.get("contact_email"),
+        "contact_phone": lead.get("contact_phone"),
+    }
+    add_job(job_data, "Hidden Market", profile_id=profile_id)
+    normalized = normalize_job_url(job_data["url"])
+    with get_db_connection() as conn:
+        row = conn.execute("SELECT id FROM jobs WHERE url = ? LIMIT 1", (normalized,)).fetchone()
+    job_id = row["id"] if row else None
+    if not job_id:
+        raise ValueError("Could not create the pipeline job for this lead.")
+
+    update_job_application(job_id, {
+        "pipeline_stage": "applied",
+        "status": "applied",
+        "application_date": datetime.now().date().isoformat(),
+        "notes": "\n".join(note_bits) if note_bits else None,
+    })
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE hidden_market_leads
+            SET status = 'done', outcome = 'converted', converted_job_id = ?, updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (job_id, lead_id),
+        )
+        conn.commit()
+    return {"job_id": job_id, "lead": get_hidden_market_lead(lead_id), "already": False}
+
+
 def get_activity_stats(profile_id=None, include_all_profiles=False, days=7):
     """Weekly/monthly rollup: the market, the user's applications, and general
     activity — current window plus the previous window so the UI can show deltas.
