@@ -17,17 +17,28 @@ import re
 import sqlite3
 
 import context_library as clib
-from rich_application import build_caller, _call_gemini
+from llm_handler import _call_document_ai, _model_name, _settings_for_ai_task
 
 
 def _fast_caller(settings):
-    """Extraction is mechanical — use fast/free Gemini Flash (no thinking) rather
-    than the slow Pro authoring model. Falls back to the configured provider."""
-    gem = (settings.get("gemini_api_key") or "").strip()
-    if gem:
-        return (lambda s, u: _call_gemini(gem, "gemini-2.5-flash", s, u,
-                                          thinking_budget=0, max_output_tokens=8192)), "Gemini (2.5-flash)"
-    return build_caller(settings)
+    """Use the provider selected for evidence and memory processing."""
+    resolved = _settings_for_ai_task(settings, "memory_ai_provider")
+    provider = resolved["doc_ai_provider"]
+    if provider == "gemini":
+        resolved["doc_ai_model"] = "gemini-2.5-flash"
+    model = _model_name(resolved, provider)
+
+    def call(system, user):
+        response, _label = _call_document_ai(
+            resolved,
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.15,
+            max_tokens=8192,
+            json_mode=True,
+        )
+        return response
+
+    return call, f"{provider.title()} ({model})"
 
 EXTRACT_SYSTEM = """You extract reusable, SPECIFIC career fragments from a candidate's real prior documents (resumes, cover letters, key selection criteria responses).
 

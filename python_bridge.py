@@ -145,9 +145,39 @@ def import_app_logic():
     return app_logic
 
 
-def read_resume_text(profile_id):
+def _read_docx_text(path):
     import docx
+    from docx.oxml.ns import qn
+    document = docx.Document(str(path))
+    lines = []
 
+    def add_xml_text(element):
+        # Raw WordprocessingML includes ordinary paragraphs, table cells and
+        # text boxes; python-docx's public paragraph list omits the latter two.
+        for paragraph in element.iter(qn("w:p")):
+            text = "".join(node.text or "" for node in paragraph.iter(qn("w:t"))).strip()
+            if text:
+                lines.append(text)
+
+    # Contact details are commonly stored in a Word header or table, so reading
+    # only document.paragraphs silently drops exactly the identity data needed
+    # by generated resumes.
+    for section in document.sections:
+        add_xml_text(section.header._element)
+    add_xml_text(document.element.body)
+
+    # Linked headers and merged table cells can expose the same text repeatedly.
+    unique_lines = []
+    seen = set()
+    for line in lines:
+        key = line.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique_lines.append(line)
+    return "\n".join(unique_lines)
+
+
+def read_resume_text(profile_id):
     profile = db.get_profile_by_id(profile_id)
     if not profile:
         raise ValueError(f"Profile {profile_id} was not found.")
@@ -157,9 +187,7 @@ def read_resume_text(profile_id):
         resume_path = Path.cwd() / resume_path
     if not resume_path.exists():
         raise FileNotFoundError(f"Resume file not found: {resume_path}")
-
-    document = docx.Document(str(resume_path))
-    return "\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text.strip())
+    return _read_docx_text(resume_path)
 
 
 def extract_document_text(file_path):
@@ -169,9 +197,7 @@ def extract_document_text(file_path):
 
     suffix = path.suffix.lower()
     if suffix == ".docx":
-        import docx
-        document = docx.Document(str(path))
-        return "\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text.strip())
+        return _read_docx_text(path)
     if suffix == ".doc":
         return _extract_legacy_doc_text(path)
     if suffix == ".pdf":
@@ -748,6 +774,78 @@ def command_settings_global_update(payload):
         if value:
             Path(value).mkdir(parents=True, exist_ok=True)
     return {"settings": settings}
+
+
+def command_ai_test_provider(payload):
+    """Make a minimal real request with the provider settings currently in the UI."""
+    provider = str(payload.get("provider") or "").strip().lower()
+    if provider not in {"local", "chatgpt", "claude", "gemini"}:
+        raise ValueError(f"Unsupported AI provider: {provider or '(blank)'}")
+
+    supplied = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+    settings = {**db.get_app_settings(), **supplied, "doc_ai_provider": provider}
+    with contextlib.redirect_stdout(sys.stderr):
+        import llm_handler
+
+    started = time.monotonic()
+    discovered_model = ""
+    if provider == "local":
+        local = llm_handler._local_ai_settings(settings)
+        try:
+            model_data = llm_handler._get_json(
+                f"{local['base_url']}/models",
+                llm_handler._local_auth_headers(local),
+                timeout=15,
+            )
+            model_rows = model_data.get("data") if isinstance(model_data, dict) else None
+            model_ids = [
+                str(row.get("id") or "").strip()
+                for row in (model_rows or [])
+                if isinstance(row, dict) and str(row.get("id") or "").strip()
+            ]
+            if not model_ids:
+                return {
+                    "ok": False,
+                    "reachable": True,
+                    "provider": provider,
+                    "label": "Local endpoint",
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "message": (
+                        "Endpoint reachable, but no model is loaded. Load a model in Unsloth Studio "
+                        "(Inference > Load), then test again. The Model field is the API model ID, not a folder path."
+                    ),
+                }
+            discovered_model = model_ids[0]
+            if local.get("model") not in model_ids:
+                settings["local_model"] = discovered_model
+        except Exception:
+            # Some OpenAI-compatible servers do not expose /models. In that
+            # case, fall through to the chat-completions health check.
+            pass
+    # Reasoning-capable Gemini/local models may spend the first several hundred
+    # tokens internally even for a one-line answer. A 64-token ceiling can yield
+    # finishReason=MAX_TOKENS with no response Part, which looks like a broken
+    # connection despite successful authentication.
+    test_token_budget = 4096 if provider == "gemini" else (1024 if provider == "local" else 256)
+    response, label = llm_handler._call_document_ai(
+        settings,
+        [
+            {"role": "system", "content": "You are testing an AI connection. Follow the user's response format exactly."},
+            {"role": "user", "content": "Reply with exactly: JSE provider test OK"},
+        ],
+        temperature=0,
+        max_tokens=test_token_budget,
+    )
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    if not str(response or "").strip():
+        raise RuntimeError(f"{label} returned an empty response.")
+    return {
+        "ok": True,
+        "provider": provider,
+        "label": label,
+        "elapsed_ms": elapsed_ms,
+        "model": discovered_model,
+    }
 
 
 def command_candidate_fragments_list(payload):
@@ -1820,6 +1918,7 @@ def command_docs_generate_rich(payload):
     profile_id = payload.get("profile_id", 1)
     job_id = payload["job_id"]
     settings = db.get_lane_settings(profile_id)
+    source_resume_text = read_resume_text(profile_id)
     try:
         from config import MY_INFO as info
     except Exception:
@@ -1828,6 +1927,7 @@ def command_docs_generate_rich(payload):
     emit("status", message="Assembling context and generating documents…")
     result = rich_application.generate_rich(
         job_id, profile_id=profile_id, settings=settings, personal_info=info,
+        source_resume_text=source_resume_text,
         log=lambda m: emit("log", message=m),
         out_dir=applications_dir(),
     )
@@ -2183,6 +2283,7 @@ COMMANDS = {
     "settings:update": command_settings_update,
     "settings:globalGet": command_settings_global_get,
     "settings:globalUpdate": command_settings_global_update,
+    "ai:testProvider": command_ai_test_provider,
     "memory:status": command_memory_status,
     "memory:scan": command_memory_scan,
     "memory:remineDue": command_memory_remine_due,

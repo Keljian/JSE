@@ -46,6 +46,7 @@ RESUME_SYSTEM = """You are an expert Australian resume writer. Write a tailored 
 
 Rules:
 - Use `## SECTION` for section headings, `### Company | Role | Dates` for each role, `* ` for achievement bullets, `**bold**` sparingly.
+- If the evidence gives no date for a role, use `Prior experience` in its Dates position; never invent a date.
 - Include a `## KEY SKILLS` section grouped under bold sub-labels.
 - Lead with the evidence most relevant to THIS role. Mirror the job ad's terminology only where the candidate genuinely matches.
 - NEVER invent or inflate employers, dates, titles, metrics, tools, or certifications beyond what the evidence states. If the evidence says "contributed to", do not write "led". Grounding over polish.
@@ -59,10 +60,10 @@ Structure (plain text):
 - Recipient name + company + location IF known from the job, else omit
 - `Re: <role title>`
 - `Dear <name or 'Hiring Manager'>,`
-- 3–5 substantive body paragraphs mapping the candidate's real achievements to the role's needs, using real metrics from the evidence.
+- 3–4 concise body paragraphs mapping the candidate's real achievements to the role's needs, using real metrics from the evidence.
 - `Yours sincerely,`
 - Candidate full name
-Rules: never invent or inflate facts; don't include a sender contact header (the renderer adds it). Output ONLY the letter text.""" + "\n\n" + POSITIONING_BRIEF
+Rules: keep the entire letter to 400 words or fewer so it fits on one page; never invent or inflate facts; don't include a sender contact header (the renderer adds it). Output ONLY the letter text.""" + "\n\n" + POSITIONING_BRIEF
 
 REVIEW_SYSTEM = """You are a strict pre-submission fact-checker for a job application. You are given EVIDENCE (the candidate's real prior documents), the JOB, and a DRAFT resume + cover letter.
 
@@ -126,7 +127,7 @@ def _call_claude(api_key, model, system, user):
 def build_caller(settings):
     """Return (caller(system,user)->text, provider_label) from profile settings."""
     settings = settings or {}
-    provider = (settings.get("doc_ai_provider") or "gemini").lower()
+    provider = (settings.get("document_ai_provider") or settings.get("doc_ai_provider") or "gemini").lower()
 
     gem_key = (settings.get("gemini_api_key") or "").strip()
     cla_key = (settings.get("claude_api_key") or "").strip()
@@ -165,6 +166,7 @@ GENERIC_SYSTEM = (
 RESUME_TASK = (
     "TASK: Using only the evidence and job provided above, write a tailored resume in **Markdown**.\n"
     "- `## SECTION` headings, `### Company | Role | Dates` per role, `* ` achievement bullets, `**bold**` sparingly.\n"
+    "- If the evidence gives no date for a role, use `Prior experience` in its Dates position; never invent a date.\n"
     "- Include a `## KEY SKILLS` section grouped under bold sub-labels.\n"
     "- Lead with the evidence most relevant to THIS role; mirror the ad's terminology only where genuinely matched.\n"
     "- No name/contact header (the renderer adds it). Start at the professional profile.\n"
@@ -177,8 +179,9 @@ def cover_task(today, name):
         "TASK: Using only the evidence and job above, write a tailored cover letter, mirroring the authentic "
         "voice/tone of the candidate's PRIOR COVER LETTERS.\n"
         f"Structure (plain text): date ({today}); recipient name+company+location IF known else omit; "
-        "`Re: <role title>`; `Dear <name or 'Hiring Manager'>,`; 3–5 evidence-grounded paragraphs with real "
+        "`Re: <role title>`; `Dear <name or 'Hiring Manager'>,`; 3–4 concise evidence-grounded paragraphs with real "
         f"metrics; `Yours sincerely,`; {name}.\n"
+        "Keep the entire letter to 400 words or fewer so it fits on one page. "
         "No sender contact header (the renderer adds it). Output ONLY the letter text."
     )
 
@@ -325,7 +328,7 @@ class _ClaudeSession:
 
 def build_session(settings, system, context_text, log=None):
     settings = settings or {}
-    provider = (settings.get("doc_ai_provider") or "gemini").lower()
+    provider = (settings.get("document_ai_provider") or settings.get("doc_ai_provider") or "gemini").lower()
     gem = (settings.get("gemini_api_key") or "").strip()
     cla = (settings.get("claude_api_key") or "").strip()
     if provider == "claude" and cla:
@@ -355,6 +358,49 @@ def _safe(value):
     return re.sub(r"\s+", "_", re.sub(r"[^A-Za-z0-9._ -]+", "", value or "application").strip())[:80] or "application"
 
 
+def _personal_info_from_resume(personal_info, resume_text):
+    """Fill blank renderer contact fields from the candidate's source resume."""
+    info = dict(personal_info or {})
+    text = str(resume_text or "")
+
+    if not (info.get("email") or "").strip():
+        match = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text)
+        if match:
+            info["email"] = match.group(0)
+    if not (info.get("phone") or "").strip():
+        match = re.search(r"(?<!\d)(?:\+?61\s?[2-478]|0[2-478])(?:[\s()-]*\d){8}(?!\d)", text)
+        if match:
+            info["phone"] = re.sub(r"\s+", " ", match.group(0)).strip()
+    if not (info.get("linkedin") or "").strip():
+        match = re.search(r"(?:https?://)?(?:www\.)?linkedin\.com/in/[\w%-]+/?", text, re.I)
+        if match:
+            info["linkedin"] = match.group(0)
+
+    supplied_name = f"{info.get('first_name', '')} {info.get('last_name', '')}".strip()
+    if supplied_name.lower() in {"", "candidate", "curriculum vitae"}:
+        excluded = {"resume", "curriculum vitae", "professional profile", "professional summary",
+                    "profile", "summary", "contact", "contact details", "key selection criteria",
+                    "key selection criteria responses", "selection criteria", "selection criteria responses",
+                    "cover letter", "application", "application response"}
+        role_words = {"technology", "leader", "manager", "consultant", "engineer", "director",
+                      "specialist", "professional", "executive", "analyst", "developer", "architect"}
+        for raw in text.splitlines()[:20]:
+            line = re.sub(r"^name\s*:\s*", "", raw.strip(), flags=re.I)
+            # Resume headers often put "Name | role title" in one paragraph.
+            line = re.split(r"\s+[|•]\s+", line, maxsplit=1)[0]
+            line = re.sub(r"\s+", " ", line).strip(" |•\t")
+            words = line.split()
+            if (2 <= len(words) <= 5 and line.lower() not in excluded
+                    and "@" not in line and not re.search(r"\d|https?://|linkedin", line, re.I)
+                    and not any(word.casefold() in role_words for word in words)
+                    and all(re.fullmatch(r"[A-Za-z][A-Za-z'’-]*", word) and word[0].isupper()
+                            for word in words)):
+                info["first_name"] = words[0]
+                info["last_name"] = " ".join(words[1:])
+                break
+    return info
+
+
 def _review(caller, context_block, job, resume_md, cover_txt):
     user = (f"JOB: {job['title']} @ {job['company']}\n{(job['description'] or '')[:3000]}\n\n"
             f"EVIDENCE:\n{context_block[:22000]}\n\n"
@@ -372,6 +418,7 @@ def _review(caller, context_block, job, resume_md, cover_txt):
 # Engine
 # --------------------------------------------------------------------------- #
 def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
+                  source_resume_text=None,
                   log=print, out_dir="applications", conn=None, do_review=True):
     owns_conn = conn is None
     if conn is None:
@@ -391,7 +438,8 @@ def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
     job_text = f"{job['title']}\n{job['company']}\n{job['description'] or ''}"
     context_block, selected = clib.assemble_context(conn, job_text)
     base = conn.execute("SELECT text FROM context_documents WHERE doc_type='resume' ORDER BY char_len DESC LIMIT 1").fetchone()
-    base_resume = base["text"] if base else ""
+    base_resume = str(source_resume_text or (base["text"] if base else ""))
+    info = _personal_info_from_resume(info, base_resume)
     log(f"Context: {len(context_block):,} chars from {len(selected)} prior documents.")
 
     job_brief = (f"TARGET ROLE: {job['title']}\nEMPLOYER: {job['company']}\nLOCATION: {job['location']}\n"

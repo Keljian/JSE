@@ -52,7 +52,7 @@ if errorlevel 1 (
 
 if not exist "node_modules\.bin\vite.cmd" (
   echo First run setup: installing npm dependencies...
-  npm install
+  call npm install
   if errorlevel 1 (
     echo Failed to install npm dependencies.
     pause
@@ -60,7 +60,6 @@ if not exist "node_modules\.bin\vite.cmd" (
   )
 )
 
-npm run start
+call npm run start
 set "JSE_EXIT=%ERRORLEVEL%"
-if not "%JSE_EXIT%"=="0" pause
-exit /b %JSE_EXIT%
+endlocal & exit /b %JSE_EXIT%

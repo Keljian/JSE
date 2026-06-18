@@ -83,6 +83,11 @@ DEFAULT_PROFILE_SETTINGS = {
 GLOBAL_CREDENTIAL_FIELDS = ("openai_api_key", "claude_api_key", "gemini_api_key", "local_api_key")
 DEFAULT_APP_SETTINGS.update({
     "doc_ai_provider": DEFAULT_PROFILE_SETTINGS["doc_ai_provider"],
+    # Blank document/research values inherit the legacy provider until the user
+    # makes an explicit per-workflow selection. Memory remains local by default.
+    "document_ai_provider": "",
+    "research_ai_provider": "",
+    "memory_ai_provider": DEFAULT_PROFILE_SETTINGS["doc_ai_provider"],
     "doc_ai_model": DEFAULT_PROFILE_SETTINGS["doc_ai_model"],
     "openai_api_key": "",
     "openai_base_url": DEFAULT_PROFILE_SETTINGS["openai_base_url"],
@@ -947,6 +952,9 @@ def _get_global_credentials():
 
 GLOBAL_AI_SETTING_FIELDS = (
     "doc_ai_provider",
+    "document_ai_provider",
+    "research_ai_provider",
+    "memory_ai_provider",
     "doc_ai_model",
     "openai_api_key",
     "openai_base_url",

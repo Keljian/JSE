@@ -106,8 +106,9 @@ const SETTINGS_SECTIONS = [
 const CORPUS_DOC_TYPES = ["resume", "cover_letter", "ksc_response", "position_description", "capability_statement", "other"];
 
 function documentAiLabel(settings) {
-  const provider = DOCUMENT_AI_PROVIDERS.find((item) => item.id === (settings?.doc_ai_provider || "local"));
-  const model = settings?.doc_ai_model || settings?.[`${settings?.doc_ai_provider}_model`] || settings?.local_model;
+  const providerId = settings?.document_ai_provider || settings?.doc_ai_provider || "local";
+  const provider = DOCUMENT_AI_PROVIDERS.find((item) => item.id === providerId);
+  const model = settings?.doc_ai_model || settings?.[`${providerId}_model`] || settings?.local_model;
   return `${provider?.label || "Local"}${model ? ` (${model})` : ""}`;
 }
 
@@ -1908,6 +1909,7 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
   const [section, setSection] = useState("profile");
   const [compacting, setCompacting] = useState(false);
   const [compactResult, setCompactResult] = useState(null);
+  const [providerTests, setProviderTests] = useState({});
 
   useEffect(() => setForm(settings || {}), [settings]);
   useEffect(() => setGlobalForm(globalSettings || {}), [globalSettings]);
@@ -1999,6 +2001,71 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
     }
   };
 
+  const workflowProvider = (key) => globalForm[key] || globalForm.doc_ai_provider || "local";
+  const providerIsConfigured = (provider) => {
+    if (provider === "local") return Boolean((globalForm.local_base_url || "").trim());
+    if (provider === "chatgpt") return Boolean((globalForm.openai_api_key || "").trim());
+    if (provider === "claude") return Boolean((globalForm.claude_api_key || "").trim());
+    if (provider === "gemini") return Boolean((globalForm.gemini_api_key || "").trim());
+    return false;
+  };
+  const providerIsUsed = (provider) => [
+    workflowProvider("document_ai_provider"),
+    workflowProvider("research_ai_provider"),
+    workflowProvider("memory_ai_provider"),
+    "local"
+  ].includes(provider);
+  const providerStatus = (provider) => {
+    const test = providerTests[provider];
+    if (test?.ok) return "Verified";
+    if (test?.warning) return "Model not loaded";
+    if (test && !test.testing && !test.ok) return "Test failed";
+    if (providerIsConfigured(provider)) return "Configured";
+    return providerIsUsed(provider) ? "Needs setup" : "Not configured";
+  };
+  const providerStatusClass = (provider) => {
+    const test = providerTests[provider];
+    if (test?.ok) return "ready";
+    if (test?.warning) return "warning";
+    if (test && !test.testing && !test.ok) return "failed";
+    return providerIsConfigured(provider) ? "ready" : "missing";
+  };
+  const testProvider = async (provider) => {
+    setProviderTests((current) => ({ ...current, [provider]: { testing: true } }));
+    try {
+      const result = await new Promise((resolve, reject) => {
+        let task;
+        task = window.jobAssistant.startTask(
+          "ai:testProvider",
+          { provider, settings: globalForm },
+          (event) => {
+            if (event.type === "result") {
+              task?.unsubscribe();
+              resolve(event.data);
+            } else if (event.type === "error") {
+              task?.unsubscribe();
+              reject(new Error(event.message || "Provider test failed."));
+            }
+          }
+        );
+      });
+      if (provider === "local" && result.model) {
+        updateGlobal("local_model", result.model);
+      }
+      setProviderTests((current) => ({
+        ...current,
+        [provider]: result.ok
+          ? { ok: true, message: `${result.label} responded in ${(result.elapsed_ms / 1000).toFixed(1)}s` }
+          : { ok: false, warning: Boolean(result.reachable), message: result.message || "Provider test failed." }
+      }));
+    } catch (error) {
+      setProviderTests((current) => ({
+        ...current,
+        [provider]: { ok: false, message: toErrorMessage(error) }
+      }));
+    }
+  };
+
   return (
     <section className="settings-view">
       <div className="section-head">
@@ -2061,20 +2128,79 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
         </section>
         ) : null}
         {section === "ai" ? (
-        <section className="settings-section full-settings">
-          <h3>AI & Credentials</h3>
-          <div className="form-grid compact provider-grid">
-            <label><span>Document AI</span><select value={globalForm.doc_ai_provider || "local"} onChange={(event) => updateGlobal("doc_ai_provider", event.target.value)}>{DOCUMENT_AI_PROVIDERS.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select></label>
-            <label><span>Override model</span><input value={globalForm.doc_ai_model || ""} placeholder="Optional model override" onChange={(event) => updateGlobal("doc_ai_model", event.target.value)} /></label>
-            <label><span>Local base URL</span><input value={globalForm.local_base_url || ""} placeholder="http://localhost:1234/v1" onChange={(event) => updateGlobal("local_base_url", event.target.value)} /></label>
-            <label><span>Local model</span><input value={globalForm.local_model || ""} placeholder="qwen2.5:14b, llama3.1, loaded model name" onChange={(event) => updateGlobal("local_model", event.target.value)} /></label>
-            <label><span>Local API key</span><input type="password" value={globalForm.local_api_key || ""} placeholder="Optional" onChange={(event) => updateGlobal("local_api_key", event.target.value)} /></label>
-            <label><span>OpenAI / ChatGPT API key</span><input type="password" value={globalForm.openai_api_key || ""} placeholder="Optional" onChange={(event) => updateGlobal("openai_api_key", event.target.value)} /></label>
-            <label><span>OpenAI-compatible base URL</span><input value={globalForm.openai_base_url || ""} placeholder="https://api.openai.com/v1" onChange={(event) => updateGlobal("openai_base_url", event.target.value)} /></label>
-            <label><span>Claude API key</span><input type="password" value={globalForm.claude_api_key || ""} placeholder="Optional" onChange={(event) => updateGlobal("claude_api_key", event.target.value)} /></label>
-            <label><span>Claude model</span><input value={globalForm.claude_model || ""} placeholder="claude-3-5-sonnet-latest" onChange={(event) => updateGlobal("claude_model", event.target.value)} /></label>
-            <label><span>Gemini API key</span><input type="password" value={globalForm.gemini_api_key || ""} placeholder="Optional" onChange={(event) => updateGlobal("gemini_api_key", event.target.value)} /></label>
-            <label><span>Gemini model</span><input value={globalForm.gemini_model || ""} placeholder="gemini-3.1-pro-preview" onChange={(event) => updateGlobal("gemini_model", event.target.value)} /></label>
+        <section className="settings-section full-settings ai-settings">
+          <header className="ai-settings-intro">
+            <div className="ai-settings-icon"><Sparkles size={19} /></div>
+            <div>
+              <h3>AI routing</h3>
+              <p>Choose the engine for each kind of work, then configure only the providers you use.</p>
+            </div>
+          </header>
+
+          <div className="ai-block-heading">
+            <div><strong>Workflow assignments</strong><span>Each workflow can use a different provider.</span></div>
+          </div>
+          <div className="ai-route-grid">
+            <article className="ai-route-card">
+              <div className="ai-route-copy"><FileText size={17} /><div><strong>Application documents</strong><span>Resumes, cover letters and fact-checking</span></div></div>
+              <select aria-label="Application document provider" value={workflowProvider("document_ai_provider")} onChange={(event) => updateGlobal("document_ai_provider", event.target.value)}>{DOCUMENT_AI_PROVIDERS.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>
+            </article>
+            <article className="ai-route-card">
+              <div className="ai-route-copy"><BriefcaseBusiness size={17} /><div><strong>Employer research</strong><span>Company context and application angles</span></div></div>
+              <select aria-label="Employer research provider" value={workflowProvider("research_ai_provider")} onChange={(event) => updateGlobal("research_ai_provider", event.target.value)}>{DOCUMENT_AI_PROVIDERS.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>
+            </article>
+            <article className="ai-route-card">
+              <div className="ai-route-copy"><NotebookTabs size={17} /><div><strong>Evidence & memory</strong><span>Corpus mining and reusable career evidence</span></div></div>
+              <select aria-label="Evidence and memory provider" value={workflowProvider("memory_ai_provider")} onChange={(event) => updateGlobal("memory_ai_provider", event.target.value)}>{DOCUMENT_AI_PROVIDERS.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>
+            </article>
+            <article className="ai-route-card fixed">
+              <div className="ai-route-copy"><Radar size={17} /><div><strong>Job matching</strong><span>High-volume triage and fit analysis</span></div></div>
+              <div className="ai-fixed-provider"><span className="status-dot configured" />Local endpoint <small>Fixed</small></div>
+            </article>
+          </div>
+
+          <div className="ai-block-heading providers-heading">
+            <div><strong>Provider connections</strong><span>Credentials stay on this device.</span></div>
+          </div>
+          <div className="ai-provider-grid">
+            <article className={`ai-provider-card ${providerIsUsed("local") ? "in-use" : ""}`}>
+              <header><div><span className="provider-mark local">L</span><div><strong>Local endpoint</strong><small>Private, on-device inference</small></div></div><div className="provider-card-actions"><span className={`provider-status ${providerStatusClass("local")}`}><i />{providerStatus("local")}</span><button type="button" className="secondary ai-test-button" disabled={providerTests.local?.testing} onClick={() => testProvider("local")}>{providerTests.local?.testing ? <Loader2 className="spin" size={12} /> : <Play size={12} />}Test</button></div></header>
+              <div className="ai-provider-fields">
+                <label className="full"><span>Base URL</span><input value={globalForm.local_base_url || ""} placeholder="http://localhost:1234/v1" onChange={(event) => updateGlobal("local_base_url", event.target.value)} /></label>
+                <label><span>Model</span><input value={globalForm.local_model || ""} placeholder="Loaded model name" onChange={(event) => updateGlobal("local_model", event.target.value)} /></label>
+                <label><span>API key</span><input type="password" value={globalForm.local_api_key || ""} placeholder="Optional" onChange={(event) => updateGlobal("local_api_key", event.target.value)} /></label>
+              </div>
+              {providerTests.local && !providerTests.local.testing ? <div className={`ai-test-result ${providerTests.local.ok ? "ok" : providerTests.local.warning ? "warning" : "bad"}`}>{providerTests.local.message}</div> : null}
+            </article>
+            <article className={`ai-provider-card ${providerIsUsed("gemini") ? "in-use" : ""}`}>
+              <header><div><span className="provider-mark gemini">G</span><div><strong>Gemini</strong><small>Google AI models</small></div></div><div className="provider-card-actions"><span className={`provider-status ${providerStatusClass("gemini")}`}><i />{providerStatus("gemini")}</span><button type="button" className="secondary ai-test-button" disabled={providerTests.gemini?.testing} onClick={() => testProvider("gemini")}>{providerTests.gemini?.testing ? <Loader2 className="spin" size={12} /> : <Play size={12} />}Test</button></div></header>
+              <div className="ai-provider-fields">
+                <label><span>API key</span><input type="password" value={globalForm.gemini_api_key || ""} placeholder="Required" onChange={(event) => updateGlobal("gemini_api_key", event.target.value)} /></label>
+                <label><span>Model</span><input value={globalForm.gemini_model || ""} placeholder="gemini-3.1-pro-preview" onChange={(event) => updateGlobal("gemini_model", event.target.value)} /></label>
+              </div>
+              {providerTests.gemini && !providerTests.gemini.testing ? <div className={`ai-test-result ${providerTests.gemini.ok ? "ok" : "bad"}`}>{providerTests.gemini.message}</div> : null}
+            </article>
+            <article className={`ai-provider-card ${providerIsUsed("chatgpt") ? "in-use" : ""}`}>
+              <header><div><span className="provider-mark openai">O</span><div><strong>OpenAI</strong><small>ChatGPT and compatible APIs</small></div></div><div className="provider-card-actions"><span className={`provider-status ${providerStatusClass("chatgpt")}`}><i />{providerStatus("chatgpt")}</span><button type="button" className="secondary ai-test-button" disabled={providerTests.chatgpt?.testing} onClick={() => testProvider("chatgpt")}>{providerTests.chatgpt?.testing ? <Loader2 className="spin" size={12} /> : <Play size={12} />}Test</button></div></header>
+              <div className="ai-provider-fields">
+                <label><span>API key</span><input type="password" value={globalForm.openai_api_key || ""} placeholder="Required" onChange={(event) => updateGlobal("openai_api_key", event.target.value)} /></label>
+                <label><span>Base URL</span><input value={globalForm.openai_base_url || ""} placeholder="https://api.openai.com/v1" onChange={(event) => updateGlobal("openai_base_url", event.target.value)} /></label>
+              </div>
+              {providerTests.chatgpt && !providerTests.chatgpt.testing ? <div className={`ai-test-result ${providerTests.chatgpt.ok ? "ok" : "bad"}`}>{providerTests.chatgpt.message}</div> : null}
+            </article>
+            <article className={`ai-provider-card ${providerIsUsed("claude") ? "in-use" : ""}`}>
+              <header><div><span className="provider-mark claude">C</span><div><strong>Claude</strong><small>Anthropic models</small></div></div><div className="provider-card-actions"><span className={`provider-status ${providerStatusClass("claude")}`}><i />{providerStatus("claude")}</span><button type="button" className="secondary ai-test-button" disabled={providerTests.claude?.testing} onClick={() => testProvider("claude")}>{providerTests.claude?.testing ? <Loader2 className="spin" size={12} /> : <Play size={12} />}Test</button></div></header>
+              <div className="ai-provider-fields">
+                <label><span>API key</span><input type="password" value={globalForm.claude_api_key || ""} placeholder="Required" onChange={(event) => updateGlobal("claude_api_key", event.target.value)} /></label>
+                <label><span>Model</span><input value={globalForm.claude_model || ""} placeholder="claude-3-5-sonnet-latest" onChange={(event) => updateGlobal("claude_model", event.target.value)} /></label>
+              </div>
+              {providerTests.claude && !providerTests.claude.testing ? <div className={`ai-test-result ${providerTests.claude.ok ? "ok" : "bad"}`}>{providerTests.claude.message}</div> : null}
+            </article>
+          </div>
+
+          <div className="ai-advanced-row">
+            <div><strong>Global model override</strong><span>Optional. Overrides the provider-specific model for every cloud workflow.</span></div>
+            <input aria-label="Global model override" value={globalForm.doc_ai_model || ""} placeholder="Leave blank to use provider models" onChange={(event) => updateGlobal("doc_ai_model", event.target.value)} />
           </div>
         </section>
         ) : null}

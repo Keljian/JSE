@@ -45,13 +45,32 @@ def _bottom_border(paragraph):
 
 
 def _add_inline(paragraph, text):
-    """Render **bold** segments inside a paragraph."""
-    for i, part in enumerate(text.split("**")):
-        if not part:
-            continue
-        run = paragraph.add_run(part)
-        if i % 2 == 1:
+    """Render the small Markdown subset used by generated documents."""
+    token_re = re.compile(r"(\*\*[^*]+\*\*|(?<!\*)\*[^*\n]+\*(?!\*))")
+    position = 0
+    for match in token_re.finditer(text):
+        if match.start() > position:
+            paragraph.add_run(text[position:match.start()])
+        token = match.group(0)
+        run = paragraph.add_run(token[2:-2] if token.startswith("**") else token[1:-1])
+        if token.startswith("**"):
             run.bold = True
+        else:
+            run.italic = True
+        position = match.end()
+    if position < len(text):
+        paragraph.add_run(text[position:])
+
+
+def _role_heading_with_date(line):
+    """Give undated role headings an explicit, honest chronology label."""
+    text = line.strip()
+    has_date = bool(re.search(
+        r"\b(?:19|20)\d{2}\b|\bpresent\b|\bcurrent\b|\bprior experience\b",
+        text,
+        re.I,
+    ))
+    return text if has_date else f"{text} | Prior experience"
 
 
 def _contact_header(doc, info):
@@ -86,13 +105,12 @@ def render_markdown_to_docx(markdown_text, output_path, personal_info=None,
             section.top_margin = section.bottom_margin = Inches(0.8)
         header_present = False
 
-    if add_header and not header_present and personal_info:
+    if add_header and not header_present:
         _contact_header(doc, personal_info)
 
     for raw in markdown_text.splitlines():
         line = raw.rstrip()
         if not line.strip():
-            doc.add_paragraph().paragraph_format.space_after = Pt(4)
             continue
         line = line.strip()
 
@@ -113,7 +131,7 @@ def render_markdown_to_docx(markdown_text, output_path, personal_info=None,
             p.paragraph_format.space_after = Pt(4)
         elif line.startswith("### "):
             p = doc.add_paragraph()
-            _add_inline(p, line[4:].strip())
+            _add_inline(p, _role_heading_with_date(line[4:]))
             for run in p.runs:
                 run.bold = True
             p.paragraph_format.space_before = Pt(8)
@@ -147,7 +165,15 @@ def render_cover_letter_to_docx(content, output_path, personal_info=None, base_t
         doc = docx.Document()
         for section in doc.sections:
             section.left_margin = section.right_margin = Inches(1.0)
-            section.top_margin = section.bottom_margin = Inches(0.9)
+            section.top_margin = section.bottom_margin = Inches(0.65)
+
+    # A compact, readable business-letter default. Together with the authoring
+    # word limit this keeps generated letters to one page.
+    normal = doc.styles["Normal"]
+    normal.font.size = Pt(10.5)
+    normal.paragraph_format.space_before = Pt(0)
+    normal.paragraph_format.space_after = Pt(0)
+    normal.paragraph_format.line_spacing = 1.0
 
     # No centered resume-style banner on a letter — it should open with the
     # date / recipient block like a proper business letter.
@@ -169,8 +195,6 @@ def render_cover_letter_to_docx(content, output_path, personal_info=None, base_t
     for line in lines[i:]:
         s = line.strip()
         if not s:
-            if body_started:
-                doc.add_paragraph().paragraph_format.space_after = Pt(4)
             continue
         low = s.lower()
 
@@ -200,8 +224,8 @@ def render_cover_letter_to_docx(content, output_path, personal_info=None, base_t
             p = doc.add_paragraph()
             _add_inline(p, s)
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.line_spacing = 1.15
-            p.paragraph_format.space_after = Pt(8)
+            p.paragraph_format.line_spacing = 1.0
+            p.paragraph_format.space_after = Pt(6)
 
     doc.save(str(output_path))
     return str(output_path)

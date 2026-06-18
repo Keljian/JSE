@@ -12,6 +12,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 ## Contents
 
 - [Features](#features)
+- [Quick Start (~20 minutes)](#quick-start-20-minutes)
 - [What You Need First](#what-you-need-first)
 - [Install Dependencies](#install-dependencies)
 - [Start The App](#start-the-app)
@@ -63,6 +64,26 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 ### By design
 
 - **Local-first.** Settings, documents, database, browser profiles, and backups all live on your machine, and matching/assessment can run with no outbound calls.
+
+---
+
+## Quick Start (~20 minutes)
+
+The fastest path to a working search. This assumes Node.js, Python 3.11+, and Google Chrome are already installed — if they aren't, install those first (see [What You Need First](#what-you-need-first)), as that's the only step that can blow the 20-minute budget.
+
+1. **Get the app running (~5 min).** From the project folder, run `.\Run.bat` (Windows) or `./Run.command` (macOS). The launcher creates the local folders, sets up `.venv`, installs the Python and npm packages, then starts the app. The first run is the slow one; later runs are quick.
+
+2. **Add your resume (~2 min).** Open **Settings -> Lane/Profile**, import your resume (DOCX or PDF), and set your location and work modes.
+
+3. **Seed the knowledge base (~3 min).** Drop a handful of your past applications — old resumes, cover letters, anything you've sent before — into the `older_applications/` folder. JSE breaks these into fragments so matching and document generation reflect your real history instead of a single static resume. You can skip this and add documents later, but even three or four files noticeably improve match quality. See [Data Folders](#data-folders) for what lives where.
+
+4. **Point at a model (~5 min).** The quickest local option is LM Studio: load a small instruct model (e.g. an 8B–14B Qwen or Llama), start its server, then in **Settings -> AI & Credentials** set `Document AI` to `Local endpoint`, base URL `http://localhost:1234/v1`, and the loaded model name. Downloading the model is usually the longest part — pick a small one for this first run. Full details in [Local LLM Setup](#local-llm-setup).
+
+5. **Enable one scraper (~2 min).** Go to **Settings -> General -> Searchers**. Enable a single source with **Available** and **This lane**, and set a low page limit (1–2 pages).
+
+6. **Run a small search (~3 min).** Trigger a search on the active lane and watch the local LLM triage the results. If jobs come in and get scored, your pipeline works end to end.
+
+From here you can add more lanes, more scrapers, and a cloud provider for document generation when you're ready. The rest of this README covers each piece in depth.
 
 ---
 
@@ -132,13 +153,14 @@ the Vite frontend on `127.0.0.1:5173` and then launches Electron.
 1. Open **Settings**.
 2. In the **Lane/Profile** area, choose or import your resume.
 3. Set your preferred location, work modes, page limits, and matching rules.
-4. In **AI & Credentials**, choose your Document AI provider.
-5. In **Searchers**, import scraper plugins or use **Build A Scraper Plugin** to
+4. Seed the candidate knowledge base: copy any past applications, cover letters, or older resumes into the `older_applications/` folder. JSE indexes these into fragments so matching and generated documents draw on your real history, not just the single resume above. This is optional but recommended — it's the difference between keyword overlap and matching that understands you as a candidate. You can add to this folder at any time and re-index later.
+5. In **AI & Credentials**, choose your Document AI provider.
+6. In **Searchers**, import scraper plugins or use **Build A Scraper Plugin** to
    generate one with your configured local LLM, then run a dry run before using
    it in searches.
-6. Configure either a local endpoint or cloud provider credentials.
-7. In **Searchers**, enable the sources you want for the active lane.
-8. Run a small search first, with a low page limit, to confirm everything works.
+7. Configure either a local endpoint or cloud provider credentials.
+8. In **Searchers**, enable the sources you want for the active lane.
+9. Run a small search first, with a low page limit, to confirm everything works.
 
 ---
 
@@ -264,17 +286,18 @@ A few things to keep in mind:
 ## Typical Workflow
 
 1. Configure one or more lanes, each with its own resume.
-2. Configure your local model (assessment) and, optionally, a cloud model (document generation).
-3. Enable scrapers for each lane.
-4. Generate or edit search terms.
-5. Run search across your active lanes.
-6. Let the local LLM triage new jobs — initial match first, then deeper fragment/full match with approach notes.
-7. Move promising jobs across the Kanban board.
-8. Research companies, including questions to ask, where needed.
-9. Generate tailored application documents in your own voice via your cloud model.
-10. Track applications, interviews, interview feedback, follow-ups, outcomes, and feedback.
-11. Work your follow-up schedule; stale, un-actioned applications auto-archive.
-12. Review market intelligence — hidden-market and current-market analysis — to steer where you focus next.
+2. Seed `older_applications/` with past applications so the fragment knowledge base has something to learn from.
+3. Configure your local model (assessment) and, optionally, a cloud model (document generation).
+4. Enable scrapers for each lane.
+5. Generate or edit search terms.
+6. Run search across your active lanes.
+7. Let the local LLM triage new jobs — initial match first, then deeper fragment/full match with approach notes.
+8. Move promising jobs across the Kanban board.
+9. Research companies, including questions to ask, where needed.
+10. Generate tailored application documents in your own voice via your cloud model.
+11. Track applications, interviews, interview feedback, follow-ups, outcomes, and feedback.
+12. Work your follow-up schedule; stale, un-actioned applications auto-archive.
+13. Review market intelligence — hidden-market and current-market analysis — to steer where you focus next.
 
 ---
 

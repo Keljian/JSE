@@ -127,11 +127,12 @@ def _strip_reasoning_blocks(text):
     return cleaned.strip()
 
 
-def _local_ai_settings():
+def _local_ai_settings(overrides=None):
     try:
         settings = db.get_app_settings()
     except Exception:
         settings = {}
+    settings = {**settings, **(overrides or {})}
     base_url = (settings.get("local_base_url") or DEFAULT_LOCAL_BASE_URL or "http://localhost:1234/v1").rstrip("/")
     if base_url.lower() in {"http://localhost:8888/api", "http://127.0.0.1:8888/api"}:
         base_url = f"{base_url[:-4]}/v1"
@@ -171,7 +172,7 @@ def _local_is_configured():
         return False
 
 
-def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False):
+def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, settings=None):
     """Core local OpenAI-compatible chat-completions call with retry logic.
 
     json_mode=True requests OpenAI-compatible JSON response_format so the
@@ -181,7 +182,7 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False):
     # always headroom for the prompt; per-call budgets still control cost,
     # but evidence-anchored prompts can request more when it genuinely helps.
     max_tokens = min(int(max_tokens or 2048), 16384)
-    local = _local_ai_settings()
+    local = _local_ai_settings(settings)
     if not local["model"]:
         local["model"] = _discover_local_model(local)
     headers = _local_auth_headers(local)
@@ -329,7 +330,8 @@ def _call_document_ai(settings, messages, temperature=0.2, max_tokens=4096, json
     # 16K matches the new Qwen3 hard ceiling in _call_unsloth.
     if provider == "local":
         return _call_unsloth(
-            messages, temperature=temperature, max_tokens=min(max_tokens, 16384), json_mode=json_mode
+            messages, temperature=temperature, max_tokens=min(max_tokens, 16384), json_mode=json_mode,
+            settings=settings,
         ), f"Local ({model})"
     if provider == "chatgpt":
         return _call_openai_compatible(
@@ -359,6 +361,17 @@ def _call_document_ai(settings, messages, temperature=0.2, max_tokens=4096, json
             max_tokens,
         ), f"Gemini ({model})"
     raise ValueError(f"Unknown document AI provider: {provider}")
+
+
+def _settings_for_ai_task(settings, provider_field):
+    """Resolve one workflow's provider while retaining shared keys/models."""
+    resolved = dict(settings or {})
+    resolved["doc_ai_provider"] = (
+        resolved.get(provider_field)
+        or resolved.get("doc_ai_provider")
+        or "local"
+    ).lower()
+    return resolved
 
 
 def _json_object_candidate(text):
@@ -1951,6 +1964,7 @@ def generate_template_application_content(
     log_callback=None,
     position_description_text="",
 ):
+    settings = _settings_for_ai_task(settings, "document_ai_provider")
     if concurrency.cancel_event.is_set():
         raise concurrency.OperationCancelledError("Operation cancelled.")
     concurrency.paused.wait()
@@ -2250,7 +2264,7 @@ def extract_application_memory_fragments(
     See the top-of-file architecture note for the wider memory loop.
     """
     log = log_callback or print
-    local_settings = {**(settings or {}), "doc_ai_provider": "local"}
+    local_settings = _settings_for_ai_task(settings, "memory_ai_provider")
 
     prior_context = _format_fragment_context(prior_lane_fragments)
     prior_block = (
@@ -2369,7 +2383,7 @@ def align_memory_fragments_to_role(role_payload, fragments, settings=None, log_c
     The output is intended to drive both tailoring and a fragment-aware score.
     """
     log = log_callback or print
-    local_settings = {**(settings or {}), "doc_ai_provider": "local"}
+    local_settings = _settings_for_ai_task(settings, "memory_ai_provider")
     messages = [
         {
             "role": "system",
@@ -2462,7 +2476,7 @@ def consolidate_memory_fragments(fragments_from_kits, settings=None, log_callbac
     log = log_callback or print
     if not fragments_from_kits:
         return [], "no fragments to consolidate"
-    local_settings = {**(settings or {}), "doc_ai_provider": "local"}
+    local_settings = _settings_for_ai_task(settings, "memory_ai_provider")
     messages = [
         {
             "role": "system",
@@ -2542,7 +2556,7 @@ def promote_emerging_fragments(fragments, outcome_history, settings=None, log_ca
     emerging = [f for f in (fragments or []) if str(f.get("status", "")).lower() == "emerging"]
     if not emerging:
         return {"promotions": [], "demotions": [], "notes": ["No emerging fragments to evaluate."]}, "no emerging fragments"
-    local_settings = {**(settings or {}), "doc_ai_provider": "local"}
+    local_settings = _settings_for_ai_task(settings, "memory_ai_provider")
     messages = [
         {
             "role": "system",
@@ -2612,7 +2626,7 @@ def derive_search_terms_from_fragments(fragments, optimism_level=3, settings=Non
     log = log_callback or print
     if not fragments:
         return [], "no fragments — caller should fall back to derive_search_terms_from_resume"
-    local_settings = {**(settings or {}), "doc_ai_provider": "local"}
+    local_settings = _settings_for_ai_task(settings, "memory_ai_provider")
 
     if optimism_level <= 1:
         spread = "3-4 conservative titles drawn from the strongest established fragments only"
@@ -2732,7 +2746,7 @@ JOB ADVERTISEMENT:
 ---
 """
     response, provider_label = _call_document_ai(
-        settings or {},
+        _settings_for_ai_task(settings, "research_ai_provider"),
         [
             {"role": "system", "content": COMPANY_RESEARCH_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},

@@ -39,6 +39,7 @@ RESUME_SYSTEM = """You are an expert Australian resume writer. Write a tailored 
 
 Rules:
 - Use `## SECTION` for section headings, `### Company | Role | Dates` for each role, `* ` for achievement bullets, `**bold**` sparingly for emphasis.
+- If the evidence gives no date for a role, use `Prior experience` in its Dates position; never invent a date.
 - Lead with the evidence most relevant to THIS role. Mirror the job ad's terminology only where the candidate genuinely matches.
 - NEVER invent employers, dates, titles, metrics, tools, or certifications that are not present in the supplied evidence. Grounding over polish.
 - Do NOT include a name/contact header (the renderer adds it). Start at the professional profile.
@@ -51,10 +52,10 @@ Structure (plain text, one item per line / paragraph):
 - Recipient name + company + location IF known from the job, else omit
 - `Re: <role title>`
 - `Dear <name or 'Hiring Manager'>,`
-- 3–5 substantive body paragraphs that map the candidate's real achievements to the role's needs. Be specific; use real metrics from the evidence.
+- 3–4 concise body paragraphs that map the candidate's real achievements to the role's needs. Be specific; use real metrics from the evidence.
 - `Yours sincerely,`
 - Candidate full name
-Rules: never invent facts; don't include a sender contact header (the renderer adds it). Output ONLY the letter text."""
+Rules: keep the entire letter to 400 words or fewer so it fits on one page; never invent facts; don't include a sender contact header (the renderer adds it). Output ONLY the letter text."""
 
 
 REVIEW_SYSTEM = """You are a strict pre-submission fact-checker for a job application. You are given:
