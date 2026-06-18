@@ -26,6 +26,7 @@ import database_manager as db
 import scraper_plugins
 from config import MY_INFO
 from db_setup import setup_database
+from job_liveness import check_job_liveness
 
 # Protocol output. In one-shot mode emit() writes JSON lines to stdout exactly as
 # before. In --serve (persistent worker) mode, _OUTPUT_STREAM is pinned to the real
@@ -1920,6 +1921,26 @@ def command_docs_generate_rich(payload):
     import rich_application
     profile_id = payload.get("profile_id", 1)
     job_id = payload["job_id"]
+    job = db.get_job_details(job_id)
+    if not job:
+        raise ValueError(f"Job {job_id} was not found.")
+    emit("status", message=f"Checking whether {job['title']} is still live…")
+    liveness = check_job_liveness(job)
+    if liveness["status"] == "closed":
+        reason = f"Document generation skipped: {liveness['reason']}"
+        db.update_job_application(job_id, {
+            "status": "archived",
+            "pipeline_stage": "archived",
+            "retired_reason": reason,
+            "next_action": "",
+            "next_action_date": "",
+        })
+        db.add_application_event(job_id, "retired", "Job listing auto-archived", reason)
+        raise JobNotLiveError(reason)
+    if liveness["status"] == "live":
+        emit("log", message=f"Live listing check passed for {job['title']}: {liveness['reason']}")
+    else:
+        emit("log", message=f"Listing could not be confirmed for {job['title']}; proceeding cautiously. {liveness['reason']}")
     settings = db.get_lane_settings(profile_id)
     source_resume_text = read_resume_text(profile_id)
     try:
@@ -2200,6 +2221,90 @@ def command_corpus_reclassify(payload):
     return result
 
 
+class JobNotLiveError(ValueError):
+    """A confident liveness check says document generation should be skipped."""
+
+
+def command_docs_generate_interested_batch(payload):
+    """Generate application documents sequentially for an explicit Interested list."""
+    raw_ids = payload.get("job_ids") or []
+    job_ids = []
+    seen = set()
+    for value in raw_ids:
+        try:
+            job_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if job_id not in seen:
+            seen.add(job_id)
+            job_ids.append(job_id)
+    if not job_ids:
+        raise ValueError("No Interested jobs were supplied for document generation.")
+
+    total = len(job_ids)
+    succeeded = 0
+    failed = 0
+    skipped = 0
+    results = []
+    emit("progress", current=0, total=total, succeeded=0, failed=0, skipped=0,
+         status="starting", message=f"Preparing {total} Interested job(s)…")
+
+    for index, job_id in enumerate(job_ids, start=1):
+        job = db.get_job_details(job_id)
+        if not job:
+            failed += 1
+            results.append({"job_id": job_id, "ok": False, "error": "Job not found."})
+            emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+                 job_id=job_id, status="failed", message=f"Skipped missing job {job_id}.")
+            continue
+
+        title = str(job["title"] or f"Job {job_id}")
+        emit("progress", current=index - 1, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+             job_id=job_id, title=title, status="generating",
+             message=f"Generating {index} of {total}: {title}")
+        try:
+            result = command_docs_generate_rich({
+                "job_id": job_id,
+                "profile_id": job["profile_id"],
+                "position_description_text": job["position_description_text"] or "",
+            })
+            succeeded += 1
+            results.append({
+                "job_id": job_id,
+                "title": title,
+                "ok": True,
+                "resume_path": result.get("resume_path"),
+                "cover_letter_path": result.get("cover_letter_path"),
+            })
+            emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+                 job_id=job_id, title=title, status="completed",
+                 message=f"Completed {index} of {total}: {title}")
+        except JobNotLiveError as exc:
+            skipped += 1
+            reason = str(exc)
+            results.append({"job_id": job_id, "title": title, "ok": False, "skipped": True, "error": reason})
+            emit("log", message=reason)
+            emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+                 job_id=job_id, title=title, status="skipped",
+                 message=f"Skipped closed job {index} of {total}: {title}")
+        except Exception as exc:
+            failed += 1
+            error = str(exc)
+            results.append({"job_id": job_id, "title": title, "ok": False, "error": error})
+            emit("log", message=f"Document generation failed for {title}: {error}")
+            emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+                 job_id=job_id, title=title, status="failed",
+                 message=f"Failed {index} of {total}: {title}")
+
+    return {
+        "total": total,
+        "succeeded": succeeded,
+        "failed": failed,
+        "skipped": skipped,
+        "results": results,
+    }
+
+
 def command_corpus_mine(payload):
     import corpus_miner
     profile_id = payload.get("profile_id", 1)
@@ -2332,6 +2437,7 @@ COMMANDS = {
     "document:extract": command_document_extract,
     "docs:generate": command_docs_generate,
     "docs:generateRich": command_docs_generate_rich,
+    "docs:generateInterestedBatch": command_docs_generate_interested_batch,
     "application:prompt": command_application_prompt_generate,
     "corpus:stats": command_corpus_stats,
     "corpus:reindex": command_corpus_reindex,

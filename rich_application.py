@@ -471,7 +471,9 @@ def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
             pass
 
     out = Path(out_dir); out.mkdir(exist_ok=True)
-    safe = _safe(job["title"])
+    # Company + role prevents same-title jobs from overwriting one another,
+    # especially when an Interested-column batch is generated sequentially.
+    safe = _safe(f"{job['company'] or ''}_{job['title']}")
     rpath = out / f"{safe}_targeted_resume.docx"
     cpath = out / f"{safe}_cover_letter.docx"
     mdpath = out / f"{safe}_application_content.json"

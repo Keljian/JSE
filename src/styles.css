@@ -2100,6 +2100,125 @@ h3 {
   background: #fff;
 }
 
+.docs-batch-progress {
+  margin: 8px 9px 0;
+  padding: 9px 10px;
+  border: 1px solid #bfd5cb;
+  border-radius: 8px;
+  background: #f4faf7;
+  box-shadow: var(--shadow-sm);
+}
+
+.interested-batch-toolbar {
+  padding: 8px 9px 0;
+}
+
+.interested-batch-toolbar button {
+  width: 100%;
+  min-height: 32px;
+  justify-content: center;
+  border-color: #b9cec4;
+  color: #245347;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.interested-batch-toolbar button:hover:not(:disabled) {
+  border-color: #7da594;
+  background: #edf6f1;
+}
+
+.interested-batch-toolbar button > span {
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 2px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #285a4d;
+  background: #e1eee7;
+  font-size: 10px;
+}
+
+.docs-batch-progress.completed {
+  border-color: #b9d8c8;
+  background: #f1f9f4;
+}
+
+.docs-batch-progress.completed_with_errors,
+.docs-batch-progress.failed,
+.docs-batch-progress.cancelled {
+  border-color: #dfcb9a;
+  background: #fff9e9;
+}
+
+.docs-batch-progress-head,
+.docs-batch-progress-head > span {
+  display: flex;
+  align-items: center;
+}
+
+.docs-batch-progress-head {
+  gap: 7px;
+  color: #2f4b42;
+  font-size: 11px;
+}
+
+.docs-batch-progress-head > span:first-child {
+  min-width: 0;
+  gap: 6px;
+}
+
+.docs-batch-progress-head > span:nth-child(2) {
+  margin-left: auto;
+  color: #52635c;
+  font-weight: 800;
+}
+
+.docs-batch-progress-head .icon {
+  width: 22px;
+  min-height: 22px;
+  padding: 0;
+}
+
+.docs-batch-track {
+  height: 7px;
+  margin: 8px 0 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dfe8e3;
+}
+
+.docs-batch-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2f7661, #62a187);
+  transition: width 220ms ease;
+}
+
+.docs-batch-progress p,
+.docs-batch-progress small {
+  margin: 0;
+  color: #5d6c65;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.docs-batch-progress p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docs-batch-progress small {
+  display: block;
+  margin-top: 2px;
+}
+
 .subtle-icon {
   width: 26px;
   min-height: 26px;

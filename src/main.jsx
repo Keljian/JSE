@@ -2427,6 +2427,7 @@ function App() {
   const [filters, setFilters] = useState({ query: "", stage: "", source: "", company: "", location: "", work_modes: [], min_score: "", max_score: "", date_from: "", has_interview: false, has_feedback: false });
   const [interestedSort, setInterestedSort] = useState("match");
   const [activeTasks, setActiveTasks] = useState({});
+  const [docsBatchProgress, setDocsBatchProgress] = useState(null);
   const [runSearchOpen, setRunSearchOpen] = useState(false);
   const [addJobOpen, setAddJobOpen] = useState(false);
   const [addJobBusy, setAddJobBusy] = useState(false);
@@ -2687,6 +2688,9 @@ function App() {
     }
     window.jobAssistant.stopAllTasks?.();
     setActiveTasks({});
+    setDocsBatchProgress((current) => current?.running
+      ? { ...current, running: false, status: "cancelled", message: "Batch cancelled." }
+      : current);
     setStatus("Idle");
     appendLog("Stop requested. Search, analysis, document, and company tasks were terminated.");
   };
@@ -2851,6 +2855,92 @@ function App() {
       { profile_id: job.profile_id, job_id: job.id },
       "Application documents generated (with evidence review)."
     );
+  };
+
+  const generateInterestedDocs = async () => {
+    const candidates = groupedJobs.interested || [];
+    if (!candidates.length) {
+      appendLog("There are no jobs in the current Interested list.");
+      return;
+    }
+    if (activeTasks.docs) {
+      appendLog("Document generation is already running.");
+      return;
+    }
+    const confirmed = await appConfirm({
+      title: "Generate Interested documents",
+      message: `Generate a tailored resume and cover letter for all ${candidates.length} job${candidates.length === 1 ? "" : "s"} currently shown in Interested? Jobs are processed one at a time and existing generated files for the same company and role are replaced.`,
+      confirmLabel: `Generate ${candidates.length} job${candidates.length === 1 ? "" : "s"}`
+    });
+    if (!confirmed) return;
+
+    const initial = {
+      current: 0,
+      total: candidates.length,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+      running: true,
+      status: "starting",
+      message: `Preparing ${candidates.length} Interested job${candidates.length === 1 ? "" : "s"}…`
+    };
+    setDocsBatchProgress(initial);
+    setStatus("Generating Interested docs");
+    appendLog(`Started document batch for ${candidates.length} Interested job${candidates.length === 1 ? "" : "s"}.`);
+
+    let task;
+    task = window.jobAssistant.startTask(
+      "docs:generateInterestedBatch",
+      { job_ids: candidates.map((job) => job.id) },
+      (event) => {
+        if (event.type === "log") appendLog(event.message);
+        if (event.type === "status") setStatus(event.message || "Generating Interested docs");
+        if (event.type === "progress") {
+          setDocsBatchProgress({ ...event, running: true });
+          setStatus(event.message || "Generating Interested docs");
+        }
+        if (event.type === "result") {
+          const result = event.data || {};
+          setDocsBatchProgress({
+            current: result.total || candidates.length,
+            total: result.total || candidates.length,
+            succeeded: result.succeeded || 0,
+            failed: result.failed || 0,
+            skipped: result.skipped || 0,
+            running: false,
+            status: result.failed ? "completed_with_errors" : "completed",
+            message: `Finished: ${result.succeeded || 0} generated${result.skipped ? `, ${result.skipped} closed and skipped` : ""}${result.failed ? `, ${result.failed} failed` : ""}.`
+          });
+          appendLog(`Interested document batch complete: ${result.succeeded || 0} generated, ${result.skipped || 0} closed and skipped, ${result.failed || 0} failed.`);
+          setActiveTasks((current) => {
+            const next = { ...current };
+            delete next.docs;
+            setStatus(Object.keys(next).length ? "Running" : "Idle");
+            return next;
+          });
+          task.unsubscribe();
+          refresh().catch((error) => appendLog(toErrorMessage(error)));
+        }
+        if (event.type === "error") {
+          const cancelled = /cancel/i.test(event.message || "");
+          setDocsBatchProgress((current) => ({
+            ...(current || initial),
+            running: false,
+            status: cancelled ? "cancelled" : "failed",
+            message: cancelled ? "Batch cancelled." : `Batch stopped: ${event.message}`
+          }));
+          appendLog(cancelled ? "Interested document batch cancelled." : `Interested document batch failed: ${event.message}`);
+          setActiveTasks((current) => {
+            const next = { ...current };
+            delete next.docs;
+            setStatus(Object.keys(next).length ? "Running" : "Idle");
+            return next;
+          });
+          task.unsubscribe();
+        }
+      }
+    );
+    setActiveTasks((current) => ({ ...current, docs: task }));
   };
 
   const loadHiddenMarket = async () => {
@@ -3393,6 +3483,33 @@ function App() {
                     <strong>{groupedJobs[stage.id]?.length || 0}</strong>
                   </div>
                 </header>
+                {stage.id === "interested" && !docsBatchProgress ? (
+                  <div className="interested-batch-toolbar">
+                    <button
+                      className="secondary"
+                      disabled={docsBusy || !(groupedJobs.interested?.length)}
+                      onClick={generateInterestedDocs}
+                    >
+                      {docsBusy ? <Loader2 className="spin" size={14} /> : <FileText size={14} />}
+                      Generate all docs
+                      <span>{groupedJobs.interested?.length || 0}</span>
+                    </button>
+                  </div>
+                ) : null}
+                {stage.id === "interested" && docsBatchProgress ? (
+                  <div className={`docs-batch-progress ${docsBatchProgress.status || ""}`}>
+                    <div className="docs-batch-progress-head">
+                      <span>{docsBatchProgress.running ? <Loader2 className="spin" size={13} /> : <FileText size={13} />}<strong>Application documents</strong></span>
+                      <span>{docsBatchProgress.current || 0}/{docsBatchProgress.total || 0}</span>
+                      {!docsBatchProgress.running ? <button className="icon secondary" aria-label="Dismiss document batch progress" onClick={() => setDocsBatchProgress(null)}><X size={12} /></button> : null}
+                    </div>
+                    <div className="docs-batch-track" role="progressbar" aria-valuemin="0" aria-valuemax={docsBatchProgress.total || 0} aria-valuenow={docsBatchProgress.current || 0}>
+                      <span style={{ width: `${docsBatchProgress.total ? Math.round((docsBatchProgress.current / docsBatchProgress.total) * 100) : 0}%` }} />
+                    </div>
+                    <p>{docsBatchProgress.message}</p>
+                    <small>{docsBatchProgress.succeeded || 0} complete{docsBatchProgress.skipped ? ` · ${docsBatchProgress.skipped} closed` : ""}{docsBatchProgress.failed ? ` · ${docsBatchProgress.failed} failed` : ""}</small>
+                  </div>
+                ) : null}
                 <div className="kanban-stack">
                   {(groupedJobs[stage.id] || []).slice(0, KANBAN_COLUMN_RENDER_CAP).map((job) => <JobCard key={job.id} job={job} onOpen={openJob} onDragStart={onDragStart} onReject={setRejectJob} />)}
                   {(groupedJobs[stage.id]?.length || 0) > KANBAN_COLUMN_RENDER_CAP ? (
