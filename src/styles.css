@@ -2843,6 +2843,44 @@ h3 {
   grid-column: 1 / -1;
 }
 
+.candidate-context-field {
+  padding: 12px;
+  border: 1px solid #d4dfd8;
+  border-radius: var(--radius-sm);
+  background: #f7faf7;
+}
+
+.candidate-context-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.candidate-context-heading small {
+  padding: 2px 7px;
+  border: 1px solid #c8d6cf;
+  border-radius: 999px;
+  color: #64716b;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.candidate-context-field textarea {
+  min-height: 104px;
+  resize: vertical;
+}
+
+.candidate-context-field p {
+  margin: 0;
+  color: #64716b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .modal-actions {
   justify-content: flex-end;
   padding: 12px 14px 14px;

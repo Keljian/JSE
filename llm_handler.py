@@ -1914,7 +1914,7 @@ OUTPUT CONTRACT
 - Australian English spelling throughout (e.g. organisation, optimise, recognised, programme/program).
 
 TRUTHFULNESS DISCIPLINE (hard rules)
-1. Use ONLY facts present in the base resume, fit analysis, lane fragments, and job advertisement. Do not invent employers, dates, titles, qualifications, certifications, tools, metrics, sectors, awards, salary, scale, or relationships.
+1. Use ONLY facts present in the base resume, user-supplied additional candidate evidence, fit analysis, lane fragments, and job advertisement. Do not invent employers, dates, titles, qualifications, certifications, tools, metrics, sectors, awards, salary, scale, or relationships.
 2. If a number, scale, or outcome is not in the source, do not state it. "Significant" / "large" / "complex" are acceptable only when the source supports it.
 3. Mirror the ad's language only where the resume genuinely backs it. Do not echo ad keywords that are not evidenced.
 4. The fit analysis names gaps. Reposition adjacent evidence honestly; do not pretend the gap does not exist.
@@ -1971,6 +1971,7 @@ def generate_template_application_content(
     settings=None,
     log_callback=None,
     position_description_text="",
+    additional_candidate_context="",
 ):
     settings = _settings_for_ai_task(settings, "document_ai_provider")
     if concurrency.cancel_event.is_set():
@@ -1982,6 +1983,19 @@ def generate_template_application_content(
         raise ValueError(f"Job with ID {job_id} not found.")
     if not resume_text:
         raise ValueError("Base resume text cannot be empty.")
+
+    additional_candidate_context = str(
+        additional_candidate_context
+        or (job["additional_candidate_context"] if "additional_candidate_context" in job.keys() else "")
+        or ""
+    ).strip()
+    additional_context_block = f"""
+ADDITIONAL CANDIDATE EVIDENCE (USER-SUPPLIED FOR THIS APPLICATION):
+Treat this as first-party evidence. Use only what is stated; do not infer or embellish beyond it. If it expresses a preference or instruction rather than a fact, use it as writing guidance.
+---
+{additional_candidate_context[:12000]}
+---
+""" if additional_candidate_context else ""
 
     uploaded_position_description = position_description_text or job["position_description_text"] or ""
     full_job_text = job["description"] or ""
@@ -2077,7 +2091,9 @@ JOB ADVERTISEMENT:
 BASE RESUME:
 ---
 {resume_text[:retry_resume_limit]}
----""",
+---
+
+{additional_context_block}""",
         },
     ]
 
@@ -2173,7 +2189,9 @@ JOB ADVERTISEMENT:
 BASE RESUME:
 ---
 {resume_text[:cover_resume_limit]}
----""",
+---
+
+{additional_context_block}""",
         },
     ]
     try:
@@ -2208,7 +2226,9 @@ JOB ADVERTISEMENT:
 BASE RESUME:
 ---
 {resume_text[:4500]}
----""",
+---
+
+{additional_context_block}""",
             },
         ]
         cover_response, _ = _call_document_ai(

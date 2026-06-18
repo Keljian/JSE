@@ -212,10 +212,30 @@ def normalize_job_url(url):
     if "?" not in value:
         return value.rstrip("/")
     base, query = value.split("?", 1)
+    # Keep query parameters that identify the vacancy itself while discarding
+    # marketing/referral parameters.  A number of ATS platforms use a generic
+    # path (for example ``/OpportunityDetail``) and put the only job identity
+    # in the query string; stripping those values both breaks the application
+    # URL and makes unrelated vacancies look like duplicates.
+    identity_params = {
+        "id", "job", "jobid", "job_id", "jobkey", "job_key", "jobno",
+        "job_no", "jobnumber", "job_number", "jid", "rid", "reqid",
+        "req_id", "requisitionid", "requisition_id", "requisitionnumber",
+        "requisition_number", "opportunityid", "opportunity_id",
+        "postingid", "posting_id", "jobpostingid", "jobposting_id",
+        "positionid", "position_id", "vacancyid", "vacancy_id",
+        "openingid", "opening_id", "reference", "refno", "ref_no",
+        "gh_jid", "career_job_req_id",
+    }
+    # SuccessFactors uses a shared /career endpoint.  The company tenant and
+    # route selector are required for the direct application link to work.
+    host = (urlparse(value).hostname or "").lower()
+    if host == "successfactors.com" or host.endswith(".successfactors.com"):
+        identity_params.update({"company", "career_ns"})
     keep_params = []
     for part in query.split("&"):
         key = part.split("=", 1)[0].lower()
-        if key in {"id", "jobid", "job_id", "jobno", "job"}:
+        if key in identity_params:
             keep_params.append(part)
     return (base + ("?" + "&".join(sorted(keep_params)) if keep_params else "")).rstrip("/")
 
@@ -833,6 +853,35 @@ def get_db_connection():
         yield conn
     finally:
         conn.close()
+
+
+def ensure_application_context_schema():
+    """Add optional application-evidence columns for hot-reloaded workers.
+
+    Normal startup runs db_setup, but development UI reloads and fresh long-task
+    processes can briefly run newer code against a still-open older database.
+    Keep this targeted migration cheap and idempotent so an optional blank field
+    can never block saving or document generation.
+    """
+    required = {
+        "jobs": "additional_candidate_context TEXT",
+        "application_kits": "additional_candidate_context TEXT",
+    }
+    with get_db_connection() as conn:
+        for table, definition in required.items():
+            columns = {
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if not columns or "additional_candidate_context" in columns:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+            except sqlite3.OperationalError as exc:
+                # Another bridge/task process may have won the same migration.
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        conn.commit()
 
 
 def compact_database():
@@ -2436,6 +2485,11 @@ def _upsert_job_posting_from_row(conn, row):
 def _upsert_lane_opportunity_from_row(conn, row, posting_id, lane_id=None):
     lane_id = lane_id or row["profile_id"] or 1
     same_legacy_lane = int(lane_id) == int(row["profile_id"] or 0)
+    # legacy_job_id points back to the single-lane jobs row and is UNIQUE for
+    # backwards compatibility.  A deduped posting may legitimately appear in
+    # several lanes, so only its original lane can own that legacy pointer;
+    # every lane is still linked through the shared job_posting_id.
+    legacy_job_id = row["id"] if same_legacy_lane else None
     conn.execute(
         """
         INSERT INTO lane_opportunities (
@@ -2462,7 +2516,7 @@ def _upsert_lane_opportunity_from_row(conn, row, posting_id, lane_id=None):
             updated_at = excluded.updated_at
         """,
         (
-            row["id"], lane_id, posting_id, normalize_stage(row["pipeline_stage"] or row["status"]),
+            legacy_job_id, lane_id, posting_id, normalize_stage(row["pipeline_stage"] or row["status"]),
             normalize_stage(row["status"] or row["pipeline_stage"]),
             row["match_score"] if same_legacy_lane else None,
             row["ai_analysis"] if same_legacy_lane else None,
@@ -2578,7 +2632,9 @@ def route_job_to_lane(job_data, lane_id):
 def create_application_kit(job_id, lane_id=None, resume_path=None, resume_text=None, cover_letter_path=None,
                            cover_letter_text=None, prompt_path=None, structured_content_path=None,
                            position_description_path=None, position_description_text=None,
-                           fragment_ids=None, notes=None, applied_at=None, outcome=None):
+                           additional_candidate_context=None, fragment_ids=None, notes=None,
+                           applied_at=None, outcome=None):
+    ensure_application_context_schema()
     synced = sync_legacy_job_to_lane_model(job_id, lane_id)
     if not synced:
         raise ValueError(f"Job {job_id} was not found.")
@@ -2590,9 +2646,9 @@ def create_application_kit(job_id, lane_id=None, resume_path=None, resume_text=N
                 legacy_job_id, lane_opportunity_id, lane_id, job_posting_id,
                 resume_path, resume_text, cover_letter_path, cover_letter_text,
                 prompt_path, structured_content_path, position_description_path,
-                position_description_text, applied_at, outcome, notes
+                position_description_text, additional_candidate_context, applied_at, outcome, notes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id, synced["lane_opportunity_id"], lane_id, synced["job_posting_id"],
@@ -2601,7 +2657,7 @@ def create_application_kit(job_id, lane_id=None, resume_path=None, resume_text=N
                 str(prompt_path) if prompt_path else None,
                 str(structured_content_path) if structured_content_path else None,
                 str(position_description_path) if position_description_path else None,
-                position_description_text, applied_at, outcome, notes,
+                position_description_text, additional_candidate_context, applied_at, outcome, notes,
             ),
         )
         kit_id = cursor.lastrowid
@@ -5043,11 +5099,14 @@ def move_job_to_profile(job_id, profile_id):
 
 
 def update_job_application(job_id, updates):
+    if "additional_candidate_context" in updates:
+        ensure_application_context_schema()
     allowed = {
         "pipeline_stage", "closing_date", "next_action", "next_action_date", "priority",
         "application_date", "application_url", "contact_person", "contact_email",
         "contact_phone", "resume_used", "resume_text", "cover_letter_path",
         "cover_letter_text", "position_description_path", "position_description_text",
+        "additional_candidate_context",
         "interview_date", "interview_type", "interview_people",
         "feedback", "salary", "notes", "status", "advertiser_company", "actual_company",
         "employer_type", "company_confidence", "company_intelligence", "company_research_updated_at",

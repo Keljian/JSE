@@ -99,6 +99,7 @@ def setup_database():
     _add_column(cursor, "jobs", "cover_letter_text", "TEXT")
     _add_column(cursor, "jobs", "position_description_path", "TEXT")
     _add_column(cursor, "jobs", "position_description_text", "TEXT")
+    _add_column(cursor, "jobs", "additional_candidate_context", "TEXT")
     _add_column(cursor, "jobs", "interview_date", "TEXT")
     _add_column(cursor, "jobs", "interview_type", "TEXT")
     _add_column(cursor, "jobs", "interview_people", "TEXT")
@@ -694,6 +695,7 @@ def setup_database():
             structured_content_path TEXT,
             position_description_path TEXT,
             position_description_text TEXT,
+            additional_candidate_context TEXT,
             generated_at TEXT DEFAULT (datetime('now')),
             applied_at TEXT,
             outcome TEXT,
@@ -747,6 +749,7 @@ def setup_database():
     _add_column(cursor, "job_postings", "job_intelligence_updated_at", "TEXT")
     _add_column(cursor, "application_kits", "review_json", "TEXT")
     _add_column(cursor, "application_kits", "review_updated_at", "TEXT")
+    _add_column(cursor, "application_kits", "additional_candidate_context", "TEXT")
 
     # Typed fragment fields the LLM produces but the original schema dropped.
     # `keywords` drive activation, `anti_keywords` block misuse, `status`

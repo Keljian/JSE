@@ -1897,6 +1897,24 @@ def resolve_workspace_path(value):
     return path
 
 
+def resolve_additional_candidate_context(payload, job):
+    """Return and, when supplied by the UI, persist application-only evidence."""
+    db.ensure_application_context_schema()
+    if "additional_candidate_context" in payload:
+        value = str(payload.get("additional_candidate_context") or "").strip()
+    else:
+        value = str(
+            job["additional_candidate_context"]
+            if "additional_candidate_context" in job.keys()
+            else ""
+        ).strip()
+    if len(value) > 12000:
+        raise ValueError("Additional candidate evidence must be 12,000 characters or fewer.")
+    if "additional_candidate_context" in payload:
+        db.update_job_application(job["id"], {"additional_candidate_context": value})
+    return value
+
+
 def command_docs_generate(payload):
     import application_doc_builder
     with contextlib.redirect_stdout(sys.stderr):
@@ -1906,6 +1924,7 @@ def command_docs_generate(payload):
     job_id = payload["job_id"]
     resume_text = read_resume_text(profile_id)
     job = db.get_job_details(job_id)
+    additional_candidate_context = resolve_additional_candidate_context(payload, job)
     settings = db.get_lane_settings(profile_id)
     try:
         lane_context = db.build_lane_context(profile_id, include_terms=True, include_fragments=True)
@@ -1926,6 +1945,7 @@ def command_docs_generate(payload):
         settings,
         lambda message: emit("log", message=message),
         position_description_text=payload.get("position_description_text") or job["position_description_text"] or "",
+        additional_candidate_context=additional_candidate_context,
     )
     output_folder = applications_dir()
     output_folder.mkdir(exist_ok=True)
@@ -1958,6 +1978,7 @@ def command_docs_generate(payload):
             structured_content_path=json_path,
             position_description_path=job["position_description_path"],
             position_description_text=job["position_description_text"],
+            additional_candidate_context=additional_candidate_context,
             fragment_ids=fragment_ids,
             notes=f"Application documents generated with {provider_label}.",
         )
@@ -1985,6 +2006,7 @@ def command_docs_generate_rich(payload):
     job = db.get_job_details(job_id)
     if not job:
         raise ValueError(f"Job {job_id} was not found.")
+    additional_candidate_context = resolve_additional_candidate_context(payload, job)
     emit("status", message=f"Checking whether {job['title']} is still live…")
     liveness = check_job_liveness(job)
     if liveness["status"] == "closed":
@@ -2013,6 +2035,7 @@ def command_docs_generate_rich(payload):
     result = rich_application.generate_rich(
         job_id, profile_id=profile_id, settings=settings, personal_info=info,
         source_resume_text=source_resume_text,
+        additional_candidate_context=additional_candidate_context,
         log=lambda m: emit("log", message=m),
         out_dir=applications_dir(),
     )
@@ -2039,6 +2062,7 @@ def command_docs_generate_rich(payload):
             structured_content_path=result["content_json_path"],
             position_description_path=job["position_description_path"] if job else None,
             position_description_text=job["position_description_text"] if job else None,
+            additional_candidate_context=additional_candidate_context,
             fragment_ids=fragment_ids,
             notes=f"Rich application generated with {result['provider']}. Review: {review.get('verdict', 'n/a')}.",
         )
@@ -2070,6 +2094,7 @@ def command_application_prompt_generate(payload):
     job = db.get_job_details(job_id)
     if not job:
         raise ValueError(f"Job {job_id} was not found.")
+    additional_candidate_context = resolve_additional_candidate_context(payload, job)
     settings = db.get_lane_settings(profile_id)
     resume_text = read_resume_text(profile_id)
     full_description = job["description"] or ""
@@ -2197,6 +2222,12 @@ BASE RESUME:
 ---
 {resume_text}
 ---
+
+ADDITIONAL CANDIDATE EVIDENCE (USER-SUPPLIED FOR THIS APPLICATION):
+Treat this as first-party evidence. Use only what is stated; do not infer or embellish beyond it. If it expresses a preference or instruction rather than a fact, use it as writing guidance rather than presenting it as evidence.
+---
+{additional_candidate_context or 'No additional candidate evidence was supplied.'}
+---
 """
     output_folder = applications_dir()
     output_folder.mkdir(exist_ok=True)
@@ -2214,6 +2245,7 @@ BASE RESUME:
             prompt_path=prompt_path,
             position_description_path=job["position_description_path"],
             position_description_text=job["position_description_text"],
+            additional_candidate_context=additional_candidate_context,
             fragment_ids=selected_fragment_ids,
             notes="External LLM prompt generated.",
         )

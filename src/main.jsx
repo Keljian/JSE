@@ -1208,6 +1208,24 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
           <label><span>Contact email</span><input value={form.contact_email || ""} onChange={(event) => set("contact_email", event.target.value)} /></label>
           <label><span>Contact phone</span><input value={form.contact_phone || ""} onChange={(event) => set("contact_phone", event.target.value)} /></label>
           <label><span>Salary / rate</span><input value={form.salary || ""} onChange={(event) => set("salary", event.target.value)} /></label>
+          <label className="full candidate-context-field">
+            <div className="candidate-context-heading">
+              <span>Additional candidate evidence</span>
+              <small>Optional</small>
+            </div>
+            <textarea
+              id="additional-candidate-context"
+              rows={4}
+              maxLength={8000}
+              value={form.additional_candidate_context || ""}
+              placeholder="Add truthful details that are relevant to this application but missing from your base resume — for example recent achievements, project context, domain exposure, tools, qualifications in progress, or availability."
+              aria-describedby="additional-candidate-context-help"
+              onChange={(event) => set("additional_candidate_context", event.target.value)}
+            />
+            <p id="additional-candidate-context-help">
+              Saved with this application and treated as candidate-supplied evidence when generating documents or an LLM prompt. It does not alter your base resume.
+            </p>
+          </label>
           <div className="full document-grid">
             <DropZone
               label="Cover letter"
@@ -1241,9 +1259,9 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
           <label><span>Next action date</span><input type="date" value={form.next_action_date || ""} onChange={(event) => set("next_action_date", event.target.value)} /></label>
           <footer className="full button-row">
             <button onClick={save}><Check size={16} /> Save application</button>
-            <button className="secondary" disabled={generatingDocs} onClick={onGenerateDocs}>{generatingDocs ? <Loader2 className="spin" size={16} /> : <FileText size={16} />} {generatingDocs ? "Generating..." : "Generate documents"}</button>
+            <button className="secondary" disabled={generatingDocs} onClick={() => onGenerateDocs(form.additional_candidate_context || "")}>{generatingDocs ? <Loader2 className="spin" size={16} /> : <FileText size={16} />} {generatingDocs ? "Generating..." : "Generate documents"}</button>
             <button className="secondary" disabled={!form.resume_used && !form.cover_letter_path} onClick={() => window.jobAssistant.showPath(form.resume_used || form.cover_letter_path || "applications")}><ExternalLink size={16} /> Open documents</button>
-            <button className="secondary" onClick={onGeneratePrompt}><FileText size={16} /> Save LLM prompt</button>
+            <button className="secondary" onClick={() => onGeneratePrompt(form.additional_candidate_context || "")}><FileText size={16} /> Save LLM prompt</button>
           </footer>
           <div className="full ai-provider-note">
             Documents are generated with <strong>{documentAiName}</strong>, grounded in your prior applications and fact-checked against your evidence.
@@ -3134,7 +3152,7 @@ function App() {
     await refresh();
   };
 
-  const generateDocs = () => {
+  const generateDocs = (additionalCandidateContext = "") => {
     if (!workspace.job) return;
     appendLog(`Generating context-grounded documents with ${documentAiLabel(settings)}.`);
     runTask(
@@ -3142,7 +3160,8 @@ function App() {
       {
         profile_id: workspace.job.profile_id,
         job_id: workspace.job.id,
-        position_description_text: workspace.job.position_description_text || ""
+        position_description_text: workspace.job.position_description_text || "",
+        additional_candidate_context: additionalCandidateContext
       },
       "Application documents generated (with evidence review)."
     );
@@ -3195,9 +3214,13 @@ function App() {
     );
   };
 
-  const generateApplicationPrompt = async () => {
+  const generateApplicationPrompt = async (additionalCandidateContext = "") => {
     if (!workspace.job) return;
-    const data = await invoke("application:prompt", { profile_id: workspace.job.profile_id, job_id: workspace.job.id });
+    const data = await invoke("application:prompt", {
+      profile_id: workspace.job.profile_id,
+      job_id: workspace.job.id,
+      additional_candidate_context: additionalCandidateContext
+    });
     appendLog(`External LLM prompt saved: ${data.prompt_path}`);
     if (data.memory_alignment?.selected_fragments?.length) {
       appendLog(`Prompt includes ${data.memory_alignment.selected_fragments.length} lane memory fragment${data.memory_alignment.selected_fragments.length === 1 ? "" : "s"}.`);

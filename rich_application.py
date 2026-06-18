@@ -418,7 +418,7 @@ def _review(caller, context_block, job, resume_md, cover_txt):
 # Engine
 # --------------------------------------------------------------------------- #
 def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
-                  source_resume_text=None,
+                  source_resume_text=None, additional_candidate_context="",
                   log=print, out_dir="applications", conn=None, do_review=True):
     owns_conn = conn is None
     if conn is None:
@@ -439,12 +439,21 @@ def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
     context_block, selected = clib.assemble_context(conn, job_text)
     base = conn.execute("SELECT text FROM context_documents WHERE doc_type='resume' ORDER BY char_len DESC LIMIT 1").fetchone()
     base_resume = str(source_resume_text or (base["text"] if base else ""))
+    additional_candidate_context = str(additional_candidate_context or "").strip()
     info = _personal_info_from_resume(info, base_resume)
     log(f"Context: {len(context_block):,} chars from {len(selected)} prior documents.")
 
+    additional_evidence = (
+        "ADDITIONAL CANDIDATE EVIDENCE (USER-SUPPLIED FOR THIS APPLICATION):\n"
+        "Treat this as first-party evidence. Use only what is stated; do not infer or embellish beyond it. "
+        "If it expresses a preference or instruction rather than a fact, use it as writing guidance.\n"
+        f"{additional_candidate_context[:12000]}\n\n"
+        if additional_candidate_context else ""
+    )
     job_brief = (f"TARGET ROLE: {job['title']}\nEMPLOYER: {job['company']}\nLOCATION: {job['location']}\n"
                  f"CLOSING: {job['closing_date']}\nCONTACT: {job['contact_person'] or '(unknown)'}\n\n"
                  f"JOB ADVERTISEMENT:\n{(job['description'] or '')[:6000]}\n\n{context_block}\n\n"
+                 f"{additional_evidence}"
                  f"CANDIDATE BASE RESUME (reference):\n{base_resume[:6000]}")
     today = datetime.now().strftime("%d %B %Y")
 
@@ -482,6 +491,8 @@ def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
     mdpath.write_text(json.dumps({
         "resume_markdown": resume_md, "cover_letter_text": cover_txt,
         "evidence_used": selected, "review": review, "provider": provider_label,
+        "additional_candidate_context_included": bool(additional_candidate_context),
+        "additional_candidate_context": additional_candidate_context,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
