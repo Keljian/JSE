@@ -184,13 +184,13 @@ function ScoreStack({ job, compact = false }) {
   );
 }
 
-function Modal({ title, children, onClose, wide = false }) {
+function Modal({ title, children, onClose, wide = false, closeDisabled = false }) {
   return (
     <div className="modal-backdrop" role="presentation">
       <section className={`modal ${wide ? "wide-modal" : ""}`}>
         <header className="modal-head">
           <h2>{title}</h2>
-          <button className="icon secondary" onClick={onClose} aria-label="Close"><X size={18} /></button>
+          <button className="icon secondary" disabled={closeDisabled} onClick={onClose} aria-label="Close"><X size={18} /></button>
         </header>
         {children}
       </section>
@@ -444,6 +444,111 @@ function AnalysisModal({ activeProfileId, busy, onRun, onClose }) {
       <footer className="modal-actions">
         <button className="secondary" onClick={onClose}>Cancel</button>
         <button disabled={busy} onClick={() => onRun({ profile_id: activeProfileId, include_all_profiles: includeAllProfiles, stage, re_analyze: false })}><Sparkles size={16} /> Run analysis</button>
+      </footer>
+    </Modal>
+  );
+}
+
+function CreateLaneModal({ busy, onCreate, onClose }) {
+  const [form, setForm] = useState({
+    name: "",
+    resume_path: "",
+    lane_intent: "",
+    target_titles: "",
+    target_domains: "",
+    seniority: "",
+    preferred_location: "Melbourne VIC",
+    work_modes: WORK_MODES.map((mode) => mode.id),
+    must_have_terms: "",
+    avoid_terms: "",
+    keyword_mode: "generate",
+    keywords: "",
+    optimism: 3,
+    generate_fragments: true,
+  });
+  const [error, setError] = useState("");
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const toggleMode = (mode, checked) => update(
+    "work_modes",
+    checked
+      ? [...new Set([...form.work_modes, mode])]
+      : form.work_modes.filter((item) => item !== mode)
+  );
+  const chooseResume = async () => {
+    const resumePath = await window.jobAssistant.chooseResume();
+    if (resumePath) update("resume_path", resumePath);
+  };
+  const submit = async () => {
+    setError("");
+    try {
+      await onCreate({
+        ...form,
+        terms: form.keywords.split(/[\n,;]+/).map((term) => term.trim()).filter(Boolean),
+      });
+    } catch (createError) {
+      setError(toErrorMessage(createError));
+    }
+  };
+  const canCreate = form.name.trim() && form.resume_path.trim() && form.work_modes.length
+    && (form.keyword_mode !== "manual" || form.keywords.trim());
+
+  return (
+    <Modal title="Create lane" onClose={onClose} closeDisabled={busy} wide>
+      <div className="modal-copy">Define the kind of work this lane should find. JSE will create it first, then finish any LLM-assisted setup in the background.</div>
+      <div className="lane-setup-body">
+        <section className="lane-setup-section">
+          <div className="lane-setup-heading"><span>1</span><div><h3>Lane identity</h3><p>Name the lane and give it the résumé that matching should treat as ground truth.</p></div></div>
+          <div className="lane-setup-grid">
+            <label><span>Lane name</span><input autoFocus value={form.name} placeholder="e.g. IT Leadership" onChange={(event) => update("name", event.target.value)} /></label>
+            <label><span>Preferred location</span><input value={form.preferred_location} placeholder="Melbourne VIC" onChange={(event) => update("preferred_location", event.target.value)} /></label>
+            <div className="resume-picker full">
+              <div><span>Base résumé</span><strong title={form.resume_path}>{displayFileName(form.resume_path) || "No résumé selected"}</strong><small>DOCX · required for fit analysis, search terms and truthful fragments</small></div>
+              <button type="button" className="secondary" disabled={busy} onClick={chooseResume}><FolderOpen size={16} /> Choose résumé</button>
+            </div>
+          </div>
+        </section>
+
+        <section className="lane-setup-section">
+          <div className="lane-setup-heading"><span>2</span><div><h3>Targeting</h3><p>These particulars steer scraping, scoring and application positioning for this lane.</p></div></div>
+          <div className="lane-setup-grid">
+            <label className="full"><span>Lane intent</span><textarea rows={2} value={form.lane_intent} placeholder="Senior technology leadership roles bridging systems, operations and business outcomes…" onChange={(event) => update("lane_intent", event.target.value)} /></label>
+            <label><span>Target titles</span><textarea rows={2} value={form.target_titles} placeholder="IT Manager, Head of Technology, Digital Systems Manager" onChange={(event) => update("target_titles", event.target.value)} /></label>
+            <label><span>Target domains</span><textarea rows={2} value={form.target_domains} placeholder="Infrastructure, platforms, transformation, service delivery" onChange={(event) => update("target_domains", event.target.value)} /></label>
+            <label><span>Seniority</span><input value={form.seniority} placeholder="Manager, senior manager, head of" onChange={(event) => update("seniority", event.target.value)} /></label>
+            <div className="lane-mode-picker">
+              <span>Work modes</span>
+              <div>{WORK_MODES.map((mode) => <label key={mode.id} className="check-row"><input type="checkbox" checked={form.work_modes.includes(mode.id)} onChange={(event) => toggleMode(mode.id, event.target.checked)} /> {mode.label}</label>)}</div>
+            </div>
+            <label><span>Must-have signals</span><textarea rows={2} value={form.must_have_terms} placeholder="Stakeholder leadership, vendor governance, systems delivery" onChange={(event) => update("must_have_terms", event.target.value)} /></label>
+            <label><span>Avoid signals</span><textarea rows={2} value={form.avoid_terms} placeholder="Junior support, shift work, pure coding" onChange={(event) => update("avoid_terms", event.target.value)} /></label>
+          </div>
+        </section>
+
+        <section className="lane-setup-section">
+          <div className="lane-setup-heading"><span>3</span><div><h3>Search terms and memory</h3><p>Seed the lane manually or let the local model derive terms after it mines the résumé.</p></div></div>
+          <div className="lane-setup-options">
+            <label className={`lane-setup-option ${form.keyword_mode === "generate" ? "active" : ""}`}>
+              <input type="radio" name="keyword-mode" checked={form.keyword_mode === "generate"} onChange={() => update("keyword_mode", "generate")} />
+              <span><strong>Generate with local LLM</strong><small>Uses the résumé, lane strategy and newly mined fragments.</small></span>
+            </label>
+            <label className={`lane-setup-option ${form.keyword_mode === "manual" ? "active" : ""}`}>
+              <input type="radio" name="keyword-mode" checked={form.keyword_mode === "manual"} onChange={() => update("keyword_mode", "manual")} />
+              <span><strong>Add keywords manually</strong><small>Enter one title or search phrase per line.</small></span>
+            </label>
+          </div>
+          {form.keyword_mode === "manual" ? <label className="lane-keywords"><span>Search terms</span><textarea rows={3} value={form.keywords} placeholder={"IT Manager\nTechnology Business Partner\nDigital Systems Manager"} onChange={(event) => update("keywords", event.target.value)} /></label> : (
+            <label className="lane-optimism"><span>Term breadth</span><select value={form.optimism} onChange={(event) => update("optimism", Number(event.target.value))}><option value={2}>Focused</option><option value={3}>Balanced</option><option value={4}>Broad</option></select></label>
+          )}
+          <label className={`lane-setup-option fragment-option ${form.generate_fragments ? "active" : ""}`}>
+            <input type="checkbox" checked={form.generate_fragments} onChange={(event) => update("generate_fragments", event.target.checked)} />
+            <span><strong>Mine reusable fragments from the base résumé</strong><small>Creates evidence-backed achievements, capabilities, skills and domain signals using the configured memory AI provider.</small></span>
+          </label>
+        </section>
+      </div>
+      {error ? <p className="lane-setup-error">{error}</p> : null}
+      <footer className="modal-actions">
+        <button className="secondary" disabled={busy} onClick={onClose}>Cancel</button>
+        <button disabled={busy || !canCreate} onClick={submit}>{busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />} {busy ? "Creating lane…" : "Create lane"}</button>
       </footer>
     </Modal>
   );
@@ -2429,6 +2534,8 @@ function App() {
   const [activeTasks, setActiveTasks] = useState({});
   const [docsBatchProgress, setDocsBatchProgress] = useState(null);
   const [runSearchOpen, setRunSearchOpen] = useState(false);
+  const [addLaneOpen, setAddLaneOpen] = useState(false);
+  const [addLaneBusy, setAddLaneBusy] = useState(false);
   const [addJobOpen, setAddJobOpen] = useState(false);
   const [addJobBusy, setAddJobBusy] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
@@ -2503,11 +2610,12 @@ function App() {
     include_all_profiles: includeAllProfiles
   }), [activeProfileId, filters, includeAllProfiles]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (profileIdOverride = null) => {
     const requestId = refreshRequestId.current + 1;
     refreshRequestId.current = requestId;
     const data = await invoke("app:refresh", {
       ...requestPayload,
+      ...(profileIdOverride ? { profile_id: profileIdOverride, include_all_profiles: false } : {}),
       fragment_limit: 12,
       campaign_limit: 12,
       campaign_min_score: 65
@@ -2612,10 +2720,11 @@ function App() {
     if (command.startsWith("company:")) return "company";
     if (command.startsWith("memory:")) return "memory";
     if (command.startsWith("campaign:")) return "campaign";
+    if (command.startsWith("lanes:")) return "laneSetup";
     return command;
   };
 
-  const runTask = useCallback((command, payload, doneMessage) => {
+  const runTask = useCallback((command, payload, doneMessage, refreshProfileId = null) => {
     const taskKind = taskKindForCommand(command);
     if (activeTasks[taskKind]) {
       appendLog(`${taskKind} is already running.`);
@@ -2658,7 +2767,7 @@ function App() {
           return next;
         });
         task.unsubscribe();
-        refresh()
+        refresh(refreshProfileId)
           .then(() => {
             if (command === "analysis:job" && payload.job_id) return openJob(payload.job_id);
             if (command === "company:research" && payload.job_id) return openJob(payload.job_id, "Company");
@@ -3165,14 +3274,51 @@ function App() {
     await refresh();
   };
 
-  const addProfile = async () => {
-    const resumePath = await window.jobAssistant.chooseResume();
-    if (!resumePath) return;
-    const name = await appPrompt({ title: "Add lane", label: "Lane name", placeholder: "e.g. Engineering" });
-    if (!name?.trim()) return;
-    const imported = await invoke("resume:import", { path: resumePath });
-    await invoke("profiles:add", { name: name.trim(), resume_path: imported.resume_path });
-    await refresh();
+  const createLane = async (setup) => {
+    setAddLaneBusy(true);
+    try {
+      const data = await invoke("profiles:add", {
+        name: setup.name.trim(),
+        resume_path: setup.resume_path.trim(),
+        settings: {
+          lane_intent: setup.lane_intent.trim(),
+          target_titles: setup.target_titles.trim(),
+          target_domains: setup.target_domains.trim(),
+          seniority: setup.seniority.trim(),
+          preferred_location: setup.preferred_location.trim(),
+          work_modes: setup.work_modes,
+          must_have_terms: setup.must_have_terms.trim(),
+          avoid_terms: setup.avoid_terms.trim(),
+        },
+      });
+      const lane = (data.profiles || []).find((profile) => profile.name === setup.name.trim());
+      if (!lane) throw new Error("The lane was created but could not be selected.");
+
+      setProfiles(data.profiles || []);
+      setIncludeAllProfiles(false);
+      setActiveProfileId(lane.id);
+      setAddLaneOpen(false);
+      appendLog(`Created lane: ${lane.name}.`);
+      applySettingsToFilters({
+        preferred_location: setup.preferred_location.trim(),
+        work_modes: setup.work_modes,
+      });
+
+      runTask(
+        "lanes:bootstrap",
+        {
+          profile_id: lane.id,
+          keyword_mode: setup.keyword_mode,
+          terms: setup.terms,
+          optimism: setup.optimism,
+          generate_fragments: setup.generate_fragments,
+        },
+        `Lane setup complete for ${lane.name}.`,
+        lane.id,
+      );
+    } finally {
+      setAddLaneBusy(false);
+    }
   };
 
   const importResume = async (resumePath) => {
@@ -3377,7 +3523,7 @@ function App() {
         <button className={view === "activity" ? "active nav-btn" : "nav-btn"} onClick={() => setView("activity")}><NotebookTabs size={18} /> Activity</button>
         <button className={view === "settings" ? "active nav-btn" : "nav-btn"} onClick={() => setView("settings")}><Settings size={18} /> Settings</button>
         <div className="nav-spacer" />
-        <button className="secondary wide" onClick={addProfile}><FolderOpen size={16} /> Add lane</button>
+        <button className="secondary wide" disabled={Boolean(activeTasks.laneSetup)} title={activeTasks.laneSetup ? "Finish the current lane setup first" : "Create a new lane"} onClick={() => setAddLaneOpen(true)}><Plus size={16} /> Add lane</button>
       </aside>
 
       <section className="ats-main">
@@ -3390,7 +3536,7 @@ function App() {
             <button onClick={() => setRunSearchOpen(true)}><Play size={16} /> Run Search</button>
             <button className="secondary" onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add Job</button>
             <button className="secondary" onClick={() => setAnalysisOpen(true)}><Sparkles size={16} /> Run Analysis</button>
-            <button className="secondary" onClick={refresh}><RefreshCw size={16} /> Refresh</button>
+            <button className="secondary" onClick={() => refresh()}><RefreshCw size={16} /> Refresh</button>
             <button className="danger" onClick={stopAllTasks}><CircleStop size={16} /> Stop</button>
           </div>
         </header>
@@ -3570,6 +3716,7 @@ function App() {
       </section>
 
       {runSearchOpen ? <RunSearchModal sources={searchSources} activeProfileId={activeProfileId} busy={searchBusy} onClose={() => setRunSearchOpen(false)} onRun={(payload) => { setRunSearchOpen(false); runTask("scrape:run", payload, "Search complete."); }} /> : null}
+      {addLaneOpen ? <CreateLaneModal busy={addLaneBusy} onClose={() => setAddLaneOpen(false)} onCreate={createLane} /> : null}
       {addJobOpen ? <AddJobModal busy={addJobBusy} onClose={() => setAddJobOpen(false)} onSave={addManualJob} /> : null}
       {analysisOpen ? <AnalysisModal activeProfileId={activeProfileId} busy={analysisBusy} onClose={() => setAnalysisOpen(false)} onRun={(payload) => { setAnalysisOpen(false); runTask("analysis:run", payload, "Analysis complete."); }} /> : null}
       {quickMove ? <QuickStageForm job={quickMove.job} stage={quickMove.stage} onClose={() => setQuickMove(null)} onSave={saveQuickMove} /> : null}

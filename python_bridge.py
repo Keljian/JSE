@@ -737,6 +737,67 @@ def command_profiles_update(payload):
     return command_profiles_list(payload)
 
 
+def command_lanes_bootstrap(payload):
+    """Finish a new lane's optional LLM-assisted setup in the background."""
+    profile_id = int(payload.get("profile_id") or 0)
+    lane = db.get_lane_by_id(profile_id)
+    if not lane:
+        raise ValueError("Lane not found.")
+
+    settings = db.get_lane_settings(profile_id)
+    resume_text = read_resume_text(profile_id)
+    if not resume_text.strip():
+        raise ValueError("The selected base resume did not contain readable text.")
+
+    keyword_mode = str(payload.get("keyword_mode") or "manual").strip().lower()
+    manual_terms = [
+        str(term).strip()
+        for term in (payload.get("terms") or [])
+        if str(term).strip()
+    ]
+    if keyword_mode == "manual":
+        db.save_lane_terms(profile_id, manual_terms, source="manual", confidence=0.8)
+        emit("log", message=f"Saved {len(manual_terms)} manual search terms for {lane['name']}.")
+
+    fragment_count = 0
+    fragment_provider = None
+    if payload.get("generate_fragments", True):
+        with contextlib.redirect_stdout(sys.stderr):
+            import corpus_miner
+
+        emit("status", message=f"Mining reusable fragments for {lane['name']}…")
+        fragments, fragment_provider = corpus_miner.mine_documents(
+            [{"filename": Path(lane["resume_path"]).name or "base-resume.docx", "text": resume_text}],
+            settings,
+            lambda message: emit("log", message=message),
+        )
+        person_id = lane["person_id"] if "person_id" in lane.keys() and lane["person_id"] else 1
+        db.upsert_candidate_fragments(person_id, fragments, replace=False)
+        db.upsert_profile_memory_fragments(profile_id, fragments, replace=False)
+        suggestions = db.suggest_lane_fragment_affinity(profile_id, limit=200)
+        db.upsert_lane_fragment_affinity(profile_id, suggestions)
+        fragment_count = len(fragments)
+        emit("log", message=f"Stored {fragment_count} base-resume fragments for {lane['name']}.")
+
+    terms = manual_terms
+    if keyword_mode == "generate":
+        emit("status", message=f"Generating search terms for {lane['name']} with the local LLM…")
+        app_logic = import_app_logic()
+        terms = app_logic.execute_keyword_generation(
+            payload.get("optimism", 3),
+            resume_text,
+            lambda message: emit("log", message=message),
+            profile_id,
+        )
+
+    return {
+        "profile_id": profile_id,
+        "terms": terms,
+        "fragments": fragment_count,
+        "fragment_provider": fragment_provider,
+    }
+
+
 def command_lanes_update(payload):
     payload = {**payload, "profile_id": payload.get("lane_id") or payload.get("profile_id")}
     data = command_profiles_update(payload)
@@ -2385,6 +2446,7 @@ COMMANDS = {
     "profiles:add": command_profiles_add,
     "profiles:update": command_profiles_update,
     "profiles:delete": command_profiles_delete,
+    "lanes:bootstrap": command_lanes_bootstrap,
     "resume:import": command_resume_import,
     "resumes:list": command_resumes_list,
     "settings:get": command_settings_get,

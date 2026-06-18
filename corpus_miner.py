@@ -99,6 +99,40 @@ def _parse(raw):
         return json.loads(m.group(0)) if m else []
 
 
+def mine_documents(documents, settings, log=print):
+    """Mine reusable fragments from an explicit set of extracted documents.
+
+    Lane onboarding uses this narrow entry point for the selected base resume,
+    without re-mining the candidate's entire evidence corpus.
+    """
+    caller, label = _fast_caller(settings)
+    docs = [
+        {
+            "filename": str(document.get("filename") or "document"),
+            "text": str(document.get("text") or "").strip(),
+        }
+        for document in (documents or [])
+        if str(document.get("text") or "").strip()
+    ]
+    fragments = []
+    for batch in _batches(docs):
+        user = "DOCUMENTS:\n\n" + "\n\n".join(f"[{d['filename']}]\n{d['text']}" for d in batch)
+        try:
+            parsed = _parse(caller(EXTRACT_SYSTEM, user))
+        except Exception as exc:
+            log(f"Fragment mining failed: {exc}")
+            continue
+        names = [d["filename"] for d in batch]
+        for fragment in parsed if isinstance(parsed, list) else []:
+            if not isinstance(fragment, dict) or not fragment.get("claim") or not fragment.get("theme"):
+                continue
+            fragment["source_doc_paths"] = names
+            fragment.setdefault("status", "established")
+            fragments.append(fragment)
+        log(f"Mined {len(fragments)} reusable fragments from {len(batch)} document(s).")
+    return fragments, label
+
+
 def mine_corpus(settings, log=print, limits=None):
     caller, label = _fast_caller(settings)
     limits = limits or {"resume": 18, "ksc_response": 8, "cover_letter": 14, "capability_statement": 2}
