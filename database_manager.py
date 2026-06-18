@@ -961,6 +961,13 @@ GLOBAL_AI_SETTING_FIELDS = (
 LOCAL_LLM_SETTING_FIELDS = ("local_base_url", "local_api_key", "local_model")
 
 
+def _normalize_local_base_url(value):
+    text = str(value or "").strip().rstrip("/")
+    if text.lower() in {"http://localhost:8888/api", "http://127.0.0.1:8888/api"}:
+        return f"{text[:-4]}/v1"
+    return text
+
+
 def _get_global_ai_settings():
     settings = get_app_settings()
     return {field: settings.get(field, DEFAULT_APP_SETTINGS.get(field, "")) for field in GLOBAL_AI_SETTING_FIELDS}
@@ -976,7 +983,7 @@ def _load_local_llm_settings():
     if not isinstance(data, dict):
         return {}
     return {
-        key: str(data.get(key) or "").strip()
+        key: _normalize_local_base_url(data.get(key)) if key == "local_base_url" else str(data.get(key) or "").strip()
         for key in LOCAL_LLM_SETTING_FIELDS
         if key in data
     }
@@ -995,6 +1002,8 @@ def _save_local_llm_settings(updates):
         value = str(updates.get(key) or "").strip()
         if key == "local_base_url" and not value:
             value = DEFAULT_APP_SETTINGS.get("local_base_url", "")
+        if key == "local_base_url":
+            value = _normalize_local_base_url(value)
         current[key] = value
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOCAL_LLM_SETTINGS_FILE.write_text(
@@ -1085,7 +1094,7 @@ def update_profile_settings(profile_id, settings):
                 _clean(merged.get("claude_model")) or DEFAULT_PROFILE_SETTINGS["claude_model"],
                 "",
                 _clean(merged.get("gemini_model")) or DEFAULT_PROFILE_SETTINGS["gemini_model"],
-                "",
+                _clean(merged.get("local_model")),
                 _clean(merged.get("resume_template_path")) or DEFAULT_PROFILE_SETTINGS["resume_template_path"],
                 _clean(merged.get("cover_letter_template_path")) or DEFAULT_PROFILE_SETTINGS["cover_letter_template_path"],
                 _clean(merged.get("lane_intent")),
@@ -1156,6 +1165,8 @@ def update_app_settings(settings):
         text = str(value or "").strip()
         if not text:
             text = defaults.get(key, "")
+        if key == "local_base_url":
+            text = _normalize_local_base_url(text)
         if key in LOCAL_LLM_SETTING_FIELDS:
             local_llm_updates[key] = text
         elif key in {"applications_dir", "older_applications_dir"}:

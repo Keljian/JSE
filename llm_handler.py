@@ -92,6 +92,21 @@ def _post_json(url, headers, payload, timeout=120):
         raise LLMRequestError(str(exc)) from exc
 
 
+def _get_json(url, headers, timeout=15):
+    request = Request(url, headers=headers, method="GET")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+            return json.loads(raw)
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise LLMHTTPError(exc.code, f"{exc.code} {exc.reason}", raw) from exc
+    except TimeoutError as exc:
+        raise TimeoutError(str(exc)) from exc
+    except (URLError, OSError, json.JSONDecodeError) as exc:
+        raise LLMRequestError(str(exc)) from exc
+
+
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>\s*", re.DOTALL | re.IGNORECASE)
 _OPEN_THINK_RE = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
 
@@ -117,16 +132,43 @@ def _local_ai_settings():
         settings = db.get_app_settings()
     except Exception:
         settings = {}
+    base_url = (settings.get("local_base_url") or DEFAULT_LOCAL_BASE_URL or "http://localhost:1234/v1").rstrip("/")
+    if base_url.lower() in {"http://localhost:8888/api", "http://127.0.0.1:8888/api"}:
+        base_url = f"{base_url[:-4]}/v1"
     return {
-        "base_url": (settings.get("local_base_url") or DEFAULT_LOCAL_BASE_URL or "http://localhost:1234/v1").rstrip("/"),
+        "base_url": base_url,
         "api_key": str(settings.get("local_api_key") or UNSLOTH_API_KEY or "").strip(),
         "model": str(settings.get("local_model") or DEFAULT_LOCAL_MODEL or "").strip(),
     }
 
 
+def _local_auth_headers(local):
+    headers = {"Content-Type": "application/json"}
+    if local.get("api_key"):
+        headers["Authorization"] = f"Bearer {local['api_key']}"
+    return headers
+
+
+def _discover_local_model(local):
+    data = _get_json(f"{local['base_url']}/models", _local_auth_headers(local), timeout=15)
+    models = data.get("data") if isinstance(data, dict) else None
+    if isinstance(models, list):
+        for model in models:
+            if isinstance(model, dict) and str(model.get("id") or "").strip():
+                return str(model["id"]).strip()
+    raise ValueError("Local model is not configured and the endpoint did not return a model from /models.")
+
+
 def _local_is_configured():
     local = _local_ai_settings()
-    return bool(local["base_url"] and local["model"])
+    if not local["base_url"]:
+        return False
+    if local["model"]:
+        return True
+    try:
+        return bool(_discover_local_model(local))
+    except Exception:
+        return False
 
 
 def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False):
@@ -141,10 +183,8 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False):
     max_tokens = min(int(max_tokens or 2048), 16384)
     local = _local_ai_settings()
     if not local["model"]:
-        raise ValueError("Local model is not configured in Settings.")
-    headers = {"Content-Type": "application/json"}
-    if local["api_key"]:
-        headers["Authorization"] = f"Bearer {local['api_key']}"
+        local["model"] = _discover_local_model(local)
+    headers = _local_auth_headers(local)
     payload = {
         "model": local["model"],
         "messages": messages,
