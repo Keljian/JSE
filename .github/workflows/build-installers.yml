@@ -156,7 +156,7 @@ jobs:
           TARGET_ARCH: ${{ matrix.arch }}
         run: |
           npm run build
-          npx electron-builder --mac dmg zip --"$TARGET_ARCH"
+          npx electron-builder --mac dmg zip --"$TARGET_ARCH" --publish never
 
       - name: Write macOS checksums
         shell: bash
