@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("jobAssistant", {
   invoke: (command, payload) => ipcRenderer.invoke("bridge:invoke", command, payload),
   getPrerequisites: () => ipcRenderer.invoke("system:prerequisites"),
   getUpdateStatus: () => ipcRenderer.invoke("update:getStatus"),
+  checkForUpdates: () => ipcRenderer.invoke("update:check"),
   downloadUpdate: () => ipcRenderer.invoke("update:download"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
   onUpdateStatus: (listener) => {

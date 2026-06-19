@@ -28,6 +28,7 @@ const UPDATE_CHECK_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
 const SELENIUM_GC_INTERVAL_MS = 10 * 60 * 1000;
 let updateCheckTimer = null;
 let updateDownloadRequested = false;
+let manualUpdateCheck = false;
 let currentUpdateStatus = { status: "idle" };
 let seleniumGcInterval = null;
 let seleniumGcKickTimer = null;
@@ -141,15 +142,34 @@ function recordUpdateCheck() {
   }
 }
 
-async function checkForUpdates() {
-  if (!app.isPackaged || isQuitting) return;
+async function checkForUpdates({ manual = false } = {}) {
+  if (isQuitting) return currentUpdateStatus;
+  if (!app.isPackaged) {
+    const status = {
+      status: "development",
+      version: app.getVersion(),
+      message: "Update checks are available in installed builds of JSE."
+    };
+    if (manual) publishUpdateStatus(status);
+    return status;
+  }
   recordUpdateCheck();
+  if (manual) {
+    manualUpdateCheck = true;
+    publishUpdateStatus({ status: "checking" });
+  }
   try {
     await autoUpdater.checkForUpdates();
-  } catch {
-    // Background checks fail silently (for example when offline). The next
-    // scheduled check will try again without interrupting the user.
+  } catch (error) {
+    if (manualUpdateCheck) {
+      manualUpdateCheck = false;
+      publishUpdateStatus({
+        status: "error",
+        message: error?.message || "JSE could not check for updates."
+      });
+    }
   }
+  return currentUpdateStatus;
 }
 
 function scheduleUpdateChecks() {
@@ -171,6 +191,7 @@ function configureAutoUpdater() {
   autoUpdater.allowDowngrade = false;
 
   autoUpdater.on("update-available", (info) => {
+    manualUpdateCheck = false;
     publishUpdateStatus({
       status: "available",
       version: info.version,
@@ -179,8 +200,18 @@ function configureAutoUpdater() {
     });
   });
   autoUpdater.on("update-not-available", () => {
+    const wasManual = manualUpdateCheck;
+    manualUpdateCheck = false;
     updateDownloadRequested = false;
-    currentUpdateStatus = { status: "idle" };
+    if (wasManual) {
+      publishUpdateStatus({
+        status: "current",
+        version: app.getVersion(),
+        checkedAt: new Date().toISOString()
+      });
+    } else {
+      currentUpdateStatus = { status: "idle" };
+    }
   });
   autoUpdater.on("download-progress", (progress) => {
     publishUpdateStatus({
@@ -194,8 +225,9 @@ function configureAutoUpdater() {
     publishUpdateStatus({ status: "ready", version: info.version });
   });
   autoUpdater.on("error", (error) => {
-    if (!updateDownloadRequested) return;
+    if (!updateDownloadRequested && !manualUpdateCheck) return;
     updateDownloadRequested = false;
+    manualUpdateCheck = false;
     publishUpdateStatus({
       status: "error",
       message: error?.message || "The update could not be downloaded."
@@ -303,12 +335,14 @@ function createWindow() {
     minWidth: 1080,
     minHeight: 720,
     backgroundColor: "#f7f7f2",
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false
     }
   });
+  win.removeMenu();
 
   // A file dropped outside a drop zone (or any stray link) must never navigate
   // the window away from the app — that replaced the UI until restart.
@@ -426,6 +460,7 @@ ipcMain.handle("system:prerequisites", () => ({
   python: { found: fs.existsSync(getPythonCommand()), path: getPythonCommand() }
 }));
 ipcMain.handle("update:getStatus", () => currentUpdateStatus);
+ipcMain.handle("update:check", () => checkForUpdates({ manual: true }));
 ipcMain.handle("update:download", async () => {
   if (!app.isPackaged || currentUpdateStatus.status !== "available") return false;
   updateDownloadRequested = true;

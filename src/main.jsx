@@ -7,6 +7,7 @@ import {
   Check,
   ChevronRight,
   CircleStop,
+  Coffee,
   Download,
   ExternalLink,
   FileText,
@@ -19,6 +20,7 @@ import {
   ListTodo,
   Loader2,
   NotebookTabs,
+  Info,
   Play,
   Plus,
   Radar,
@@ -33,6 +35,7 @@ import {
   X
 } from "lucide-react";
 import "./styles.css";
+import aboutArtwork from "./assets/jse-about.png";
 
 const PIPELINE = [
   { id: "new", label: "New", defaultAction: "Review fit", actionOffset: 2 },
@@ -103,6 +106,7 @@ const DOCUMENT_AI_PROVIDERS = [
 
 const SUPPORT_MESSAGE = "JSE is open-source and free to use. If it saved you time or sanity on the job hunt, a coffee keeps the project caffeinated and the commits coming:";
 const SUPPORT_URL = "https://ko-fi.com/keljian";
+const RELEASES_URL = "https://github.com/Keljian/JSE/releases";
 
 function openSupportLink(event) {
   event.preventDefault();
@@ -2926,6 +2930,55 @@ function UpdateToast({ update, onDismiss }) {
   );
 }
 
+function AboutPanel({ version, update, onCheckForUpdates }) {
+  const updateStatus = update?.status || "idle";
+  const checking = updateStatus === "checking";
+  const statusMessage = {
+    idle: "JSE checks for new releases automatically, or you can check now.",
+    checking: "Checking the JSE release channel…",
+    current: `You’re up to date with JSE ${update?.version || version}.`,
+    development: update?.message || "Update checks are available in installed builds of JSE.",
+    available: `JSE ${update?.version || "a newer version"} is available.`,
+    downloading: `Downloading the update — ${update?.percent || 0}% complete.`,
+    ready: `JSE ${update?.version || "the update"} is ready to install.`,
+    error: update?.message || "JSE could not check for updates."
+  }[updateStatus] || "JSE checks for new releases automatically, or you can check now.";
+
+  return (
+    <section className="about-view" aria-labelledby="about-title">
+      <div className="about-hero">
+        <img src={aboutArtwork} alt="Developer working at a laptop, surrounded by code and cloud symbols" />
+        <div className="about-story">
+          <span className="about-kicker">Open source · Local first</span>
+          <h2 id="about-title">A calmer command centre for the job hunt.</h2>
+          <p>JSE began with a simple observation: finding work is work. The useful information is usually scattered across job boards, browser tabs, documents, notes, calendars, and half-remembered conversations.</p>
+          <p>JSE brings those moving parts into one private desktop workspace. It helps you discover roles, judge fit, research employers, manage the application pipeline, and prepare tailored documents, while keeping your evidence and decisions close at hand.</p>
+          <p>The aim is not to take the human out of the process. It is to reduce the clerical drag, preserve the story of your experience, and give you more room for the judgement and care that good applications deserve.</p>
+          <div className="about-links">
+            <button onClick={() => window.jobAssistant.openExternal(RELEASES_URL)}><ExternalLink size={16} /> Project releases</button>
+            <button className="secondary" onClick={() => window.jobAssistant.openExternal(SUPPORT_URL)}><Coffee size={16} /> Support on Ko-fi</button>
+          </div>
+        </div>
+      </div>
+
+      <article className="about-update-card">
+        <div>
+          <span className="about-version-label">Installed version</span>
+          <strong>JSE {version || "—"}</strong>
+          <p className={`about-update-status status-${updateStatus}`} aria-live="polite">{statusMessage}</p>
+        </div>
+        <div className="about-update-actions">
+          {updateStatus === "available" ? <button onClick={() => window.jobAssistant.downloadUpdate()}><Download size={16} /> Download update</button> : null}
+          {updateStatus === "ready" ? <button onClick={() => window.jobAssistant.installUpdate()}><RefreshCw size={16} /> Restart & install</button> : null}
+          <button className="secondary" disabled={checking || updateStatus === "downloading"} onClick={onCheckForUpdates}>
+            <RefreshCw className={checking ? "spin" : ""} size={16} /> {checking ? "Checking…" : "Check for updates"}
+          </button>
+        </div>
+      </article>
+    </section>
+  );
+}
+
 function App() {
   const [booting, setBooting] = useState(true);
   const [status, setStatus] = useState("Idle");
@@ -3027,6 +3080,15 @@ function App() {
   }, []);
 
   const invoke = useCallback((command, payload = {}) => window.jobAssistant.invoke(command, payload), []);
+
+  const checkForAppUpdates = async () => {
+    try {
+      const nextUpdate = await window.jobAssistant.checkForUpdates?.();
+      if (nextUpdate) setAppUpdate(nextUpdate);
+    } catch (error) {
+      setAppUpdate({ status: "error", message: toErrorMessage(error) });
+    }
+  };
 
   const updateFilter = (key, value) => setFilters((current) => ({ ...current, [key]: value }));
   const toggleFilterMode = (mode, checked) => setFilters((current) => ({
@@ -4067,6 +4129,7 @@ function App() {
     stats: "Stats",
     activity: "Activity",
     settings: "Settings",
+    about: "About",
   }[view] || "Dashboard";
 
   return (
@@ -4085,6 +4148,7 @@ function App() {
         <button className={view === "activity" ? "active nav-btn" : "nav-btn"} onClick={() => setView("activity")}><NotebookTabs size={18} /> Activity</button>
         <button className={view === "settings" ? "active nav-btn" : "nav-btn"} onClick={() => setView("settings")}><Settings size={18} /> Settings</button>
         <div className="nav-spacer" />
+        <button className={view === "about" ? "active nav-btn" : "nav-btn"} onClick={() => setView("about")}><Info size={18} /> About</button>
         <button
           className="secondary wide nav-add-lane"
           disabled={Boolean(activeTasks.laneSetup)}
@@ -4098,18 +4162,18 @@ function App() {
         <header className="toolbar">
           <div>
             <h1>{viewTitle}</h1>
-            <p>{includeAllProfiles ? "All lanes" : activeProfile?.name || "Lane"} · {status}</p>
+            <p>{view === "about" ? `JSE ${prerequisites?.app_version || ""}` : `${includeAllProfiles ? "All lanes" : activeProfile?.name || "Lane"} · ${status}`}</p>
           </div>
-          <div className="toolbar-actions">
+          {view !== "about" ? <div className="toolbar-actions">
             <button data-tooltip="Search enabled sources for new roles" aria-description="Search enabled sources for new roles" onClick={() => setRunSearchOpen(true)}><Play size={16} /> Run Search</button>
             <button className="secondary" data-tooltip="Add a job listing manually" aria-description="Add a job listing manually" onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add Job</button>
             <button className="secondary" data-tooltip="Analyse unreviewed jobs for fit" aria-description="Analyse unreviewed jobs for fit" onClick={() => setAnalysisOpen(true)}><Sparkles size={16} /> Run Analysis</button>
             <button className="secondary" data-tooltip="Reload jobs and dashboard data" aria-description="Reload jobs and dashboard data" onClick={() => refresh()}><RefreshCw size={16} /> Refresh</button>
             <button className="danger" data-tooltip="Stop all running searches and tasks" aria-description="Stop all running searches and tasks" onClick={stopAllTasks}><CircleStop size={16} /> Stop</button>
-          </div>
+          </div> : null}
         </header>
 
-        <section className={view === "settings" ? "filter-bar settings-filter-bar" : "filter-bar"}>
+        {view !== "about" ? <section className={view === "settings" ? "filter-bar settings-filter-bar" : "filter-bar"}>
           <div className="filter-search-row">
             <label className="profile-filter"><span>Lane</span><select value={activeProfileId} onChange={(event) => setActiveProfileId(Number(event.target.value))}>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
             {view !== "settings" ? (
@@ -4146,7 +4210,9 @@ function App() {
               </div>
             </div>
           ) : null}
-        </section>
+        </section> : null}
+
+        {view === "about" ? <AboutPanel version={prerequisites?.app_version} update={appUpdate} onCheckForUpdates={checkForAppUpdates} /> : null}
 
         {view === "dashboard" ? <Dashboard dashboard={dashboard} calendar={calendar} onOpenJob={openJob} onOpenCleanup={() => setCleanupOpen(true)} /> : null}
 
