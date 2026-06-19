@@ -190,7 +190,7 @@ jobs:
 
   macos-metadata:
     name: Combine macOS update metadata
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     needs: macos
     runs-on: ubuntu-latest
     steps:
@@ -228,7 +228,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     needs:
       - windows
       - macos
@@ -244,21 +244,46 @@ jobs:
           path: release
           merge-multiple: true
 
-      - name: Create prerelease and upload installers
+      - name: Publish installers
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'latest-build' }}
+          MOVING_LATEST: ${{ github.ref_type != 'tag' }}
         run: |
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release/* \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-          else
+          if [[ "$MOVING_LATEST" == "true" ]]; then
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release delete "$RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --cleanup-tag \
+                --yes
+            else
+              gh api \
+                --method DELETE \
+                "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
+                >/dev/null 2>&1 || true
+            fi
+
             gh release create "$RELEASE_TAG" release/* \
               --repo "$GITHUB_REPOSITORY" \
-              --title "JSE ${RELEASE_TAG#v}" \
-              --generate-notes \
-              --latest \
-              --verify-tag
+              --target "$GITHUB_SHA" \
+              --title "JSE latest build" \
+              --notes "Automated installer build from master at $GITHUB_SHA." \
+              --latest
+          else
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$RELEASE_TAG" release/* \
+                --repo "$GITHUB_REPOSITORY" \
+                --clobber
+              gh release edit "$RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --latest
+            else
+              gh release create "$RELEASE_TAG" release/* \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "JSE ${RELEASE_TAG#v}" \
+                --generate-notes \
+                --latest \
+                --verify-tag
+            fi
           fi
