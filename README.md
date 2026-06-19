@@ -19,6 +19,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 | Windows x64 | [Open the latest JSE release](https://github.com/Keljian/JSE/releases) and download the `.exe` installer. |
 | macOS Apple Silicon | [Open the latest JSE release](https://github.com/Keljian/JSE/releases) and download the `arm64` `.dmg`. |
 | macOS Intel | [Open the latest JSE release](https://github.com/Keljian/JSE/releases) and download the `x64` `.dmg`. |
+| Ubuntu x64 | [Open the latest JSE release](https://github.com/Keljian/JSE/releases) and download the `.deb` or `.AppImage`. |
 
 [View all releases, release notes, and published checksums](https://github.com/Keljian/JSE/releases).
 
@@ -87,8 +88,8 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 
 This is the shortest path for someone who wants to use JSE, not develop it.
 
-1. **Download JSE.** Open the [latest releases and installers](https://github.com/Keljian/JSE/releases). Choose the Windows `.exe`, the Apple Silicon `arm64` `.dmg`, or the Intel `x64` `.dmg`, and check the published SHA-256 checksum before running it.
-2. **Install the unsigned beta.** On Windows, if SmartScreen appears, confirm the file and checksum, select **More info**, then **Run anyway**. See the [Windows installation guide](INSTALL_WINDOWS.md) for the full safe-install process. On macOS, confirm that the image came from the official JSE release before approving any unsigned-app warning.
+1. **Download JSE.** Open the [latest releases and installers](https://github.com/Keljian/JSE/releases). Choose the Windows `.exe`, the appropriate macOS `.dmg`, or the Ubuntu `.deb`/`.AppImage`, and check the published SHA-256 checksum before running it.
+2. **Install the unsigned beta.** On Windows, if SmartScreen appears, confirm the file and checksum, select **More info**, then **Run anyway**. See the [Windows installation guide](INSTALL_WINDOWS.md) for the full safe-install process. On macOS, confirm that the image came from the official JSE release before approving any unsigned-app warning. On Ubuntu, open the `.deb` with Software Install, or make the AppImage executable with `chmod +x` and run it.
 3. **Complete the three-step setup.** JSE checks its bundled runtime and Chrome, asks for a lane name and base `.docx` resume, then asks you to choose LM Studio or Ollama for local matching.
 4. **Start your local model.** Install only one local runtime, download a chat/instruct model that suits your hardware, start its server, then use **Settings -> AI & Credentials** to confirm the endpoint, model name, and connection.
 5. **Enable a searcher.** In **Settings -> General -> Searchers**, enable one available plugin globally and for your lane. If none are available, import a compatible scraper plugin or create one with **Build A Scraper Plugin**.
@@ -102,9 +103,9 @@ provider for employer research or application-document generation.
 
 ## What You Need First
 
-For the packaged Windows or macOS beta, you need:
+For the packaged Windows, macOS, or Ubuntu beta, you need:
 
-- 64-bit Windows, an Apple Silicon Mac, or an Intel Mac, with enough free space for the application, local data, and any local AI models you download.
+- 64-bit Windows, an Apple Silicon/Intel Mac, or Ubuntu 22.04+ x64, with enough free space for the application, local data, and any local AI models you download.
 - [Google Chrome](https://www.google.com/chrome/) for browser-based job searchers.
 - A base resume in `.docx` format for your first search lane.
 - One local AI runtime—[LM Studio](https://lmstudio.ai/download) or [Ollama](https://ollama.com/download)—plus a downloaded chat/instruct model for private, high-volume matching.
@@ -164,7 +165,7 @@ npm run start
 ## Automated Installer Builds
 
 [GitHub Actions](https://github.com/Keljian/JSE/actions/workflows/build-installers.yml)
-builds the unsigned Windows installer and macOS packages:
+builds the unsigned Windows installer, macOS packages, and Ubuntu packages:
 
 - after every push to `master`;
 - for pull requests targeting `master`;

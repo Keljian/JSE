@@ -2,7 +2,8 @@
   "name": "jse",
   "version": "1.0.0-beta.1",
   "description": "Desktop assistant for job searching, analysis, and application document generation.",
-  "author": "",
+  "author": "Keljian",
+  "homepage": "https://github.com/Keljian/JSE",
   "license": "MIT",
   "funding": {
     "type": "ko-fi",
@@ -18,7 +19,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "release:win": "npm run build && electron-builder --win nsis --x64 --publish always",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never"
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never"
   },
   "dependencies": {
     "concurrently": "^9.1.2",
@@ -90,6 +92,24 @@
           "arch": [
             "x64",
             "arm64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "category": "Utility",
+      "maintainer": "Keljian",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
           ]
         }
       ]

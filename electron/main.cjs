@@ -53,6 +53,13 @@ function getPythonCommand() {
       return bundledMacPython;
     }
   }
+  if (process.platform === "linux") {
+    const linuxArch = process.arch === "arm64" ? "linux-arm64" : "linux-x64";
+    const bundledLinuxPython = path.join(rootDir, "build", "python", linuxArch, "bin", "python3");
+    if (fs.existsSync(bundledLinuxPython)) {
+      return bundledLinuxPython;
+    }
+  }
   return process.env.PYTHON || "python";
 }
 

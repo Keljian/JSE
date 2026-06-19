@@ -188,6 +188,63 @@ jobs:
             release/latest-mac-*.yml
             release/SHA256SUMS-macos-*.txt
 
+  linux:
+    name: Ubuntu x64
+    needs: verify-version
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Cache Python runtime downloads
+        uses: actions/cache@v5
+        with:
+          path: build/cache
+          key: linux-x64-python-runtime-${{ hashFiles('requirements.txt', 'tools/prepare_python_runtime_linux.sh') }}
+
+      - name: Prepare bundled Python
+        shell: bash
+        env:
+          ARCH: x64
+        run: bash ./tools/prepare_python_runtime_linux.sh
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build Ubuntu packages
+        run: npm run dist:linux
+
+      - name: Write Linux checksums
+        shell: bash
+        run: |
+          cd release
+          find . -maxdepth 1 -type f \
+            \( -name '*.AppImage' -o -name '*.deb' -o -name '*.blockmap' -o -name 'latest-linux.yml' \) \
+            -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sed 's#  \./#  #' > SHA256SUMS-linux-x64.txt
+
+      - name: Upload Ubuntu packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: JSE-linux-x64-${{ github.run_number }}
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest-linux.yml
+            release/SHA256SUMS-linux-x64.txt
+
   macos-metadata:
     name: Combine macOS update metadata
     if: github.ref_type == 'tag' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
@@ -232,6 +289,7 @@ jobs:
     needs:
       - windows
       - macos
+      - linux
       - macos-metadata
     runs-on: ubuntu-latest
     permissions:
