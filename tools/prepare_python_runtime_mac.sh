@@ -19,12 +19,15 @@ const https = require("https");
 const pythonMinor = process.argv[2];
 const platform = process.argv[3];
 const apiUrl = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest";
+const token = process.env.GITHUB_TOKEN || "";
+const headers = {
+  "User-Agent": "jse-installer",
+  "Accept": "application/vnd.github+json"
+};
+if (token) headers.Authorization = `Bearer ${token}`;
 
 https.get(apiUrl, {
-  headers: {
-    "User-Agent": "jse-installer",
-    "Accept": "application/vnd.github+json"
-  }
+  headers
 }, (response) => {
   let body = "";
   response.on("data", (chunk) => body += chunk);
@@ -78,7 +81,7 @@ prepare_arch() {
 
   if [[ ! -f "$archive" ]]; then
     echo "Downloading Python $PYTHON_MINOR standalone runtime for $arch..."
-    curl -L "$asset_url" -o "$archive"
+    curl --fail --location --retry 3 --retry-delay 2 "$asset_url" -o "$archive"
   fi
 
   echo "Extracting Python runtime for $arch..."

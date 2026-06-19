@@ -142,6 +142,8 @@ jobs:
 
       - name: Prepare bundled Python
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash ./tools/prepare_python_runtime_mac.sh
 
       - name: Install JavaScript dependencies
