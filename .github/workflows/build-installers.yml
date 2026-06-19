@@ -114,7 +114,9 @@ jobs:
   macos:
     name: macOS Intel and Apple Silicon
     needs: verify-version
-    runs-on: macos-15-arm64
+    # `macos-15` is GitHub's Apple Silicon workflow label. The similarly named
+    # `macos-15-arm64` identifies the image documentation, not a runner label.
+    runs-on: macos-15
     steps:
       - name: Check out source
         uses: actions/checkout@v5
