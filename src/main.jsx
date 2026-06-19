@@ -13,6 +13,7 @@ import {
   FileText,
   Filter,
   FolderOpen,
+  AlertTriangle,
   ArrowRightLeft,
   CalendarClock,
   KanbanSquare,
@@ -99,10 +100,20 @@ function canMoveToInterested(job) {
 
 const DOCUMENT_AI_PROVIDERS = [
   { id: "local", label: "Local endpoint" },
+  { id: "gemini", label: "Gemini" },
+  { id: "compat", label: "Free / OpenAI-compatible" },
   { id: "chatgpt", label: "ChatGPT" },
-  { id: "claude", label: "Claude" },
-  { id: "gemini", label: "Gemini" }
+  { id: "claude", label: "Claude" }
 ];
+
+// Presets for the free / OpenAI-compatible endpoint. base_url is filled in; the
+// user supplies a model (and an API key, which most free tiers still require).
+const COMPAT_PRESETS = {
+  groq: { label: "Groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", keyUrl: "https://console.groq.com/keys" },
+  cerebras: { label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", model: "llama-3.3-70b", keyUrl: "https://cloud.cerebras.ai" },
+  openrouter: { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", model: "", keyUrl: "https://openrouter.ai/keys" },
+  opencode: { label: "OpenCode Zen", baseUrl: "https://opencode.ai/zen/v1", model: "", keyUrl: "https://opencode.ai/auth" }
+};
 
 const SUPPORT_MESSAGE = "JSE is open-source and free to use. If it saved you time or sanity on the job hunt, a coffee keeps the project caffeinated and the commits coming:";
 const SUPPORT_URL = "https://ko-fi.com/keljian";
@@ -264,7 +275,7 @@ function DialogModal({ dialog, onClose }) {
       <footer className="modal-actions">
         {dialog.kind !== "notice" ? <button className="secondary" onClick={cancel}>Cancel</button> : null}
         <button autoFocus={dialog.kind !== "prompt"} className={dialog.danger ? "danger" : ""} onClick={confirm}>
-          {dialog.danger ? <Trash2 size={16} /> : <Check size={16} />} {dialog.confirmLabel || "OK"}
+          {dialog.danger ? <Trash2 size={16} /> : dialog.warning ? <AlertTriangle size={16} /> : <Check size={16} />} {dialog.confirmLabel || "OK"}
         </button>
       </footer>
     </Modal>
@@ -2368,6 +2379,36 @@ function ScraperPluginBuilder({ profileId, busy, onBuild, onTest }) {
   );
 }
 
+// Model picker that prefers an auto-discovered dropdown but keeps a custom-entry
+// escape hatch (and preserves any value not in the discovered list).
+function ModelSelect({ value, options, loading, placeholder, onChange, onRefresh }) {
+  const [customMode, setCustomMode] = useState(false);
+  const list = options || [];
+  const merged = value && !list.includes(value) ? [value, ...list] : list;
+  if (customMode) {
+    return (
+      <div className="model-select">
+        <input value={value || ""} placeholder={placeholder || "Model name"} onChange={(event) => onChange(event.target.value)} />
+        <div className="model-select-actions">
+          <button type="button" className="secondary ai-test-button" onClick={() => setCustomMode(false)}>Pick from list</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="model-select">
+      <select value={value || ""} onChange={(event) => { if (event.target.value === "__custom__") setCustomMode(true); else onChange(event.target.value); }}>
+        <option value="">{loading ? "Loading models…" : merged.length ? "Provider default" : "Provider default (load to list)"}</option>
+        {merged.map((model) => <option key={model} value={model}>{model}</option>)}
+        <option value="__custom__">Custom…</option>
+      </select>
+      <div className="model-select-actions">
+        {onRefresh ? <button type="button" className="secondary ai-test-button" onClick={onRefresh} disabled={loading}>{loading ? <Loader2 className="spin" size={12} /> : <RefreshCw size={12} />} Reload models</button> : null}
+      </div>
+    </div>
+  );
+}
+
 function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onApplyFilters, onCompactDatabase, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onBuildScraper, onTestScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
   const [form, setForm] = useState(settings || {});
   const [globalForm, setGlobalForm] = useState(globalSettings || {});
@@ -2380,6 +2421,7 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
   const [compacting, setCompacting] = useState(false);
   const [compactResult, setCompactResult] = useState(null);
   const [providerTests, setProviderTests] = useState({});
+  const [modelOptions, setModelOptions] = useState({});
 
   useEffect(() => setForm(settings || {}), [settings]);
   useEffect(() => setGlobalForm(globalSettings || {}), [globalSettings]);
@@ -2472,19 +2514,44 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
   };
 
   const workflowProvider = (key) => globalForm[key] || globalForm.doc_ai_provider || "local";
+  const scoringProvider = globalForm.scoring_ai_provider || "local";
   const providerIsConfigured = (provider) => {
     if (provider === "local") return Boolean((globalForm.local_base_url || "").trim());
     if (provider === "chatgpt") return Boolean((globalForm.openai_api_key || "").trim());
     if (provider === "claude") return Boolean((globalForm.claude_api_key || "").trim());
     if (provider === "gemini") return Boolean((globalForm.gemini_api_key || "").trim());
+    if (provider === "compat") return Boolean((globalForm.compat_base_url || "").trim() && (globalForm.compat_model || "").trim());
     return false;
   };
   const providerIsUsed = (provider) => [
     workflowProvider("document_ai_provider"),
     workflowProvider("research_ai_provider"),
     workflowProvider("memory_ai_provider"),
+    scoringProvider,
     "local"
   ].includes(provider);
+  const PROVIDER_LABELS = { local: "Local endpoint", gemini: "Gemini", compat: "Free / OpenAI-compatible", chatgpt: "ChatGPT", claude: "Claude" };
+  // Switching triage/scoring off the local engine sends every scraped ad (and
+  // resume context) to a third party — make the user confirm that explicitly.
+  const changeScoringProvider = async (value) => {
+    if (value !== "local") {
+      const confirmed = await appConfirm({
+        title: "Send job data off your device?",
+        message: `Job matching runs on every scraped ad in bulk. Using ${PROVIDER_LABELS[value] || value} for triage/scoring sends each job advert and your resume context to that provider — including free tiers, which may log or train on your data. Your local-first privacy no longer applies to matching.`,
+        confirmLabel: `Use ${PROVIDER_LABELS[value] || value}`,
+        warning: true
+      });
+      if (!confirmed) return;
+    }
+    updateGlobal("scoring_ai_provider", value);
+    if (value !== "local") loadModels(value);
+  };
+  const applyCompatPreset = (presetId) => {
+    const preset = COMPAT_PRESETS[presetId];
+    if (!preset) return;
+    updateGlobal("compat_base_url", preset.baseUrl);
+    if (preset.model) updateGlobal("compat_model", preset.model);
+  };
   const providerStatus = (provider) => {
     const test = providerTests[provider];
     if (test?.ok) return "Verified";
@@ -2535,6 +2602,36 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
       }));
     }
   };
+
+  const loadModels = (provider) => {
+    if (!provider || provider === "claude") return;
+    setModelOptions((current) => ({ ...current, [provider]: { ...(current[provider] || {}), loading: true } }));
+    let task;
+    task = window.jobAssistant.startTask(
+      "ai:listModels",
+      { provider, settings: globalForm },
+      (event) => {
+        if (event.type === "result") {
+          task?.unsubscribe();
+          setModelOptions((current) => ({ ...current, [provider]: { loading: false, models: event.data?.models || [] } }));
+        } else if (event.type === "error") {
+          task?.unsubscribe();
+          setModelOptions((current) => ({ ...current, [provider]: { loading: false, models: [] } }));
+        }
+      }
+    );
+  };
+
+  // Auto-discover model names for any configured provider when the AI section
+  // opens, so the model fields can offer a dropdown instead of free text.
+  useEffect(() => {
+    if (section !== "ai") return;
+    if ((globalForm.gemini_api_key || "").trim()) loadModels("gemini");
+    if ((globalForm.compat_base_url || "").trim()) loadModels("compat");
+    if ((globalForm.local_base_url || "").trim()) loadModels("local");
+    if ((globalForm.openai_api_key || "").trim()) loadModels("chatgpt");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section]);
 
   return (
     <section className="settings-view">
@@ -2623,9 +2720,23 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
               <div className="ai-route-copy"><NotebookTabs size={17} /><div><strong>Evidence & memory</strong><span>Corpus mining and reusable career evidence</span></div></div>
               <select aria-label="Evidence and memory provider" value={workflowProvider("memory_ai_provider")} onChange={(event) => updateGlobal("memory_ai_provider", event.target.value)}>{DOCUMENT_AI_PROVIDERS.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>
             </article>
-            <article className="ai-route-card fixed">
-              <div className="ai-route-copy"><Radar size={17} /><div><strong>Job matching</strong><span>High-volume triage and fit analysis</span></div></div>
-              <div className="ai-fixed-provider"><span className="status-dot configured" />Local endpoint <small>Fixed</small></div>
+            <article className="ai-route-card">
+              <div className="ai-route-copy"><Radar size={17} /><div><strong>Job matching</strong><span>High-volume triage, scoring & analysis</span></div></div>
+              <div className="ai-route-controls">
+                <select aria-label="Job matching provider" value={scoringProvider} onChange={(event) => changeScoringProvider(event.target.value)}>{DOCUMENT_AI_PROVIDERS.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>
+                {scoringProvider !== "local" ? (
+                  <label className="ai-route-model"><span>Matching model</span>
+                    <ModelSelect
+                      value={globalForm.scoring_model || ""}
+                      options={modelOptions[scoringProvider]?.models}
+                      loading={modelOptions[scoringProvider]?.loading}
+                      placeholder={scoringProvider === "gemini" ? "e.g. gemini-2.5-flash" : "Model name"}
+                      onChange={(model) => updateGlobal("scoring_model", model)}
+                      onRefresh={() => loadModels(scoringProvider)}
+                    />
+                  </label>
+                ) : null}
+              </div>
             </article>
           </div>
 
@@ -2644,11 +2755,11 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
                 <span>Choose one local model server:</span>
                 {Object.entries(LOCAL_AI_RUNTIMES).map(([id, runtime]) => (
                   <div key={id}>
-                    <button type="button" className="ghost" onClick={() => {
+                    <button type="button" className="secondary ai-test-button" onClick={() => {
                       updateGlobal("local_base_url", runtime.baseUrl);
                       if (runtime.model) updateGlobal("local_model", runtime.model);
                     }}>Use {runtime.label} preset</button>
-                    <button type="button" className="ghost" onClick={() => window.jobAssistant.openExternal(runtime.downloadUrl)}><ExternalLink size={13} /> Install</button>
+                    <button type="button" className="secondary ai-test-button" onClick={() => window.jobAssistant.openExternal(runtime.downloadUrl)}><ExternalLink size={13} /> Install</button>
                   </div>
                 ))}
               </div>
@@ -2658,9 +2769,31 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
               <header><div><span className="provider-mark gemini">G</span><div><strong>Gemini</strong><small>Google AI models</small></div></div><div className="provider-card-actions"><span className={`provider-status ${providerStatusClass("gemini")}`}><i />{providerStatus("gemini")}</span><button type="button" className="secondary ai-test-button" disabled={providerTests.gemini?.testing} onClick={() => testProvider("gemini")}>{providerTests.gemini?.testing ? <Loader2 className="spin" size={12} /> : <Play size={12} />}Test</button></div></header>
               <div className="ai-provider-fields">
                 <label><span>API key</span><input type="password" value={globalForm.gemini_api_key || ""} placeholder="Required" onChange={(event) => updateGlobal("gemini_api_key", event.target.value)} /></label>
-                <label><span>Model</span><input value={globalForm.gemini_model || ""} placeholder="gemini-3.1-pro-preview" onChange={(event) => updateGlobal("gemini_model", event.target.value)} /></label>
+                <label><span>Model</span>
+                  <ModelSelect value={globalForm.gemini_model || ""} options={modelOptions.gemini?.models} loading={modelOptions.gemini?.loading} placeholder="gemini-3.1-pro-preview" onChange={(model) => updateGlobal("gemini_model", model)} onRefresh={() => loadModels("gemini")} />
+                </label>
               </div>
               {providerTests.gemini && !providerTests.gemini.testing ? <div className={`ai-test-result ${providerTests.gemini.ok ? "ok" : "bad"}`}>{providerTests.gemini.message}</div> : null}
+            </article>
+            <article className={`ai-provider-card ${providerIsUsed("compat") ? "in-use" : ""}`}>
+              <header><div><span className="provider-mark compat">F</span><div><strong>Free / OpenAI-compatible</strong><small>Groq, Cerebras, OpenRouter, OpenCode Zen…</small></div></div><div className="provider-card-actions"><span className={`provider-status ${providerStatusClass("compat")}`}><i />{providerStatus("compat")}</span><button type="button" className="secondary ai-test-button" disabled={providerTests.compat?.testing} onClick={() => testProvider("compat")}>{providerTests.compat?.testing ? <Loader2 className="spin" size={12} /> : <Play size={12} />}Test</button></div></header>
+              <div className="ai-provider-fields">
+                <label className="full"><span>Base URL</span><input value={globalForm.compat_base_url || ""} placeholder="https://api.groq.com/openai/v1" onChange={(event) => updateGlobal("compat_base_url", event.target.value)} /></label>
+                <label><span>Model</span>
+                  <ModelSelect value={globalForm.compat_model || ""} options={modelOptions.compat?.models} loading={modelOptions.compat?.loading} placeholder="Model name" onChange={(model) => updateGlobal("compat_model", model)} onRefresh={() => loadModels("compat")} />
+                </label>
+                <label><span>API key</span><input type="password" value={globalForm.compat_api_key || ""} placeholder="Optional on some endpoints" onChange={(event) => updateGlobal("compat_api_key", event.target.value)} /></label>
+              </div>
+              <div className="local-ai-quickstart">
+                <span>Quick presets:</span>
+                {Object.entries(COMPAT_PRESETS).map(([id, preset]) => (
+                  <div key={id}>
+                    <button type="button" className="secondary ai-test-button" onClick={() => applyCompatPreset(id)}>Use {preset.label}</button>
+                    <button type="button" className="secondary ai-test-button" onClick={() => window.jobAssistant.openExternal(preset.keyUrl)}><ExternalLink size={13} /> Get key</button>
+                  </div>
+                ))}
+              </div>
+              {providerTests.compat && !providerTests.compat.testing ? <div className={`ai-test-result ${providerTests.compat.ok ? "ok" : "bad"}`}>{providerTests.compat.message}</div> : null}
             </article>
             <article className={`ai-provider-card ${providerIsUsed("chatgpt") ? "in-use" : ""}`}>
               <header><div><span className="provider-mark openai">O</span><div><strong>OpenAI</strong><small>ChatGPT and compatible APIs</small></div></div><div className="provider-card-actions"><span className={`provider-status ${providerStatusClass("chatgpt")}`}><i />{providerStatus("chatgpt")}</span><button type="button" className="secondary ai-test-button" disabled={providerTests.chatgpt?.testing} onClick={() => testProvider("chatgpt")}>{providerTests.chatgpt?.testing ? <Loader2 className="spin" size={12} /> : <Play size={12} />}Test</button></div></header>

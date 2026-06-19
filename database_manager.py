@@ -100,6 +100,15 @@ DEFAULT_APP_SETTINGS.update({
     "local_base_url": DEFAULT_PROFILE_SETTINGS["local_base_url"],
     "local_api_key": "",
     "local_model": DEFAULT_PROFILE_SETTINGS["local_model"],
+    # Job-matching (triage/scoring/analysis) provider. Defaults to local so
+    # behaviour is unchanged; scoring_model is an independent model override for
+    # this workflow. Free / OpenAI-compatible endpoint credentials (Groq,
+    # Cerebras, OpenRouter, OpenCode Zen, custom) live under compat_*.
+    "scoring_ai_provider": "local",
+    "scoring_model": "",
+    "compat_base_url": "",
+    "compat_api_key": "",
+    "compat_model": "",
 })
 SOURCE_ALIASES = {
     "seek": "Seek",
@@ -1047,6 +1056,11 @@ GLOBAL_AI_SETTING_FIELDS = (
     "local_base_url",
     "local_api_key",
     "local_model",
+    "scoring_ai_provider",
+    "scoring_model",
+    "compat_base_url",
+    "compat_api_key",
+    "compat_model",
 )
 LOCAL_LLM_SETTING_FIELDS = ("local_base_url", "local_api_key", "local_model")
 

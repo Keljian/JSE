@@ -2260,6 +2260,56 @@ h3 {
 .provider-mark.gemini { background: linear-gradient(135deg, #3c72c4, #8d66bc); }
 .provider-mark.openai { background: #1f5b4e; }
 .provider-mark.claude { background: #9b6146; }
+.provider-mark.compat { background: linear-gradient(135deg, #2f8f6b, #4f6f65); }
+
+.ai-route-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ai-route-controls select {
+  width: 100%;
+  min-height: 38px;
+}
+
+.ai-route-model {
+  display: grid;
+  gap: 3px;
+  font-size: 11px;
+  color: #66716b;
+}
+
+.ai-route-model input {
+  font-size: 12px;
+  padding: 4px 7px;
+}
+
+.model-select {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.model-select select,
+.model-select input {
+  width: 100%;
+  font-size: 12px;
+  padding: 4px 7px;
+}
+
+.model-select-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.model-select-actions button {
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 
 .provider-status {
   display: inline-flex;
@@ -4290,7 +4340,7 @@ button.update-toast-close:hover:not(:disabled) {
 
 .local-ai-quickstart > span { color: #64716a; font-size: 0.82rem; font-weight: 700; }
 .local-ai-quickstart > div { display: flex; gap: 3px; }
-.local-ai-quickstart button { padding: 5px 8px; font-size: 0.78rem; }
+.local-ai-quickstart button { min-height: 27px; padding: 0 8px; font-size: 10px; }
 
 @media (max-width: 620px) {
   .onboarding-modal { width: calc(100vw - 20px); min-height: calc(100vh - 20px); }

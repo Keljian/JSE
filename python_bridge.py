@@ -830,6 +830,17 @@ def command_settings_update(payload):
     return {"settings": db.update_lane_settings(profile_id, payload.get("settings", {}))}
 
 
+def command_ai_list_models(payload):
+    """List available model ids for a provider so the UI can offer a dropdown.
+    Uses the settings currently in the UI (so a freshly typed key/URL works)."""
+    provider = str(payload.get("provider") or "").strip().lower()
+    supplied = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+    settings = {**db.get_app_settings(), **supplied}
+    with contextlib.redirect_stdout(sys.stderr):
+        import llm_handler
+    return {"provider": provider, "models": llm_handler.list_models_for_provider(provider, settings)}
+
+
 def command_settings_global_get(_payload):
     return {"settings": db.get_app_settings()}
 
@@ -846,7 +857,7 @@ def command_settings_global_update(payload):
 def command_ai_test_provider(payload):
     """Make a minimal real request with the provider settings currently in the UI."""
     provider = str(payload.get("provider") or "").strip().lower()
-    if provider not in {"local", "chatgpt", "claude", "gemini"}:
+    if provider not in {"local", "chatgpt", "claude", "gemini", "compat"}:
         raise ValueError(f"Unsupported AI provider: {provider or '(blank)'}")
 
     supplied = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
@@ -2614,6 +2625,7 @@ COMMANDS = {
     "settings:globalGet": command_settings_global_get,
     "settings:globalUpdate": command_settings_global_update,
     "ai:testProvider": command_ai_test_provider,
+    "ai:listModels": command_ai_list_models,
     "memory:status": command_memory_status,
     "memory:scan": command_memory_scan,
     "memory:remineDue": command_memory_remine_due,

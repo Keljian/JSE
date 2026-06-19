@@ -255,6 +255,8 @@ def _model_name(settings, provider):
         return (settings or {}).get("claude_model") or "claude-sonnet-4-6"
     if provider == "gemini":
         return (settings or {}).get("gemini_model") or "gemini-2.5-pro"
+    if provider == "compat":
+        return (settings or {}).get("compat_model") or ""
     return (settings or {}).get("local_model") or DEFAULT_LOCAL_MODEL
 
 
@@ -266,15 +268,17 @@ def _messages_to_text(messages):
     return "\n\n".join(parts)
 
 
-def _call_openai_compatible(base_url, api_key, model, messages, temperature=0.2, max_tokens=4096, json_mode=False):
-    if not api_key:
+def _call_openai_compatible(base_url, api_key, model, messages, temperature=0.2, max_tokens=4096, json_mode=False, require_key=True):
+    if require_key and not api_key:
         raise ValueError("OpenAI / ChatGPT API key is not configured in Settings.")
     payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    # Free / self-hosted OpenAI-compatible endpoints may not require a key.
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     data = _post_json(
         f"{str(base_url or 'https://api.openai.com/v1').rstrip('/')}/chat/completions",
-        {"Authorization": f"Bearer {api_key}"},
+        headers,
         payload,
         timeout=180,
     )
@@ -360,6 +364,19 @@ def _call_document_ai(settings, messages, temperature=0.2, max_tokens=4096, json
             temperature,
             max_tokens,
         ), f"Gemini ({model})"
+    if provider == "compat":
+        if not model:
+            raise ValueError("Set a model name for the free / OpenAI-compatible endpoint in Settings.")
+        return _call_openai_compatible(
+            (settings or {}).get("compat_base_url") or "",
+            (settings or {}).get("compat_api_key") or "",
+            model,
+            messages,
+            temperature,
+            max_tokens,
+            json_mode=json_mode,
+            require_key=False,
+        ), f"Free endpoint ({model})"
     raise ValueError(f"Unknown document AI provider: {provider}")
 
 
@@ -372,6 +389,89 @@ def _settings_for_ai_task(settings, provider_field):
         or "local"
     ).lower()
     return resolved
+
+
+def _scoring_settings():
+    """Settings for the triage/scoring ("Job matching") workflow.
+
+    Defaults to local so behaviour is unchanged unless the user opts in. The
+    scoring_model field is an independent model override for this workflow (so
+    triage can run, e.g., a cheaper/faster Gemini model than document work); a
+    blank value falls back to the provider's default model.
+    """
+    try:
+        base = db.get_app_settings()
+    except Exception:
+        base = {}
+    resolved = dict(base)
+    resolved["doc_ai_provider"] = (base.get("scoring_ai_provider") or "local").lower()
+    resolved["doc_ai_model"] = str(base.get("scoring_model") or "").strip()
+    return resolved
+
+
+def _call_scoring_ai(messages, temperature=0.2, max_tokens=2048, json_mode=False):
+    """Provider-aware call for triage/scoring/analysis. Routes through the
+    selected Job-matching provider (local by default, or Gemini / a free
+    OpenAI-compatible endpoint)."""
+    text, _label = _call_document_ai(
+        _scoring_settings(), messages,
+        temperature=temperature, max_tokens=max_tokens, json_mode=json_mode,
+    )
+    return text
+
+
+def list_models_for_provider(provider, settings=None):
+    """Discover available model ids for a provider so the UI can offer a
+    dropdown instead of free-text. Returns a sorted list; never raises (returns
+    [] when credentials are missing or the endpoint is unreachable)."""
+    provider = str(provider or "").lower()
+    settings = settings or {}
+    try:
+        if provider == "gemini":
+            api_key = settings.get("gemini_api_key") or ""
+            if not api_key:
+                return []
+            import google.generativeai as genai
+
+            genai.configure(api_key=api_key)
+            names = []
+            for model in genai.list_models():
+                methods = getattr(model, "supported_generation_methods", None) or []
+                if "generateContent" in methods:
+                    names.append(str(getattr(model, "name", "")).replace("models/", ""))
+            return sorted({name for name in names if name})
+        if provider == "claude":
+            api_key = settings.get("claude_api_key") or ""
+            if not api_key:
+                return []
+            data = _get_json(
+                "https://api.anthropic.com/v1/models",
+                {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                timeout=15,
+            )
+            rows = data.get("data") if isinstance(data, dict) else None
+            return sorted({str(row.get("id")) for row in (rows or []) if isinstance(row, dict) and row.get("id")})
+
+        # OpenAI-compatible endpoints expose GET /models.
+        if provider == "local":
+            local = _local_ai_settings(settings)
+            base_url, api_key = local["base_url"], local["api_key"]
+        elif provider == "compat":
+            base_url, api_key = (settings.get("compat_base_url") or ""), (settings.get("compat_api_key") or "")
+        elif provider == "chatgpt":
+            base_url, api_key = (settings.get("openai_base_url") or "https://api.openai.com/v1"), (settings.get("openai_api_key") or "")
+        else:
+            return []
+        if not base_url:
+            return []
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        data = _get_json(f"{base_url.rstrip('/')}/models", headers, timeout=15)
+        rows = data.get("data") if isinstance(data, dict) else None
+        return sorted({str(row.get("id")) for row in (rows or []) if isinstance(row, dict) and row.get("id")})
+    except Exception:
+        return []
 
 
 def _json_object_candidate(text):
@@ -1016,7 +1116,7 @@ JOB DESCRIPTION:
 ---
 {full_description[:10000]}
 ---"""
-    response = _call_unsloth(
+    response = _call_scoring_ai(
         messages=[
             {"role": "system", "content": DEEP_GATEKEEPER_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -1165,7 +1265,7 @@ RESUME:
 ---
 {resume_text[:12000]}
 ---"""
-    summary = _call_unsloth(
+    summary = _call_scoring_ai(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.15,
         max_tokens=1000,
@@ -1186,7 +1286,7 @@ JOB EXTRACT:
 ---
 {full_description[:3500]}
 ---"""
-    response = _call_unsloth(
+    response = _call_scoring_ai(
         messages=[
             {"role": "system", "content": TRIAGE_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -1294,7 +1394,7 @@ JOB ADVERTISEMENT:
 ---"""
 
     try:
-        llm_response_text = _call_unsloth(
+        llm_response_text = _call_scoring_ai(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -1360,7 +1460,7 @@ EXAMPLE
     )
 
     try:
-        llm_response_text = _call_unsloth(
+        llm_response_text = _call_scoring_ai(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -1431,7 +1531,7 @@ TRACK ANCHORS
         f"RESUME / LANE CONTEXT:\n---\n{resume_text}\n---"
     )
 
-    llm_response_text = _call_unsloth(
+    llm_response_text = _call_scoring_ai(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -1636,7 +1736,7 @@ JOB ADVERTISEMENT:
 
         try:
             log(f"Analyzing job ID {job_id}...")
-            llm_response_text = _call_unsloth(
+            llm_response_text = _call_scoring_ai(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
