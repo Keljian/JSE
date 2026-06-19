@@ -1,0 +1,210 @@
+name: Build installers
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - master
+  schedule:
+    # Monday morning in Sydney (08:17 AEST / 09:17 AEDT).
+    - cron: "17 22 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-installers-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+jobs:
+  verify-version:
+    name: Verify release version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Require a tag matching package.json
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [[ "$RELEASE_TAG" != "$expected" ]]; then
+            echo "Release tag $RELEASE_TAG does not match package.json version $expected." >&2
+            exit 1
+          fi
+
+  windows:
+    name: Windows x64
+    needs: verify-version
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Cache Python runtime downloads
+        uses: actions/cache@v4
+        with:
+          path: build/cache
+          key: windows-python-runtime-${{ hashFiles('requirements.txt', 'tools/prepare_python_runtime.ps1') }}
+
+      - name: Prepare bundled Python
+        shell: pwsh
+        run: .\tools\prepare_python_runtime.ps1
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build Windows installer
+        run: npm run dist:win
+
+      - name: Write Windows checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            Get-ChildItem -LiteralPath release -Filter "*.exe" -File
+            Get-ChildItem -LiteralPath release -Filter "*.exe.blockmap" -File
+            Get-Item -LiteralPath release/latest.yml -ErrorAction SilentlyContinue
+          ) | Sort-Object Name
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          [System.IO.File]::WriteAllLines(
+            (Join-Path (Resolve-Path release) "SHA256SUMS-windows.txt"),
+            $lines,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: JSE-windows-x64-${{ github.run_number }}
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+          path: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/latest.yml
+            release/SHA256SUMS-windows.txt
+
+  macos:
+    name: macOS Intel and Apple Silicon
+    needs: verify-version
+    runs-on: macos-15-arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Enable Intel compatibility
+        shell: bash
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      - name: Cache Python runtime downloads
+        uses: actions/cache@v4
+        with:
+          path: build/cache
+          key: macos-python-runtime-${{ hashFiles('requirements.txt', 'tools/prepare_python_runtime_mac.sh') }}
+
+      - name: Prepare bundled Python
+        shell: bash
+        run: bash ./tools/prepare_python_runtime_mac.sh
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build macOS packages
+        run: npm run dist:mac
+
+      - name: Write macOS checksums
+        shell: bash
+        run: |
+          cd release
+          find . -maxdepth 1 -type f \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' -o -name 'latest-mac.yml' \) \
+            -print0 \
+            | sort -z \
+            | xargs -0 shasum -a 256 \
+            | sed 's#  \./#  #' > SHA256SUMS-macos.txt
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: JSE-macos-${{ github.run_number }}
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest-mac.yml
+            release/SHA256SUMS-macos.txt
+
+  release:
+    name: Publish GitHub prerelease
+    if: github.ref_type == 'tag'
+    needs:
+      - windows
+      - macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: JSE-*
+          path: release
+          merge-multiple: true
+
+      - name: Create prerelease and upload installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" release/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "JSE ${RELEASE_TAG#v}" \
+              --generate-notes \
+              --prerelease \
+              --verify-tag
+          fi

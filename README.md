@@ -20,6 +20,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 - [Quick Start (~20 minutes)](#quick-start-20-minutes)
 - [What You Need First](#what-you-need-first)
 - [Install Dependencies](#install-dependencies)
+- [Automated Installer Builds](#automated-installer-builds)
 - [Start The App](#start-the-app)
 - [First-Run Setup In The UI](#first-run-setup-in-the-ui)
 - [Local LLM Setup](#local-llm-setup)
@@ -123,6 +124,32 @@ python -m venv .venv
 ```
 
 If you are using a packaged build, dependencies may already be bundled.
+
+---
+
+## Automated Installer Builds
+
+GitHub Actions builds the unsigned Windows installer and macOS packages:
+
+- after every push to `master`;
+- for pull requests targeting `master`;
+- every Monday morning Sydney time; and
+- on demand from **GitHub -> Actions -> Build installers -> Run workflow**.
+
+Successful runs retain downloadable build artifacts for 30 days. To publish a
+GitHub prerelease for the in-app updater, update the version in `package.json`
+and `package-lock.json`, commit it, then push a matching tag. For example, for
+version `1.0.0-beta.2`:
+
+```bash
+git tag v1.0.0-beta.2
+git push origin v1.0.0-beta.2
+```
+
+The workflow refuses a release tag that does not match `package.json`, builds
+both platforms, generates SHA-256 checksum files, and publishes the resulting
+installers as a GitHub prerelease. Ordinary and scheduled builds never publish
+or overwrite a release.
 
 ---
 
