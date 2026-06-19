@@ -174,7 +174,7 @@ jobs:
             release/SHA256SUMS-macos.txt
 
   release:
-    name: Publish GitHub prerelease
+    name: Publish GitHub release
     if: github.ref_type == 'tag'
     needs:
       - windows
@@ -205,6 +205,6 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "JSE ${RELEASE_TAG#v}" \
               --generate-notes \
-              --prerelease \
+              --latest \
               --verify-tag
           fi
