@@ -16,9 +16,9 @@
     "start": "node tools/start-dev.cjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "release:win": "npm run build && electron-builder --win nsis --x64 --publish always",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64"
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never"
   },
   "dependencies": {
     "concurrently": "^9.1.2",
