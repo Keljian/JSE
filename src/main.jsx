@@ -1848,8 +1848,8 @@ function CampaignPanel({ plan, busy, docsBusy, onStageAttack, onRefreshActions, 
           </div>
         </div>
         <div className="campaign-actions">
-          <button disabled={busy} onClick={onStageAttack}><Target size={16} /> Stage Top Roles</button>
-          <button className="secondary" disabled={busy} onClick={onRefreshActions}><Send size={16} /> Refresh Follow-Ups</button>
+          <button data-tooltip="Stage the highest-fit roles for action" aria-description="Stage the highest-fit roles for action" disabled={busy} onClick={onStageAttack}><Target size={16} /> Stage Top Roles</button>
+          <button className="secondary" data-tooltip="Rebuild follow-up actions for applied jobs" aria-description="Rebuild follow-up actions for applied jobs" disabled={busy} onClick={onRefreshActions}><Send size={16} /> Refresh Follow-Ups</button>
         </div>
       </div>
 

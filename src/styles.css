@@ -365,12 +365,14 @@ h3 {
 }
 
 .toolbar-actions button[data-tooltip],
-.nav-add-lane[data-tooltip] {
+.nav-add-lane[data-tooltip],
+.campaign-actions button[data-tooltip] {
   position: relative;
 }
 
 .toolbar-actions button[data-tooltip]::after,
-.nav-add-lane[data-tooltip]::after {
+.nav-add-lane[data-tooltip]::after,
+.campaign-actions button[data-tooltip]::after {
   content: attr(data-tooltip);
   position: absolute;
   top: calc(100% + 9px);
@@ -401,21 +403,26 @@ h3 {
 .toolbar-actions button[data-tooltip]:hover::after,
 .toolbar-actions button[data-tooltip]:focus-visible::after,
 .nav-add-lane[data-tooltip]:hover::after,
-.nav-add-lane[data-tooltip]:focus-visible::after {
+.nav-add-lane[data-tooltip]:focus-visible::after,
+.campaign-actions button[data-tooltip]:hover::after,
+.campaign-actions button[data-tooltip]:focus-visible::after {
   opacity: 1;
   visibility: visible;
   transform: translate(-50%, 0);
   transition-delay: 1s, 1s, 1s;
 }
 
-.toolbar-actions button[data-tooltip]:last-child::after {
+.toolbar-actions button[data-tooltip]:last-child::after,
+.campaign-actions button[data-tooltip]:last-child::after {
   right: 0;
   left: auto;
   transform: translateY(-4px);
 }
 
 .toolbar-actions button[data-tooltip]:last-child:hover::after,
-.toolbar-actions button[data-tooltip]:last-child:focus-visible::after {
+.toolbar-actions button[data-tooltip]:last-child:focus-visible::after,
+.campaign-actions button[data-tooltip]:last-child:hover::after,
+.campaign-actions button[data-tooltip]:last-child:focus-visible::after {
   transform: translateY(0);
 }
 
