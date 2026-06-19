@@ -8,20 +8,30 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 > Free and staying that way. If it saves you some time or sanity, you can [buy me a coffee](https://ko-fi.com/keljian) — it keeps me caffeinated and the commits coming.
 
 > [!IMPORTANT]
-> The current Windows beta is unsigned. See [Installing the JSE Windows beta](INSTALL_WINDOWS.md) for checksum verification, the SmartScreen click-through, Chrome requirements, and safe upgrade guidance. Note that this is the easiest path for getting a windows install running if you don't want to be developing it. 
->
+> The current packaged betas are unsigned. Download them only from the official
+> JSE release page. Windows users should follow the
+> [Windows installation and checksum guide](INSTALL_WINDOWS.md).
 
-Latest builds (for download) here: https://github.com/Keljian/JSE/releases/latest
+## Download JSE
+
+| Platform | Download |
+| --- | --- |
+| Windows x64 | [Open the latest JSE release](https://github.com/Keljian/JSE/releases) and download the `.exe` installer. |
+| macOS Apple Silicon | [Open the latest JSE release](https://github.com/Keljian/JSE/releases) and download the `arm64` `.dmg`. |
+| macOS Intel | [Open the latest JSE release](https://github.com/Keljian/JSE/releases) and download the `x64` `.dmg`. |
+
+[View all releases, release notes, and published checksums](https://github.com/Keljian/JSE/releases).
+
 ---
 
 ## Contents
 
+- [Download JSE](#download-jse)
 - [Features](#features)
-- [Quick Start (~20 minutes)](#quick-start-20-minutes)
+- [Quick Start](#quick-start)
 - [What You Need First](#what-you-need-first)
-- [Install Dependencies](#install-dependencies)
+- [Run From Source](#run-from-source)
 - [Automated Installer Builds](#automated-installer-builds)
-- [Start The App](#start-the-app)
 - [First-Run Setup In The UI](#first-run-setup-in-the-ui)
 - [Local LLM Setup](#local-llm-setup)
 - [Cloud AI Setup](#cloud-ai-setup)
@@ -73,47 +83,67 @@ Latest builds (for download) here: https://github.com/Keljian/JSE/releases/lates
 
 ---
 
-## Quick Start (~20 minutes)
+## Quick Start
 
-The fastest path to a working search. This assumes Node.js, Python 3.11+, and Google Chrome are already installed — if they aren't, install those first (see [What You Need First](#what-you-need-first)), as that's the only step that can blow the 20-minute budget.
+This is the shortest path for someone who wants to use JSE, not develop it.
 
-1. **Get the app running (~5 min).** From the project folder, run `.\Run.bat` (Windows) or `./Run.command` (macOS). The launcher creates the local folders, sets up `.venv`, installs the Python and npm packages, then starts the app. The first run is the slow one; later runs are quick.
+1. **Download JSE.** Open the [latest releases and installers](https://github.com/Keljian/JSE/releases). Choose the Windows `.exe`, the Apple Silicon `arm64` `.dmg`, or the Intel `x64` `.dmg`, and check the published SHA-256 checksum before running it.
+2. **Install the unsigned beta.** On Windows, if SmartScreen appears, confirm the file and checksum, select **More info**, then **Run anyway**. See the [Windows installation guide](INSTALL_WINDOWS.md) for the full safe-install process. On macOS, confirm that the image came from the official JSE release before approving any unsigned-app warning.
+3. **Complete the three-step setup.** JSE checks its bundled runtime and Chrome, asks for a lane name and base `.docx` resume, then asks you to choose LM Studio or Ollama for local matching.
+4. **Start your local model.** Install only one local runtime, download a chat/instruct model that suits your hardware, start its server, then use **Settings -> AI & Credentials** to confirm the endpoint, model name, and connection.
+5. **Enable a searcher.** In **Settings -> General -> Searchers**, enable one available plugin globally and for your lane. If none are available, import a compatible scraper plugin or create one with **Build A Scraper Plugin**.
+6. **Run a small search.** Start with a one- or two-page limit. When listings arrive, run analysis and confirm that jobs are being scored before widening the search.
+7. **Add your history when ready.** Past resumes, cover letters, and applications are optional, but adding them to the candidate knowledge base makes matching and generated documents more representative of you.
 
-2. **Add your resume (~2 min).** Open **Settings -> Lane/Profile**, import your resume (DOCX or PDF), and set your location and work modes.
-
-3. **Seed the knowledge base (~3 min).** Drop a handful of your past applications — old resumes, cover letters, anything you've sent before — into the `older_applications/` folder. JSE breaks these into fragments so matching and document generation reflect your real history instead of a single static resume. You can skip this and add documents later, but even three or four files noticeably improve match quality. See [Data Folders](#data-folders) for what lives where.
-
-4. **Point at a model (~5 min).** The quickest local option is LM Studio: load a small instruct model (e.g. an 8B–14B Qwen or Llama), start its server, then in **Settings -> AI & Credentials** set `Document AI` to `Local endpoint`, base URL `http://localhost:1234/v1`, and the loaded model name. Downloading the model is usually the longest part — pick a small one for this first run. Full details in [Local LLM Setup](#local-llm-setup).
-
-5. **Enable one scraper (~2 min).** Go to **Settings -> General -> Searchers**. Enable a single source with **Available** and **This lane**, and set a low page limit (1–2 pages).
-
-6. **Run a small search (~3 min).** Trigger a search on the active lane and then hit Run Analysis to watch the local LLM triage the results. If jobs come in and get scored, your pipeline works end to end.
-
-From here you can add more lanes, more scrapers, and a cloud provider for document generation when you're ready. The rest of this README covers each piece in depth.
+Cloud AI credentials are optional. Add one later if you want to use a hosted
+provider for employer research or application-document generation.
 
 ---
 
 ## What You Need First
 
-Before first launch, have these ready:
+For the packaged Windows or macOS beta, you need:
 
-- Node.js and npm for the Electron/React desktop app.
-- Python 3.11+ with the packages in `requirements.txt`.
-- Google Chrome installed for Selenium-based scraping.
-- A resume file for your first lane, preferably DOCX or PDF.
-- Optional DOCX templates for resume and cover-letter generation.
-- Either a local OpenAI-compatible LLM server or cloud API credentials.
+- 64-bit Windows, an Apple Silicon Mac, or an Intel Mac, with enough free space for the application, local data, and any local AI models you download.
+- [Google Chrome](https://www.google.com/chrome/) for browser-based job searchers.
+- A base resume in `.docx` format for your first search lane.
+- One local AI runtime—[LM Studio](https://lmstudio.ai/download) or [Ollama](https://ollama.com/download)—plus a downloaded chat/instruct model for private, high-volume matching.
+- Internet access when downloading JSE or models and when visiting employer and job-search sites.
+
+You do **not** need to install Node.js, npm, Python, Electron, or Python packages
+when using a packaged installer; they are bundled. A cloud AI account is also
+not required for local matching.
+
+Optional extras include past applications to seed the candidate knowledge base,
+DOCX templates for generated documents, and Gemini, OpenAI, or Claude credentials
+for cloud-assisted research and document generation.
 
 The app stores working data locally. Generated documents, settings, databases, browser profiles, and backups should be treated as private user data.
 
 ---
 
-## Install Dependencies
+## Run From Source
 
-For a normal first source checkout, use the launcher in the next section. It
-creates the required local folders, creates a Python virtual environment, installs
-Python packages from `requirements.txt`, and installs npm packages when
-`node_modules` is missing.
+Source setup is intended for developers and for platforms without a published
+installer. Install Node.js, npm, Python 3.11+, and Google Chrome, then run the
+platform launcher from the repository root:
+
+On Windows:
+
+```powershell
+.\Run.bat
+```
+
+On macOS:
+
+```bash
+./Run.command
+```
+
+The launcher creates the required local folders and Python virtual environment,
+installs missing Python and JavaScript packages, starts Vite, and launches
+Electron. The first run takes longer; later starts reuse the installed
+dependencies.
 
 Manual setup is still supported:
 
@@ -123,13 +153,18 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-If you are using a packaged build, dependencies may already be bundled.
+After manual setup, start JSE with:
+
+```bash
+npm run start
+```
 
 ---
 
 ## Automated Installer Builds
 
-GitHub Actions builds the unsigned Windows installer and macOS packages:
+[GitHub Actions](https://github.com/Keljian/JSE/actions/workflows/build-installers.yml)
+builds the unsigned Windows installer and macOS packages:
 
 - after every push to `master`;
 - for pull requests targeting `master`;
@@ -150,33 +185,6 @@ The workflow refuses a release tag that does not match `package.json`, builds
 both platforms, generates SHA-256 checksum files, and publishes the resulting
 installers as a GitHub prerelease. Ordinary and scheduled builds never publish
 or overwrite a release.
-
----
-
-## Start The App
-
-On Windows:
-
-```powershell
-.\Run.bat
-```
-
-On macOS:
-
-```bash
-./Run.command
-```
-
-Both launchers run:
-
-```bash
-npm run start
-```
-
-On first run, the launchers also prepare `.venv`, `node_modules`, `settings`,
-`applications`, `older_applications`, `Application templates`, `Resumes`,
-`scraper_plugins`, and `Backups` as needed. After setup, `npm run start` starts
-the Vite frontend on `127.0.0.1:5173` and then launches Electron.
 
 ---
 
