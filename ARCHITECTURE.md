@@ -47,7 +47,10 @@ flowchart LR
   `scraping_helpers.py`, and custom plugin folders under `scraper_plugins/`.
 - Runtime/generated data: `settings/`, `applications/`, `older_applications/`,
   `Application templates/`, `Resumes/`, `Backups/`, `.electron-data/`, `dist/`,
-  `build/`, `release/`, `installer/`, and `node_modules/`.
+  `build/`, `release/`, `installer/`, and `node_modules/`. Source/development
+  runs keep these paths under the project; packaged builds keep user-owned data
+  under Electron's persistent user-data directory so application updates cannot
+  replace it.
 
 ## Process Model
 
@@ -266,6 +269,11 @@ families include:
 - campaign actions, plans, and reporting data
 
 ### Filesystem
+
+The paths below are project-relative in development. In packaged builds,
+`settings/`, `applications/`, and `older_applications/` live under Electron's
+persistent user-data directory. The first updater-capable build migrates legacy
+install-tree data there without overwriting existing destination files.
 
 - `settings/`: local app data, `local_llm_settings.json`, browser profiles,
   context corpus cache, and DB when using the app data directory.

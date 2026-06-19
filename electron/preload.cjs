@@ -3,6 +3,14 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 contextBridge.exposeInMainWorld("jobAssistant", {
   invoke: (command, payload) => ipcRenderer.invoke("bridge:invoke", command, payload),
   getPrerequisites: () => ipcRenderer.invoke("system:prerequisites"),
+  getUpdateStatus: () => ipcRenderer.invoke("update:getStatus"),
+  downloadUpdate: () => ipcRenderer.invoke("update:download"),
+  installUpdate: () => ipcRenderer.invoke("update:install"),
+  onUpdateStatus: (listener) => {
+    const handler = (_event, status) => listener(status);
+    ipcRenderer.on("update:status", handler);
+    return () => ipcRenderer.removeListener("update:status", handler);
+  },
   chooseResume: () => ipcRenderer.invoke("dialog:resume"),
   chooseTemplate: () => ipcRenderer.invoke("dialog:template"),
   chooseScraperPlugin: () => ipcRenderer.invoke("dialog:scraperPlugin"),

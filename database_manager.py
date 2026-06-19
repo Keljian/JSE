@@ -1208,13 +1208,27 @@ def update_lane_settings(lane_id, settings):
 
 
 def _app_setting_defaults():
-    app_root = Path(os.environ.get("JSE_APP_ROOT") or APP_ROOT)
+    runtime_root = Path(os.environ.get("JSE_RUNTIME_ROOT") or os.environ.get("JSE_APP_ROOT") or APP_ROOT)
     return {
         **DEFAULT_APP_SETTINGS,
         "settings_dir": str(DATA_DIR),
-        "applications_dir": str(app_root / "applications"),
-        "older_applications_dir": str(app_root / "older_applications"),
+        "applications_dir": str(runtime_root / "applications"),
+        "older_applications_dir": str(runtime_root / "older_applications"),
     }
+
+
+def _persistent_runtime_path(key, value):
+    """Remap only JSE's old default install-tree folders, never custom paths."""
+    legacy_root = os.environ.get("JSE_LEGACY_RUNTIME_ROOT")
+    runtime_root = os.environ.get("JSE_RUNTIME_ROOT")
+    if not legacy_root or not runtime_root or key not in {"applications_dir", "older_applications_dir"}:
+        return value
+    try:
+        if Path(str(value)).resolve() == (Path(legacy_root) / key.removesuffix("_dir")).resolve():
+            return str(Path(runtime_root) / key.removesuffix("_dir"))
+    except (OSError, TypeError, ValueError):
+        pass
+    return value
 
 
 def get_app_settings():
@@ -1229,6 +1243,8 @@ def get_app_settings():
             settings[row["key"]] = json.loads(row["value_json"])
         except (TypeError, json.JSONDecodeError):
             settings[row["key"]] = row["value_json"]
+    for key in ("applications_dir", "older_applications_dir"):
+        settings[key] = _persistent_runtime_path(key, settings.get(key))
     local_file_settings = _load_local_llm_settings()
     if local_file_settings:
         settings.update(local_file_settings)
@@ -1278,7 +1294,8 @@ def update_app_settings(settings):
             try:
                 path = Path(text).expanduser()
                 if not path.is_absolute():
-                    path = (Path(os.environ.get("JSE_APP_ROOT") or APP_ROOT) / path).resolve()
+                    runtime_root = Path(os.environ.get("JSE_RUNTIME_ROOT") or os.environ.get("JSE_APP_ROOT") or APP_ROOT)
+                    path = (runtime_root / path).resolve()
                 sanitized[key] = str(path)
             except Exception:
                 sanitized[key] = text

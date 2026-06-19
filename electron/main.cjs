@@ -1,4 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -18,8 +19,15 @@ let workerStdoutBuffer = "";
 let workerSeq = 0;
 let workerRestartTimer = null;
 const pendingRequests = new Map();
-const userDataDir = path.join(rootDir, "settings");
+const legacyUserDataDir = path.join(rootDir, "settings");
+const userDataDir = app.isPackaged ? app.getPath("userData") : legacyUserDataDir;
+const runtimeRootDir = app.isPackaged ? userDataDir : rootDir;
 const cacheDir = path.join(app.getPath("temp"), `JSECache-${process.pid}`);
+const updateStatePath = path.join(userDataDir, "update-state.json");
+const UPDATE_CHECK_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
+let updateCheckTimer = null;
+let updateDownloadRequested = false;
+let currentUpdateStatus = { status: "idle" };
 
 app.setPath("userData", userDataDir);
 app.setPath("cache", cacheDir);
@@ -64,10 +72,28 @@ function copySeedItem(source, destination) {
   fs.cpSync(source, destination, { recursive: true });
 }
 
-function prepareWritableWorkspace() {
+function migratePackagedWorkspace() {
+  if (!app.isPackaged || path.resolve(userDataDir) === path.resolve(legacyUserDataDir)) return;
   fs.mkdirSync(userDataDir, { recursive: true });
-  fs.mkdirSync(path.join(rootDir, "applications"), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, "older_applications"), { recursive: true });
+
+  // Older builds wrote user data inside resources/app. An NSIS update replaces
+  // that directory, so copy each legacy item to persistent app data before the
+  // first update can be accepted. Existing destination items always win.
+  if (fs.existsSync(legacyUserDataDir)) {
+    for (const item of fs.readdirSync(legacyUserDataDir)) {
+      copySeedItem(path.join(legacyUserDataDir, item), path.join(userDataDir, item));
+    }
+  }
+  for (const item of ["applications", "older_applications"]) {
+    copySeedItem(path.join(rootDir, item), path.join(runtimeRootDir, item));
+  }
+}
+
+function prepareWritableWorkspace() {
+  migratePackagedWorkspace();
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.mkdirSync(path.join(runtimeRootDir, "applications"), { recursive: true });
+  fs.mkdirSync(path.join(runtimeRootDir, "older_applications"), { recursive: true });
   for (const item of [
     "job_applications.db",
     "search_terms.json",
@@ -76,6 +102,96 @@ function prepareWritableWorkspace() {
   ]) {
     copySeedItem(path.join(rootDir, item), path.join(userDataDir, item));
   }
+}
+
+function publishUpdateStatus(status) {
+  currentUpdateStatus = status;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("update:status", status);
+  }
+}
+
+function readLastUpdateCheck() {
+  try {
+    const state = JSON.parse(fs.readFileSync(updateStatePath, "utf8"));
+    const checkedAt = new Date(state.last_checked_at).getTime();
+    return Number.isFinite(checkedAt) ? checkedAt : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function recordUpdateCheck() {
+  try {
+    fs.mkdirSync(path.dirname(updateStatePath), { recursive: true });
+    fs.writeFileSync(updateStatePath, JSON.stringify({ last_checked_at: new Date().toISOString() }), "utf8");
+  } catch {
+    // A failed timestamp write should not prevent the update check itself.
+  }
+}
+
+async function checkForUpdates() {
+  if (!app.isPackaged || isQuitting) return;
+  recordUpdateCheck();
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch {
+    // Background checks fail silently (for example when offline). The next
+    // scheduled check will try again without interrupting the user.
+  }
+}
+
+function scheduleUpdateChecks() {
+  if (!app.isPackaged) return;
+  const elapsed = Math.max(0, Date.now() - readLastUpdateCheck());
+  const delay = Math.max(0, UPDATE_CHECK_INTERVAL_MS - elapsed);
+  updateCheckTimer = setTimeout(async () => {
+    await checkForUpdates();
+    if (!isQuitting) {
+      updateCheckTimer = setInterval(checkForUpdates, UPDATE_CHECK_INTERVAL_MS);
+    }
+  }, delay);
+}
+
+function configureAutoUpdater() {
+  if (!app.isPackaged) return;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowDowngrade = false;
+
+  autoUpdater.on("update-available", (info) => {
+    publishUpdateStatus({
+      status: "available",
+      version: info.version,
+      releaseName: info.releaseName || "",
+      releaseDate: info.releaseDate || ""
+    });
+  });
+  autoUpdater.on("update-not-available", () => {
+    updateDownloadRequested = false;
+    currentUpdateStatus = { status: "idle" };
+  });
+  autoUpdater.on("download-progress", (progress) => {
+    publishUpdateStatus({
+      status: "downloading",
+      percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))),
+      bytesPerSecond: progress.bytesPerSecond || 0
+    });
+  });
+  autoUpdater.on("update-downloaded", (info) => {
+    updateDownloadRequested = false;
+    publishUpdateStatus({ status: "ready", version: info.version });
+  });
+  autoUpdater.on("error", (error) => {
+    if (!updateDownloadRequested) return;
+    updateDownloadRequested = false;
+    publishUpdateStatus({
+      status: "error",
+      message: error?.message || "The update could not be downloaded."
+    });
+  });
+
+  scheduleUpdateChecks();
 }
 
 function killProcessTree(child) {
@@ -97,6 +213,8 @@ function spawnBridgeProcess(command) {
       ...process.env,
       JSE_APP_ROOT: rootDir,
       JSE_DATA_DIR: userDataDir,
+      JSE_RUNTIME_ROOT: runtimeRootDir,
+      JSE_LEGACY_RUNTIME_ROOT: rootDir,
       PYTHONPATH: [rootDir, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
       PYTHONNOUSERSITE: "1"
     },
@@ -163,6 +281,8 @@ function startBridgeWorker() {
       ...process.env,
       JSE_APP_ROOT: rootDir,
       JSE_DATA_DIR: userDataDir,
+      JSE_RUNTIME_ROOT: runtimeRootDir,
+      JSE_LEGACY_RUNTIME_ROOT: rootDir,
       PYTHONPATH: [rootDir, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
       PYTHONNOUSERSITE: "1"
     },
@@ -249,6 +369,28 @@ ipcMain.handle("system:prerequisites", () => ({
   chrome: detectChrome(),
   python: { found: fs.existsSync(getPythonCommand()), path: getPythonCommand() }
 }));
+ipcMain.handle("update:getStatus", () => currentUpdateStatus);
+ipcMain.handle("update:download", async () => {
+  if (!app.isPackaged || currentUpdateStatus.status !== "available") return false;
+  updateDownloadRequested = true;
+  publishUpdateStatus({ status: "downloading", percent: 0, bytesPerSecond: 0 });
+  try {
+    await autoUpdater.downloadUpdate();
+    return true;
+  } catch (error) {
+    updateDownloadRequested = false;
+    publishUpdateStatus({
+      status: "error",
+      message: error?.message || "The update could not be downloaded."
+    });
+    return false;
+  }
+});
+ipcMain.handle("update:install", () => {
+  if (!app.isPackaged || currentUpdateStatus.status !== "ready") return false;
+  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  return true;
+});
 
 ipcMain.handle("dialog:resume", async () => {
   const result = await dialog.showOpenDialog({
@@ -377,6 +519,7 @@ app.whenReady().then(() => {
   prepareWritableWorkspace();
   startBridgeWorker();
   createWindow();
+  configureAutoUpdater();
 });
 
 app.on("before-quit", () => {
@@ -385,6 +528,11 @@ app.on("before-quit", () => {
   if (workerRestartTimer) {
     clearTimeout(workerRestartTimer);
     workerRestartTimer = null;
+  }
+  if (updateCheckTimer) {
+    clearTimeout(updateCheckTimer);
+    clearInterval(updateCheckTimer);
+    updateCheckTimer = null;
   }
   killProcessTree(bridgeWorker);
   bridgeWorker = null;

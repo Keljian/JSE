@@ -2873,6 +2873,59 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
   );
 }
 
+function UpdateToast({ update, onDismiss }) {
+  if (!update || update.status === "idle") return null;
+
+  const versionLabel = update.version ? ` ${update.version}` : "";
+  const downloading = update.status === "downloading";
+
+  return (
+    <aside className="update-toast" role="status" aria-live="polite" aria-label="Software update">
+      <div className="update-toast-icon"><Download size={20} /></div>
+      <div className="update-toast-body">
+        {update.status === "available" ? (
+          <>
+            <strong>JSE{versionLabel} is available</strong>
+            <span>A newer version is ready to download from GitHub.</span>
+          </>
+        ) : null}
+        {downloading ? (
+          <>
+            <strong>Downloading update…</strong>
+            <span>{update.percent || 0}% complete</span>
+            <div className="update-progress" aria-label={`${update.percent || 0}% downloaded`}>
+              <span style={{ width: `${update.percent || 0}%` }} />
+            </div>
+          </>
+        ) : null}
+        {update.status === "ready" ? (
+          <>
+            <strong>JSE{versionLabel} is ready</strong>
+            <span>Restart JSE to finish installing the update.</span>
+          </>
+        ) : null}
+        {update.status === "error" ? (
+          <>
+            <strong>Update download failed</strong>
+            <span>{update.message || "Please try again later."}</span>
+          </>
+        ) : null}
+        <div className="update-toast-actions">
+          {update.status === "available" ? (
+            <>
+              <button onClick={() => window.jobAssistant.downloadUpdate()}><Download size={14} /> Update</button>
+              <button className="secondary" onClick={onDismiss}>Later</button>
+            </>
+          ) : null}
+          {update.status === "ready" ? <button onClick={() => window.jobAssistant.installUpdate()}><RefreshCw size={14} /> Restart & install</button> : null}
+          {update.status === "error" ? <button className="secondary" onClick={onDismiss}>Dismiss</button> : null}
+        </div>
+      </div>
+      <button className="update-toast-close" aria-label="Dismiss update notification" onClick={onDismiss}><X size={16} /></button>
+    </aside>
+  );
+}
+
 function App() {
   const [booting, setBooting] = useState(true);
   const [status, setStatus] = useState("Idle");
@@ -2920,6 +2973,8 @@ function App() {
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [prerequisites, setPrerequisites] = useState(null);
+  const [appUpdate, setAppUpdate] = useState(null);
+  const [updateToastVisible, setUpdateToastVisible] = useState(false);
   const refreshRequestId = useRef(0);
 
   // Host for appConfirm / appPrompt / appNotice (replaces Electron-breaking
@@ -2927,6 +2982,18 @@ function App() {
   useEffect(() => {
     dialogBridge.current = (request) => new Promise((resolve) => setDialog({ ...request, resolve }));
     return () => { dialogBridge.current = null; };
+  }, []);
+
+  useEffect(() => {
+    const receiveUpdate = (nextUpdate) => {
+      setAppUpdate(nextUpdate);
+      if (["available", "ready", "error"].includes(nextUpdate?.status)) {
+        setUpdateToastVisible(true);
+      }
+    };
+    window.jobAssistant.getUpdateStatus?.().then(receiveUpdate).catch(() => {});
+    const unsubscribe = window.jobAssistant.onUpdateStatus?.(receiveUpdate);
+    return () => unsubscribe?.();
   }, []);
   const closeDialog = (result) => {
     if (dialog) dialog.resolve(result);
@@ -4275,6 +4342,7 @@ function App() {
         />
       ) : null}
       {dialog ? <DialogModal dialog={dialog} onClose={closeDialog} /> : null}
+      {updateToastVisible ? <UpdateToast update={appUpdate} onDismiss={() => setUpdateToastVisible(false)} /> : null}
       <footer className="status-strip">
         <strong>{busy ? runningTaskKeys.join(" + ") : "Idle"}</strong>
         <span>{latestLog || "Ready"}</span>

@@ -17,14 +17,16 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "release:win": "npm run build && electron-builder --win nsis --x64 --publish always",
     "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64"
   },
   "dependencies": {
     "concurrently": "^9.1.2",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.468.0",
-    "wait-on": "^8.0.1",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "wait-on": "^8.0.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
@@ -39,6 +41,14 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Keljian",
+        "repo": "JSE",
+        "releaseType": "prerelease"
+      }
+    ],
     "asar": false,
     "files": [
       "dist/**/*",
