@@ -8,7 +8,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 > Free and staying that way. If it saves you some time or sanity, you can [buy me a coffee](https://ko-fi.com/keljian) — it keeps me caffeinated and the commits coming.
 
 > [!IMPORTANT]
-> The current Windows beta is unsigned. See [Installing the JSE Windows beta](INSTALL_WINDOWS.md)
+> The current Windows beta is unsigned. See [Installing the JSE Windows beta](INSTALL_WINDOWS.md) - #note that this is the easiest path for getting a windows install running if you don't want to be developing it.
 > for checksum verification, the SmartScreen click-through, Chrome requirements,
 > and safe upgrade guidance.
 
@@ -94,20 +94,14 @@ From here you can add more lanes, more scrapers, and a cloud provider for docume
 
 ## What You Need First
 
-For the packaged Windows build, have these ready:
+Before first launch, have these ready:
 
-- [Google Chrome](https://www.google.com/chrome/) for browser-based searching.
-- One local model runtime (choose either, not both): [LM Studio](https://lmstudio.ai/download) or
-  [Ollama](https://ollama.com/download/windows), with a chat/instruct model downloaded
-  and its local server running. JSE's high-volume job matching uses this endpoint.
+- Node.js and npm for the Electron/React desktop app.
+- Python 3.11+ with the packages in `requirements.txt`.
+- Google Chrome installed for Selenium-based scraping.
 - A resume file for your first lane, preferably DOCX or PDF.
 - Optional DOCX templates for resume and cover-letter generation.
-- Optional cloud API credentials for document generation and employer research.
-
-Node.js, npm, Python, Electron, and Python packages are bundled into the Windows
-installer and are not separate end-user requirements. Microsoft Word is also not
-required for DOCX files; it is only needed to import old binary `.doc` files, which
-can instead be converted to DOCX or PDF.
+- Either a local OpenAI-compatible LLM server or cloud API credentials.
 
 The app stores working data locally. Generated documents, settings, databases, browser profiles, and backups should be treated as private user data.
 
@@ -196,8 +190,8 @@ Common examples:
 
 | Runtime | Typical base URL | Model field example |
 | --- | --- | --- |
-| [LM Studio](https://lmstudio.ai/download) | `http://localhost:1234/v1` | loaded model name |
-| [Ollama](https://ollama.com/download/windows) | `http://localhost:11434/v1` | `qwen2.5:7b`, `llama3.1:8b` |
+| LM Studio | `http://localhost:1234/v1` | loaded model name |
+| Ollama | `http://localhost:11434/v1` | `llama3.1:8b`, `qwen2.5:14b` |
 | llama.cpp server | `http://localhost:8080/v1` | served model alias |
 | vLLM | `http://localhost:8000/v1` | model name passed to vLLM |
 | Unsloth/vLLM-style local server | `http://localhost:8888/v1` | served model name |
