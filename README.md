@@ -62,7 +62,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 ### Application generation
 
 - **Company research, including questions to ask.** Pull together employer context before you apply, with suggested questions for the interview.
-- **Documents in your own voice.** Application material is generated through the cloud LLM of your choice (e.g. Gemini, which is cheaper than Claude for this), written in your own words and style by drawing on your fragments and older applications — not generic boilerplate.
+- **Documents in your own voice.** Application material is generated through the cloud LLM of your choice (e.g. Gemini, which is cheaper than Claude for this), written in your own words and style by drawing on your fragments and older applications.
 
 ### Pipeline & tracking
 
