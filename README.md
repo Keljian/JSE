@@ -162,36 +162,6 @@ npm run start
 
 ---
 
-## Automated Installer Builds
-
-[GitHub Actions](https://github.com/Keljian/JSE/actions/workflows/build-installers.yml)
-builds the unsigned Windows installer, macOS packages, and Ubuntu packages:
-
-- after every push to `master`;
-- for pull requests targeting `master`;
-- every Monday morning Sydney time; and
-- on demand from **GitHub -> Actions -> Build installers -> Run workflow**.
-
-Successful runs retain downloadable build artifacts for 30 days. Every
-successful push to `master` also replaces the moving `latest-build` release and
-marks it as the latest GitHub release, so the download links at the top of this
-README stay current.
-
-For a permanent versioned release, update the version in `package.json` and
-`package-lock.json`, commit it, then push a matching tag. For example, for
-version `1.0.0-beta.2`:
-
-```bash
-git tag v1.0.0-beta.2
-git push origin v1.0.0-beta.2
-```
-
-The workflow refuses a version tag that does not match `package.json`. Pull
-request, scheduled, and manually dispatched builds create artifacts without
-publishing a release.
-
----
-
 ## First-Run Setup In The UI
 
 1. Open **Settings**.
