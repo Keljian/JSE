@@ -65,7 +65,7 @@ jobs:
           cache: npm
 
       - name: Cache Python runtime downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/cache
           key: windows-python-runtime-${{ hashFiles('requirements.txt', 'tools/prepare_python_runtime.ps1') }}
@@ -112,11 +112,19 @@ jobs:
             release/SHA256SUMS-windows.txt
 
   macos:
-    name: macOS Intel and Apple Silicon
+    name: macOS ${{ matrix.label }}
     needs: verify-version
-    # `macos-15` is GitHub's Apple Silicon workflow label. The similarly named
-    # `macos-15-arm64` identifies the image documentation, not a runner label.
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Apple Silicon
+            runner: macos-15
+            arch: arm64
+          - label: Intel
+            runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out source
         uses: actions/checkout@v5
@@ -127,46 +135,49 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Enable Intel compatibility
-        shell: bash
-        run: |
-          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
-            sudo softwareupdate --install-rosetta --agree-to-license
-          fi
-
       - name: Cache Python runtime downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/cache
-          key: macos-python-runtime-${{ hashFiles('requirements.txt', 'tools/prepare_python_runtime_mac.sh') }}
+          key: macos-${{ matrix.arch }}-python-runtime-${{ hashFiles('requirements.txt', 'tools/prepare_python_runtime_mac.sh') }}
 
       - name: Prepare bundled Python
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          ARCHS: ${{ matrix.arch }}
         run: bash ./tools/prepare_python_runtime_mac.sh
 
       - name: Install JavaScript dependencies
         run: npm ci
 
       - name: Build macOS packages
-        run: npm run dist:mac
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          npm run build
+          npx electron-builder --mac dmg zip --"$TARGET_ARCH"
 
       - name: Write macOS checksums
         shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
         run: |
+          if [[ -f "release/latest-mac.yml" ]]; then
+            mv "release/latest-mac.yml" "release/latest-mac-${TARGET_ARCH}.yml"
+          fi
           cd release
           find . -maxdepth 1 -type f \
-            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' -o -name 'latest-mac.yml' \) \
+            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' -o -name 'latest-mac-*.yml' \) \
             -print0 \
             | sort -z \
             | xargs -0 shasum -a 256 \
-            | sed 's#  \./#  #' > SHA256SUMS-macos.txt
+            | sed 's#  \./#  #' > "SHA256SUMS-macos-${TARGET_ARCH}.txt"
 
       - name: Upload macOS packages
         uses: actions/upload-artifact@v4
         with:
-          name: JSE-macos-${{ github.run_number }}
+          name: JSE-macos-${{ matrix.arch }}-${{ github.run_number }}
           if-no-files-found: error
           overwrite: true
           retention-days: 30
@@ -174,8 +185,46 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.blockmap
-            release/latest-mac.yml
-            release/SHA256SUMS-macos.txt
+            release/latest-mac-*.yml
+            release/SHA256SUMS-macos-*.txt
+
+  macos-metadata:
+    name: Combine macOS update metadata
+    if: github.ref_type == 'tag'
+    needs: macos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: JSE-macos-*
+          path: macos
+
+      - name: Combine architecture metadata
+        shell: ruby {0}
+        run: |
+          require "fileutils"
+          require "yaml"
+
+          paths = Dir["macos/**/latest-mac-*.yml"].sort
+          abort "Expected metadata for both macOS architectures" unless paths.length == 2
+
+          documents = paths.map { |path| YAML.unsafe_load_file(path) }
+          combined = documents.find { |document| document.fetch("path", "").include?("arm64") } || documents.first
+          combined["files"] = documents.flat_map { |document| document.fetch("files", []) }
+            .uniq { |file| file["url"] }
+
+          FileUtils.mkdir_p("release")
+          File.write("release/latest-mac.yml", YAML.dump(combined))
+
+      - name: Upload combined macOS metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: JSE-macos-metadata-${{ github.run_number }}
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+          path: release/latest-mac.yml
 
   release:
     name: Publish GitHub release
@@ -183,6 +232,7 @@ jobs:
     needs:
       - windows
       - macos
+      - macos-metadata
     runs-on: ubuntu-latest
     permissions:
       contents: write

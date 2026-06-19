@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PYTHON_MINOR="${PYTHON_MINOR:-3.11}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.11.15}"
+PYTHON_BUILD_RELEASE="${PYTHON_BUILD_RELEASE:-20260610}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$ROOT/build"
 CACHE_DIR="$BUILD_DIR/cache"
@@ -13,46 +14,8 @@ mkdir -p "$CACHE_DIR" "$RUNTIME_ROOT"
 
 resolve_asset_url() {
   local platform="$1"
-  node - "$PYTHON_MINOR" "$platform" <<'NODE'
-const https = require("https");
-
-const pythonMinor = process.argv[2];
-const platform = process.argv[3];
-const apiUrl = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest";
-const token = process.env.GITHUB_TOKEN || "";
-const headers = {
-  "User-Agent": "jse-installer",
-  "Accept": "application/vnd.github+json"
-};
-if (token) headers.Authorization = `Bearer ${token}`;
-
-https.get(apiUrl, {
-  headers
-}, (response) => {
-  let body = "";
-  response.on("data", (chunk) => body += chunk);
-  response.on("end", () => {
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      console.error(`GitHub API returned ${response.statusCode}: ${body}`);
-      process.exit(1);
-    }
-    const release = JSON.parse(body);
-    const asset = release.assets.find((item) =>
-      item.name.startsWith(`cpython-${pythonMinor}.`) &&
-      item.name.includes(`-${platform}-`) &&
-      item.name.endsWith("-install_only.tar.gz")
-    );
-    if (!asset) {
-      console.error(`No python-build-standalone asset found for Python ${pythonMinor} on ${platform}.`);
-      process.exit(1);
-    }
-    console.log(asset.browser_download_url);
-  });
-}).on("error", (error) => {
-  console.error(error.message);
-  process.exit(1);
-});
-NODE
+  printf 'https://github.com/astral-sh/python-build-standalone/releases/download/%s/cpython-%s%%2B%s-%s-install_only.tar.gz\n' \
+    "$PYTHON_BUILD_RELEASE" "$PYTHON_VERSION" "$PYTHON_BUILD_RELEASE" "$platform"
 }
 
 prepare_arch() {
@@ -80,7 +43,7 @@ prepare_arch() {
   local archive="$CACHE_DIR/$(basename "$asset_url")"
 
   if [[ ! -f "$archive" ]]; then
-    echo "Downloading Python $PYTHON_MINOR standalone runtime for $arch..."
+    echo "Downloading Python $PYTHON_VERSION standalone runtime for $arch..."
     curl --fail --location --retry 3 --retry-delay 2 "$asset_url" -o "$archive"
   fi
 
