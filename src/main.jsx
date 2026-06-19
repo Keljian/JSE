@@ -4085,7 +4085,13 @@ function App() {
         <button className={view === "activity" ? "active nav-btn" : "nav-btn"} onClick={() => setView("activity")}><NotebookTabs size={18} /> Activity</button>
         <button className={view === "settings" ? "active nav-btn" : "nav-btn"} onClick={() => setView("settings")}><Settings size={18} /> Settings</button>
         <div className="nav-spacer" />
-        <button className="secondary wide" disabled={Boolean(activeTasks.laneSetup)} title={activeTasks.laneSetup ? "Finish the current lane setup first" : "Create a new lane"} onClick={() => setAddLaneOpen(true)}><Plus size={16} /> Add lane</button>
+        <button
+          className="secondary wide nav-add-lane"
+          disabled={Boolean(activeTasks.laneSetup)}
+          data-tooltip={activeTasks.laneSetup ? "Finish the current lane setup first" : "Create a new job-search lane"}
+          aria-description={activeTasks.laneSetup ? "Finish the current lane setup first" : "Create a new job-search lane"}
+          onClick={() => setAddLaneOpen(true)}
+        ><Plus size={16} /> Add lane</button>
       </aside>
 
       <section className="ats-main">
@@ -4095,11 +4101,11 @@ function App() {
             <p>{includeAllProfiles ? "All lanes" : activeProfile?.name || "Lane"} · {status}</p>
           </div>
           <div className="toolbar-actions">
-            <button onClick={() => setRunSearchOpen(true)}><Play size={16} /> Run Search</button>
-            <button className="secondary" onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add Job</button>
-            <button className="secondary" onClick={() => setAnalysisOpen(true)}><Sparkles size={16} /> Run Analysis</button>
-            <button className="secondary" onClick={() => refresh()}><RefreshCw size={16} /> Refresh</button>
-            <button className="danger" onClick={stopAllTasks}><CircleStop size={16} /> Stop</button>
+            <button data-tooltip="Search enabled sources for new roles" aria-description="Search enabled sources for new roles" onClick={() => setRunSearchOpen(true)}><Play size={16} /> Run Search</button>
+            <button className="secondary" data-tooltip="Add a job listing manually" aria-description="Add a job listing manually" onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add Job</button>
+            <button className="secondary" data-tooltip="Analyse unreviewed jobs for fit" aria-description="Analyse unreviewed jobs for fit" onClick={() => setAnalysisOpen(true)}><Sparkles size={16} /> Run Analysis</button>
+            <button className="secondary" data-tooltip="Reload jobs and dashboard data" aria-description="Reload jobs and dashboard data" onClick={() => refresh()}><RefreshCw size={16} /> Refresh</button>
+            <button className="danger" data-tooltip="Stop all running searches and tasks" aria-description="Stop all running searches and tasks" onClick={stopAllTasks}><CircleStop size={16} /> Stop</button>
           </div>
         </header>
 

@@ -364,6 +364,72 @@ h3 {
   align-items: center;
 }
 
+.toolbar-actions button[data-tooltip],
+.nav-add-lane[data-tooltip] {
+  position: relative;
+}
+
+.toolbar-actions button[data-tooltip]::after,
+.nav-add-lane[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 9px);
+  left: 50%;
+  z-index: 100;
+  max-width: 240px;
+  padding: 6px 9px;
+  border: 1px solid #294f45;
+  border-radius: 6px;
+  color: #fff;
+  background: #203c35;
+  box-shadow: 0 4px 12px rgba(20, 37, 31, .2);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    visibility 0s linear 120ms;
+}
+
+.toolbar-actions button[data-tooltip]:hover::after,
+.toolbar-actions button[data-tooltip]:focus-visible::after,
+.nav-add-lane[data-tooltip]:hover::after,
+.nav-add-lane[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition-delay: 1s, 1s, 1s;
+}
+
+.toolbar-actions button[data-tooltip]:last-child::after {
+  right: 0;
+  left: auto;
+  transform: translateY(-4px);
+}
+
+.toolbar-actions button[data-tooltip]:last-child:hover::after,
+.toolbar-actions button[data-tooltip]:last-child:focus-visible::after {
+  transform: translateY(0);
+}
+
+.nav-add-lane[data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 9px);
+  transform: translate(-50%, 4px);
+}
+
+.nav-add-lane[data-tooltip]:hover::after,
+.nav-add-lane[data-tooltip]:focus-visible::after {
+  transform: translate(-50%, 0);
+}
+
 .filter-bar {
   display: grid;
   gap: 12px;
