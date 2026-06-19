@@ -9,8 +9,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 
 > [!IMPORTANT]
 > The current Windows beta is unsigned. See [Installing the JSE Windows beta](INSTALL_WINDOWS.md) - ##note that this is the easiest path for getting a windows install running if you don't want to be developing it.
-> for checksum verification, the SmartScreen click-through, Chrome requirements,
-> and safe upgrade guidance.
+> for checksum verification, the SmartScreen click-through, Chrome requirements, and safe upgrade guidance.
 
 ---
 
