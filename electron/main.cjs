@@ -25,9 +25,13 @@ const runtimeRootDir = app.isPackaged ? userDataDir : rootDir;
 const cacheDir = path.join(app.getPath("temp"), `JSECache-${process.pid}`);
 const updateStatePath = path.join(userDataDir, "update-state.json");
 const UPDATE_CHECK_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
+const SELENIUM_GC_INTERVAL_MS = 10 * 60 * 1000;
 let updateCheckTimer = null;
 let updateDownloadRequested = false;
 let currentUpdateStatus = { status: "idle" };
+let seleniumGcInterval = null;
+let seleniumGcKickTimer = null;
+let seleniumGcRunning = false;
 
 app.setPath("userData", userDataDir);
 app.setPath("cache", cacheDir);
@@ -194,6 +198,48 @@ function configureAutoUpdater() {
   scheduleUpdateChecks();
 }
 
+function collectOrphanedSeleniumTrees() {
+  if (process.platform !== "win32" || isQuitting || seleniumGcRunning) return;
+  seleniumGcRunning = true;
+  const powershell = path.join(
+    process.env.SystemRoot || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe"
+  );
+  const collector = spawn(powershell, [
+    "-NoProfile",
+    "-NonInteractive",
+    "-WindowStyle",
+    "Hidden",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    path.join(__dirname, "selenium-gc.ps1")
+  ], {
+    windowsHide: true,
+    stdio: "ignore"
+  });
+  const finished = () => { seleniumGcRunning = false; };
+  collector.once("error", finished);
+  collector.once("close", finished);
+}
+
+function scheduleSeleniumGarbageCollection(delayMs = 5000) {
+  if (process.platform !== "win32" || isQuitting || seleniumGcKickTimer) return;
+  seleniumGcKickTimer = setTimeout(() => {
+    seleniumGcKickTimer = null;
+    collectOrphanedSeleniumTrees();
+  }, delayMs);
+}
+
+function startSeleniumGarbageCollector() {
+  if (process.platform !== "win32") return;
+  scheduleSeleniumGarbageCollection(15000);
+  seleniumGcInterval = setInterval(collectOrphanedSeleniumTrees, SELENIUM_GC_INTERVAL_MS);
+}
+
 function killProcessTree(child) {
   if (!child || child.killed) return;
   if (process.platform === "win32") {
@@ -222,7 +268,10 @@ function spawnBridgeProcess(command) {
     windowsHide: true
   });
   bridgeChildren.add(child);
-  child.on("close", () => bridgeChildren.delete(child));
+  child.on("close", () => {
+    bridgeChildren.delete(child);
+    scheduleSeleniumGarbageCollection();
+  });
   child.on("error", () => bridgeChildren.delete(child));
   return child;
 }
@@ -520,6 +569,7 @@ app.whenReady().then(() => {
   startBridgeWorker();
   createWindow();
   configureAutoUpdater();
+  startSeleniumGarbageCollector();
 });
 
 app.on("before-quit", () => {
@@ -533,6 +583,14 @@ app.on("before-quit", () => {
     clearTimeout(updateCheckTimer);
     clearInterval(updateCheckTimer);
     updateCheckTimer = null;
+  }
+  if (seleniumGcKickTimer) {
+    clearTimeout(seleniumGcKickTimer);
+    seleniumGcKickTimer = null;
+  }
+  if (seleniumGcInterval) {
+    clearInterval(seleniumGcInterval);
+    seleniumGcInterval = null;
   }
   killProcessTree(bridgeWorker);
   bridgeWorker = null;
