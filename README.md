@@ -52,6 +52,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 ### Discovery & matching
 
 - **Plugin-driven scraping.** Pull listings from multiple job sites via per-source scraper plugins, enabled globally or per lane with configurable location and page limits.
+- **Self-repairing searchers.** Diagnose an unhealthy scraper, have the configured local LLM produce and verify a replacement in an isolated dry run, and roll back the applied repair if needed.
 - **Multiple lanes, run in parallel.** Maintain several career pathways (lanes) and search, score, and manage them all at the same time, each against its own resume and rules.
 - **Tiered local-LLM assessment.** A local model triages jobs in stages — quick initial match first, then a deeper fragment/full match with approach notes covering candidate strengths, weaknesses, and how to position against the role — so cheap passes filter before expensive ones run.
 
@@ -263,6 +264,25 @@ After generation, click **Dry run**. A dry run tests the scraper with a low page
 limit and `dry_run=True`, so it can fetch and parse sample listings without
 writing jobs to the database. Review the dry-run output before enabling the
 plugin for real searches.
+
+### Diagnose And Repair A Scraper
+
+Searcher health and repair controls live beside each plugin in **Settings ->
+General -> Searchers**:
+
+- **Diagnose** runs a low-page test against a disposable database and records
+  whether the scraper is healthy, degraded, or broken.
+- **Repair** gives the configured local LLM the existing plugin, its manifest,
+  current page reconnaissance, and diagnostic evidence. JSE tries up to three
+  candidate corrections and applies one only after its dry run passes.
+- **Roll back** restores the exact plugin version saved before the most recent
+  repair.
+
+Normal searches also update scraper health. A search returning no jobs is
+tracked as an empty result rather than an error; repeated exceptions and failed
+diagnostics are the stronger broken-scraper signals. Verified repairs are
+installed as local data-directory overrides, leaving the shipped plugin source
+untouched and retaining a private local backup for rollback.
 
 For the full plugin contract and manual build instructions, see `SCRAPER_PLUGIN.md`.
 

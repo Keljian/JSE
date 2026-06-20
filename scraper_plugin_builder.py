@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import database_manager as db
@@ -16,20 +17,28 @@ import scraper_plugins
 
 APP_ROOT = Path(__file__).resolve().parent
 PLUGIN_ROOT = Path(scraper_plugins.LOCAL_PLUGIN_DIR)
+REPAIR_ROOT = Path(scraper_plugins.USER_PLUGIN_DIR)
+REPAIR_BACKUP_ROOT = Path(scraper_plugins.DATA_DIR) / "scraper_repair_backups"
 ALLOWED_IMPORT_ROOTS = {
+    "__future__",
     "bs4",
     "concurrency",
     "database_manager",
     "datetime",
     "html",
+    "hashlib",
     "json",
     "lxml",
     "math",
     "re",
     "requests",
+    "selenium",
     "scraping_helpers",
+    "threading",
     "time",
+    "traceback",
     "urllib",
+    "urllib3",
 }
 # Built-in scraper ids that a generated plugin must never overwrite.
 RESERVED_PLUGIN_IDS = {"seek", "linkedin"}
@@ -667,7 +676,10 @@ def _run_plugin_smoke_test(plugin_id, profile_id=1, keyword=None, max_pages=1):
         # False); infer from found/sample_jobs instead.
         ok = bool(result["ok"]) if "ok" in result else bool(result.get("found") or result.get("sample_jobs"))
     else:
-        ok = False
+        # Older plugins predate the dry_run return contract. Suppressed writes
+        # prove they parsed usable jobs even when db.add_job(False) made their
+        # final boolean result false.
+        ok = bool(suppressed)
     return {
         "ok": ok,
         "plugin": plugin,
@@ -728,6 +740,174 @@ def test_plugin(plugin_id, profile_id=1, keyword=None, max_pages=1, plugin_root=
     if isinstance(payload, dict) and payload.get("error"):
         raise ValueError(payload["error"])
     return payload
+
+
+def diagnose_plugin(plugin_id, profile_id=1, keyword=None, max_pages=1):
+    """Run a disposable dry-run and update the plugin's structural health."""
+    plugin = scraper_plugins.get_plugin(plugin_id, profile_id=profile_id, include_disabled=True)
+    if not plugin:
+        raise ValueError(f"Unknown scraper plugin: {plugin_id}")
+    try:
+        test = test_plugin(plugin_id, profile_id=profile_id, keyword=keyword, max_pages=max_pages)
+        outcome = "success" if test.get("ok") else "error"
+        error = test.get("error") or (None if test.get("ok") else "Dry run did not produce usable listings.")
+        health = db.record_scraper_health(plugin_id, outcome, error)
+        return {"ok": bool(test.get("ok")), "test": test, "health": health}
+    except Exception as exc:  # noqa: BLE001 - diagnosis must return actionable evidence
+        health = db.record_scraper_health(plugin_id, "error", exc)
+        return {
+            "ok": False,
+            "test": {"ok": False, "error": f"{type(exc).__name__}: {exc}", "logs": []},
+            "health": health,
+        }
+
+
+def _installed_plugin_source(plugin):
+    install_path = plugin.get("install_path")
+    module_name = (plugin.get("manifest") or {}).get("module")
+    if not install_path or not module_name:
+        raise ValueError("This scraper has no editable plugin source directory.")
+    root = Path(install_path)
+    source = root / module_name
+    manifest_path = root / "scraper-plugin.json"
+    if not source.exists() or not manifest_path.exists():
+        raise ValueError("The installed scraper source or manifest is missing.")
+    return root, source.read_text(encoding="utf-8-sig")
+
+
+def _promote_repair(plugin, generated, diagnosis, test):
+    """Install a verified repair as a data-directory override, preserving rollback."""
+    source_root, _ = _installed_plugin_source(plugin)
+    plugin_id = plugin["id"]
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup = REPAIR_BACKUP_ROOT / plugin_id / stamp
+    target = REPAIR_ROOT / plugin_id
+    staging = REPAIR_ROOT / f".{plugin_id}-repair-{stamp}"
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    REPAIR_ROOT.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_root, backup)
+    try:
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+        (staging / "scraper-plugin.json").write_text(_json(generated["manifest"]), encoding="utf-8")
+        (staging / "scraper.py").write_text(generated["scraper_code"].rstrip() + "\n", encoding="utf-8")
+        if generated.get("readme"):
+            (staging / "README.md").write_text(generated["readme"].rstrip() + "\n", encoding="utf-8")
+        if target.exists():
+            shutil.rmtree(target)
+        staging.replace(target)
+        scraper_plugins.discover_user_plugins()
+        repair_id = db.record_scraper_repair(
+            plugin_id,
+            "applied",
+            backup_path=str(backup),
+            installed_path=str(target),
+            diagnosis=diagnosis,
+            test=test,
+        )
+        db.record_scraper_health(plugin_id, "success")
+        return repair_id, target, backup
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(backup, target)
+        scraper_plugins.discover_user_plugins()
+        raise
+
+
+def repair_plugin(plugin_id, profile_id=1, keyword=None, max_pages=1,
+                  max_attempts=3, log_callback=None):
+    """Diagnose an installed plugin, generate candidates, and promote only a verified repair."""
+    plugin = scraper_plugins.get_plugin(plugin_id, profile_id=profile_id, include_disabled=True)
+    if not plugin:
+        raise ValueError(f"Unknown scraper plugin: {plugin_id}")
+    _, current_code = _installed_plugin_source(plugin)
+    diagnosis = diagnose_plugin(plugin_id, profile_id=profile_id, keyword=keyword, max_pages=max_pages)
+    manifest = plugin.get("manifest") or {}
+    config = scraper_plugins.build_config(plugin, {})
+    answers = {
+        "plugin_id": plugin_id,
+        "source_name": plugin.get("source_name") or plugin.get("name"),
+        "company_name": config.get("company_name") or plugin.get("source_name"),
+        "careers_url": config.get("base_url") or "",
+        "base_url": config.get("base_url") or "",
+        "location": config.get("location") or "",
+        "mode": manifest.get("mode") or "keyword",
+        "test_keyword": keyword or config.get("test_keyword") or "business analyst",
+        "max_pages": min(max(int(max_pages or 1), 1), 2),
+        "notes": "Repair an installed scraper. Preserve its source semantics and make the smallest robust correction.",
+        "platform_hint": "Existing scraper uses Selenium; preserve browser automation where necessary." if "selenium" in current_code else "",
+    }
+    recon = _reconnoitre(answers["careers_url"], keyword=answers["test_keyword"])
+    prior_test = diagnosis.get("test") or {}
+    feedback = _summarise_test_failure({"scraper_code": current_code}, prior_test)
+    feedback += "\n\nInstalled manifest:\n" + _json(manifest)
+    history = []
+    try:
+        attempts = max(1, min(int(max_attempts or 3), 4))
+    except (TypeError, ValueError):
+        attempts = 3
+
+    def log(message):
+        if log_callback:
+            log_callback(str(message))
+
+    with tempfile.TemporaryDirectory(prefix="jse_scraper_repair_") as tmp_plugins:
+        for attempt in range(1, attempts + 1):
+            log(f"Repairing {plugin.get('name') or plugin_id} (attempt {attempt}/{attempts})...")
+            generated = None
+            try:
+                generated = _generate_once(answers, recon, feedback)
+                _write_candidate(generated, tmp_plugins)
+                test = test_plugin(
+                    plugin_id,
+                    profile_id=profile_id,
+                    keyword=answers["test_keyword"],
+                    max_pages=answers["max_pages"],
+                    plugin_root=tmp_plugins,
+                )
+            except Exception as exc:  # noqa: BLE001 - feed all candidate failures back
+                test = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "logs": []}
+            history.append({"attempt": attempt, "ok": bool(test.get("ok")), "error": test.get("error")})
+            if generated and test.get("ok"):
+                repair_id, target, backup = _promote_repair(plugin, generated, diagnosis, test)
+                return {
+                    "ok": True,
+                    "repair_id": repair_id,
+                    "plugin_dir": str(target),
+                    "backup_dir": str(backup),
+                    "diagnosis": diagnosis,
+                    "test": test,
+                    "attempt_history": history,
+                }
+            feedback = _summarise_test_failure(generated or {"scraper_code": current_code}, test)
+    error = history[-1].get("error") if history else "No repair candidate was produced."
+    db.record_scraper_repair(plugin_id, "rejected", diagnosis=diagnosis, test=history, error=error)
+    return {"ok": False, "diagnosis": diagnosis, "attempt_history": history, "error": error}
+
+
+def rollback_plugin_repair(plugin_id):
+    repair = db.get_latest_applied_scraper_repair(plugin_id)
+    if not repair:
+        raise ValueError("No applied repair is available to roll back.")
+    backup = Path(repair.get("backup_path") or "")
+    target = Path(repair.get("installed_path") or "")
+    if not backup.exists() or not target.parent.exists():
+        raise ValueError("The repair backup is missing.")
+    staging = target.parent / f".{plugin_id}-rollback"
+    if staging.exists():
+        shutil.rmtree(staging)
+    shutil.copytree(backup, staging)
+    if target.exists():
+        shutil.rmtree(target)
+    staging.replace(target)
+    scraper_plugins.discover_user_plugins()
+    db.mark_scraper_repair_rolled_back(repair["id"])
+    db.record_scraper_health(plugin_id, "success")
+    return {"ok": True, "plugin_id": plugin_id, "restored_from": str(backup)}
 
 
 def _isolated_test_main():

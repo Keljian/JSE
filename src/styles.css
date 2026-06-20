@@ -2084,6 +2084,26 @@ h3 {
   display: block;
 }
 
+.scraper-health {
+  max-width: 720px;
+}
+
+.scraper-health.healthy {
+  color: #28704a;
+}
+
+.scraper-health.degraded {
+  color: #9a651d;
+}
+
+.scraper-health.broken {
+  color: #a63d32;
+}
+
+.scraper-action-message {
+  word-break: break-word;
+}
+
 .scraper-item small {
   margin-top: 3px;
   color: #64716b;

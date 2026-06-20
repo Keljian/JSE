@@ -424,6 +424,39 @@ def setup_database():
     ''')
 
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS scraper_health (
+            scraper_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'unknown',
+            consecutive_errors INTEGER NOT NULL DEFAULT 0,
+            consecutive_empty INTEGER NOT NULL DEFAULT 0,
+            successful_runs INTEGER NOT NULL DEFAULT 0,
+            empty_runs INTEGER NOT NULL DEFAULT 0,
+            error_runs INTEGER NOT NULL DEFAULT 0,
+            last_outcome TEXT,
+            last_error TEXT,
+            last_checked_at TEXT,
+            last_success_at TEXT,
+            FOREIGN KEY (scraper_id) REFERENCES scraper_plugins(id) ON DELETE CASCADE
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS scraper_repairs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scraper_id TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            status TEXT NOT NULL,
+            backup_path TEXT,
+            installed_path TEXT,
+            diagnosis_json TEXT,
+            test_json TEXT,
+            error TEXT,
+            rolled_back_at TEXT,
+            FOREIGN KEY (scraper_id) REFERENCES scraper_plugins(id) ON DELETE CASCADE
+        )
+    ''')
+
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
             value_json TEXT,

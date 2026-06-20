@@ -1417,6 +1417,48 @@ def command_scrapers_test(payload):
     )
 
 
+def command_scrapers_diagnose(payload):
+    import scraper_plugin_builder
+    plugin_id = payload.get("id") or payload.get("plugin_id")
+    if not plugin_id:
+        raise ValueError("Missing scraper plugin id.")
+    result = scraper_plugin_builder.diagnose_plugin(
+        plugin_id,
+        profile_id=payload.get("profile_id") or 1,
+        keyword=payload.get("keyword"),
+        max_pages=payload.get("max_pages") or 1,
+    )
+    result["scrapers"] = scraper_plugins.all_plugins(include_disabled=True, profile_id=payload.get("profile_id"))
+    return result
+
+
+def command_scrapers_repair(payload):
+    import scraper_plugin_builder
+    plugin_id = payload.get("id") or payload.get("plugin_id")
+    if not plugin_id:
+        raise ValueError("Missing scraper plugin id.")
+    result = scraper_plugin_builder.repair_plugin(
+        plugin_id,
+        profile_id=payload.get("profile_id") or 1,
+        keyword=payload.get("keyword"),
+        max_pages=payload.get("max_pages") or 1,
+        max_attempts=payload.get("max_attempts") or 3,
+        log_callback=lambda message: emit("log", message=message),
+    )
+    result["scrapers"] = scraper_plugins.all_plugins(include_disabled=True, profile_id=payload.get("profile_id"))
+    return result
+
+
+def command_scrapers_rollback(payload):
+    import scraper_plugin_builder
+    plugin_id = payload.get("id") or payload.get("plugin_id")
+    if not plugin_id:
+        raise ValueError("Missing scraper plugin id.")
+    result = scraper_plugin_builder.rollback_plugin_repair(plugin_id)
+    result["scrapers"] = scraper_plugins.all_plugins(include_disabled=True, profile_id=payload.get("profile_id"))
+    return result
+
+
 def command_jobs_list(payload):
     rows = db.get_pipeline_jobs(payload)
     return {"jobs": compact_job_dicts(rows) if payload.get("compact") else rows_to_dicts(rows)}
@@ -2641,6 +2683,9 @@ COMMANDS = {
     "scrapers:laneUpdate": command_scrapers_lane_update,
     "scrapers:build": command_scrapers_build,
     "scrapers:test": command_scrapers_test,
+    "scrapers:diagnose": command_scrapers_diagnose,
+    "scrapers:repair": command_scrapers_repair,
+    "scrapers:rollback": command_scrapers_rollback,
     "jobs:list": command_jobs_list,
     "jobs:counts": command_jobs_counts,
     "jobs:addManual": command_jobs_add_manual,

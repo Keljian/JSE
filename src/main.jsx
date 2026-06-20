@@ -2447,7 +2447,7 @@ function ModelSelect({ value, options, loading, placeholder, onChange, onRefresh
   );
 }
 
-function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onApplyFilters, onCompactDatabase, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onBuildScraper, onTestScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
+function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onApplyFilters, onCompactDatabase, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onBuildScraper, onTestScraper, onDiagnoseScraper, onRepairScraper, onRollbackScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
   const [form, setForm] = useState(settings || {});
   const [globalForm, setGlobalForm] = useState(globalSettings || {});
   const [profileForm, setProfileForm] = useState({ name: "", resume_path: "" });
@@ -2460,6 +2460,8 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
   const [compactResult, setCompactResult] = useState(null);
   const [providerTests, setProviderTests] = useState({});
   const [modelOptions, setModelOptions] = useState({});
+  const [scraperActionId, setScraperActionId] = useState("");
+  const [scraperActionMessage, setScraperActionMessage] = useState("");
 
   useEffect(() => setForm(settings || {}), [settings]);
   useEffect(() => setGlobalForm(globalSettings || {}), [globalSettings]);
@@ -2548,6 +2550,20 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
       onUpdateLaneScraper(plugin.id, { config: next });
     } else {
       onUpdateScraper(plugin.id, { config: next });
+    }
+  };
+  const runScraperAction = async (plugin, action, label) => {
+    setScraperActionId(plugin.id);
+    setScraperActionMessage("");
+    try {
+      const result = await action(plugin.id);
+      setScraperActionMessage(result?.ok === false
+        ? `${plugin.name}: ${result.error || `${label} needs review.`}`
+        : `${plugin.name}: ${label} completed.`);
+    } catch (error) {
+      setScraperActionMessage(`${plugin.name}: ${toErrorMessage(error)}`);
+    } finally {
+      setScraperActionId("");
     }
   };
 
@@ -2694,6 +2710,7 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
             <button className="secondary" onClick={onImportScraper}><FolderOpen size={16} /> Import plugin</button>
           </div>
           {scraperError ? <p className="settings-alert">{scraperError}</p> : null}
+          {scraperActionMessage ? <p className="settings-alert scraper-action-message">{scraperActionMessage}</p> : null}
           <ScraperPluginBuilder
             profileId={profile?.id || 1}
             onBuild={onBuildScraper}
@@ -2706,10 +2723,19 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
                   <strong>{plugin.name}</strong>
                   <small>{plugin.install_type || "plugin"} · {plugin.mode || "keyword"} · {plugin.source_name}</small>
                   {plugin.install_path ? <small title={plugin.install_path}>{plugin.install_path}</small> : null}
+                  <small className={`scraper-health ${plugin.health?.status || "unknown"}`}>
+                    Health: {plugin.health?.status || "unknown"}
+                    {plugin.health?.last_error ? ` · ${plugin.health.last_error}` : ""}
+                  </small>
                 </div>
                 <div className="scraper-controls">
                   <label className="check-row"><input type="checkbox" checked={Boolean(plugin.enabled)} onChange={(event) => onUpdateScraper(plugin.id, { enabled: event.target.checked })} /> Available</label>
                   <label className="check-row"><input type="checkbox" checked={plugin.lane_enabled !== false} onChange={(event) => onUpdateLaneScraper(plugin.id, { enabled: event.target.checked })} /> This lane</label>
+                  <button className="secondary" disabled={Boolean(scraperActionId)} onClick={() => runScraperAction(plugin, onDiagnoseScraper, "diagnosis")}><Radar size={15} /> Diagnose</button>
+                  <button disabled={Boolean(scraperActionId)} onClick={() => runScraperAction(plugin, onRepairScraper, "repair")}>
+                    {scraperActionId === plugin.id ? <Loader2 className="spin" size={15} /> : <Wrench size={15} />} Repair
+                  </button>
+                  {plugin.can_rollback ? <button className="secondary" disabled={Boolean(scraperActionId)} onClick={() => runScraperAction(plugin, onRollbackScraper, "rollback")}><RefreshCw size={15} /> Roll back</button> : null}
                   <button className="ghost danger" onClick={() => onRemoveScraper(plugin.id)}><Trash2 size={15} /> {plugin.install_type === "bundled" ? "Disable" : "Remove"}</button>
                 </div>
                 {(plugin.config_schema || []).length ? (
@@ -4214,6 +4240,41 @@ function App() {
       throw error;
     }
   };
+  const diagnoseScraper = async (pluginId) => {
+    setScraperError("");
+    appendLog(`Diagnosing scraper plugin ${pluginId}...`);
+    const data = await invoke("scrapers:diagnose", {
+      profile_id: activeProfileId,
+      id: pluginId,
+      max_pages: 1
+    });
+    setScrapers(data.scrapers || []);
+    appendLog(data.ok ? `Scraper diagnosis passed: ${pluginId}.` : `Scraper diagnosis found a problem: ${pluginId}.`);
+    return data;
+  };
+  const repairScraper = async (pluginId) => {
+    setScraperError("");
+    appendLog(`Attempting a verified repair for scraper plugin ${pluginId}...`);
+    const data = await invoke("scrapers:repair", {
+      profile_id: activeProfileId,
+      id: pluginId,
+      max_pages: 1,
+      max_attempts: 3
+    });
+    setScrapers(data.scrapers || []);
+    await refreshScrapers();
+    appendLog(data.ok ? `Verified scraper repair applied: ${pluginId}.` : `No verified repair was applied: ${pluginId}.`);
+    return data;
+  };
+  const rollbackScraper = async (pluginId) => {
+    setScraperError("");
+    appendLog(`Rolling back scraper repair ${pluginId}...`);
+    const data = await invoke("scrapers:rollback", { profile_id: activeProfileId, id: pluginId });
+    setScrapers(data.scrapers || []);
+    await refreshScrapers();
+    appendLog(`Scraper repair rolled back: ${pluginId}.`);
+    return data;
+  };
   const updateScraper = async (pluginId, updates) => {
     try {
       setScraperError("");
@@ -4528,6 +4589,9 @@ function App() {
             onImportScraper={importScraper}
             onBuildScraper={buildScraper}
             onTestScraper={testScraper}
+            onDiagnoseScraper={diagnoseScraper}
+            onRepairScraper={repairScraper}
+            onRollbackScraper={rollbackScraper}
             onUpdateScraper={updateScraper}
             onUpdateLaneScraper={updateLaneScraper}
             onRemoveScraper={removeScraper}
