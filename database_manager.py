@@ -2595,6 +2595,15 @@ def save_lane_terms(lane_id, keywords, source="generated", confidence=0.75):
 
 def _upsert_job_posting_from_row(conn, row):
     normalized_url = normalize_job_url(row["url"])
+    # If the legacy_job_id (row["id"]) already exists in another job_postings row,
+    # set it to NULL to avoid UNIQUE constraint violations. The URL-based dedup
+    # still works via ON CONFLICT(url), and the shared job_posting_id is the
+    # canonical link between lanes and opportunities.
+    existing_legacy = conn.execute(
+        "SELECT id FROM job_postings WHERE legacy_job_id = ? AND legacy_job_id IS NOT NULL",
+        (row["id"],),
+    ).fetchone()
+    legacy_job_id = None if existing_legacy else row["id"]
     conn.execute(
         """
         INSERT INTO job_postings (
@@ -2629,7 +2638,7 @@ def _upsert_job_posting_from_row(conn, row):
             updated_at = datetime('now')
         """,
         (
-            row["id"], row["title"], row["company"], row["location"], normalized_url,
+            legacy_job_id, row["title"], row["company"], row["location"], normalized_url,
             row["description"], row["source"], row["pdf_text"], row["date_scraped"],
             row["closing_date"], row["closing_date_source"], row["contact_person"],
             row["contact_email"], row["contact_phone"], row["salary"],
@@ -2651,7 +2660,14 @@ def _upsert_lane_opportunity_from_row(conn, row, posting_id, lane_id=None):
     # backwards compatibility.  A deduped posting may legitimately appear in
     # several lanes, so only its original lane can own that legacy pointer;
     # every lane is still linked through the shared job_posting_id.
-    legacy_job_id = row["id"] if same_legacy_lane else None
+    if same_legacy_lane:
+        existing_legacy = conn.execute(
+            "SELECT id FROM lane_opportunities WHERE legacy_job_id = ? AND legacy_job_id IS NOT NULL",
+            (row["id"],),
+        ).fetchone()
+        legacy_job_id = None if existing_legacy else row["id"]
+    else:
+        legacy_job_id = None
     conn.execute(
         """
         INSERT INTO lane_opportunities (

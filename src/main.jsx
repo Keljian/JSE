@@ -432,6 +432,7 @@ function AddJobModal({ busy, onSave, onClose }) {
 function RunSearchModal({ sources, activeProfileId, busy, onRun, onClose }) {
   const [selectedSources, setSelectedSources] = useState(sources);
   const [includeAllProfiles, setIncludeAllProfiles] = useState(false);
+  const [autoRunAnalysis, setAutoRunAnalysis] = useState(false);
   const [optimism, setOptimism] = useState(3);
   const hasSources = sources.length > 0;
 
@@ -447,6 +448,7 @@ function RunSearchModal({ sources, activeProfileId, busy, onRun, onClose }) {
     <Modal title="Run Search" onClose={onClose}>
       <div className="modal-copy">Manual search uses saved terms for each selected lane. If a lane has no terms, they will be generated first.</div>
       <label className="check-row"><input type="checkbox" checked={includeAllProfiles} onChange={(event) => setIncludeAllProfiles(event.target.checked)} /> Run across all lanes</label>
+      <label className="check-row"><input type="checkbox" checked={autoRunAnalysis} onChange={(event) => setAutoRunAnalysis(event.target.checked)} /> Auto-run analysis after search</label>
       <label className="field"><span>Optimism for generated terms</span><input type="range" min="1" max="5" value={optimism} onChange={(event) => setOptimism(Number(event.target.value))} /></label>
       <div className="source-grid">
         {hasSources ? sources.map((source) => (
@@ -462,7 +464,7 @@ function RunSearchModal({ sources, activeProfileId, busy, onRun, onClose }) {
       </div>
       <footer className="modal-actions">
         <button className="secondary" onClick={onClose}>Cancel</button>
-        <button disabled={busy || !hasSources || selectedSources.length === 0} onClick={() => onRun({ profile_id: activeProfileId, include_all_profiles: includeAllProfiles, sources: selectedSources, optimism })}><Play size={16} /> Run search</button>
+        <button disabled={busy || !hasSources || selectedSources.length === 0} onClick={() => onRun({ profile_id: activeProfileId, include_all_profiles: includeAllProfiles, sources: selectedSources, optimism, auto_run_analysis: autoRunAnalysis })}><Play size={16} /> Run search</button>
       </footer>
     </Modal>
   );
@@ -3426,7 +3428,7 @@ function App() {
     return command;
   };
 
-  const runTask = useCallback((command, payload, doneMessage, refreshProfileId = null) => {
+  const runTask = useCallback((command, payload, doneMessage, refreshProfileId = null, onComplete = null) => {
     const taskKind = taskKindForCommand(command);
     if (activeTasks[taskKind]) {
       appendLog(`${taskKind} is already running.`);
@@ -3469,6 +3471,7 @@ function App() {
           return next;
         });
         task.unsubscribe();
+        if (onComplete) onComplete();
         refresh(refreshProfileId)
           .then(() => {
             if (command === "analysis:job" && payload.job_id) return openJob(payload.job_id);
@@ -4599,7 +4602,7 @@ function App() {
         ) : null}
       </section>
 
-      {runSearchOpen ? <RunSearchModal sources={searchSources} activeProfileId={activeProfileId} busy={searchBusy} onClose={() => setRunSearchOpen(false)} onRun={(payload) => { setRunSearchOpen(false); runTask("scrape:run", payload, "Search complete."); }} /> : null}
+      {runSearchOpen ? <RunSearchModal sources={searchSources} activeProfileId={activeProfileId} busy={searchBusy} onClose={() => setRunSearchOpen(false)} onRun={(payload) => { setRunSearchOpen(false); runTask("scrape:run", payload, "Search complete.", null, payload.auto_run_analysis ? () => runTask("analysis:run", { profile_id: payload.profile_id, include_all_profiles: payload.include_all_profiles, stage: "new" }, "Analysis complete.") : null); }} /> : null}
       {addLaneOpen ? <CreateLaneModal busy={addLaneBusy} onClose={() => setAddLaneOpen(false)} onCreate={createLane} /> : null}
       {addJobOpen ? <AddJobModal busy={addJobBusy} onClose={() => setAddJobOpen(false)} onSave={addManualJob} /> : null}
       {analysisOpen ? <AnalysisModal activeProfileId={activeProfileId} busy={analysisBusy} onClose={() => setAnalysisOpen(false)} onRun={(payload) => { setAnalysisOpen(false); runTask("analysis:run", payload, "Analysis complete."); }} /> : null}

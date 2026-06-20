@@ -127,6 +127,33 @@ def _strip_reasoning_blocks(text):
     return cleaned.strip()
 
 
+_IMAGE_REF_RE = re.compile(
+    r"(?i)"
+    r"(?:"
+    r"<img\b[^>]*>\s*</img>"  # bare img tags
+    r"|<img\b[^>]*src\s*=\s*['\"]([^'\"]*?)['\"][^>]*/?>|"  # img with src attribute
+    r"\[image:\s*[^]]*\]"  # [image: ...] style references
+    r"|\bimage\.png\b|\bimage\.jpg\b|\bimage\.jpeg\b|\bimage\.gif\b|\bimage\.webp\b|"  # bare image filenames
+    r"(?:src|href)\s*[:=]\s*['\"]?[^'\"]*\.(?:png|jpg|jpeg|gif|webp|svg|bmp)['\"]?"  # src/href to image files
+    r"|data:image/[a-z]+;base64,[A-Za-z0-9+/=]{50,}"  # base64 image data
+    r")",
+    re.MULTILINE,
+)
+
+
+def _strip_image_references(text):
+    """Remove image references and base64 image data from text before LLM calls.
+
+    Vision-capable local LLMs may interpret image filenames or data URLs as
+    instructions to load local files, which fails and produces errors like
+    'Cannot read image.png'. This strips those references so only the text
+    content reaches the model.
+    """
+    if not text:
+        return text
+    return _IMAGE_REF_RE.sub(" [IMAGE REMOVED] ", str(text))
+
+
 def _local_ai_settings(overrides=None):
     try:
         settings = db.get_app_settings()
@@ -1651,14 +1678,14 @@ def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_call
             raise concurrency.OperationCancelledError("Analysis cancelled by user.")
         concurrency.paused.wait()
 
-        full_description_for_analysis = description or ""
+        full_description_for_analysis = _strip_image_references(description or "")
         if position_description_text:
             full_description_for_analysis = (
-                f"--- UPLOADED POSITION DESCRIPTION ---\n{position_description_text}\n\n"
+                f"--- UPLOADED POSITION DESCRIPTION ---\n{_strip_image_references(position_description_text)}\n\n"
                 f"--- SCRAPED JOB ADVERTISEMENT ---\n{full_description_for_analysis}"
             )
         if pdf_text:
-            full_description_for_analysis += f"\n\n--- ADDITIONAL TEXT FROM PDF ---\n{pdf_text}"
+            full_description_for_analysis += f"\n\n--- ADDITIONAL TEXT FROM PDF ---\n{_strip_image_references(pdf_text)}"
         analysis_signature = db.make_analysis_signature(resume_text, description, pdf_text, position_description_text)
 
         try:
