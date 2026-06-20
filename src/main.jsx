@@ -20,6 +20,8 @@ import {
   Lightbulb,
   ListTodo,
   Loader2,
+  Maximize2,
+  Minimize2,
   NotebookTabs,
   Info,
   Play,
@@ -219,13 +221,26 @@ function ScoreStack({ job, compact = false }) {
   );
 }
 
-function Modal({ title, children, onClose, wide = false, closeDisabled = false }) {
+function Modal({ title, children, onClose, wide = false, closeDisabled = false, expandable = false }) {
+  const [expanded, setExpanded] = useState(false);
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className={`modal ${wide ? "wide-modal" : ""}`}>
+      <section className={`modal ${wide ? "wide-modal" : ""} ${expanded ? "expanded-modal" : ""}`}>
         <header className="modal-head">
           <h2>{title}</h2>
-          <button className="icon secondary" disabled={closeDisabled} onClick={onClose} aria-label="Close"><X size={18} /></button>
+          <div className="modal-head-actions">
+            {expandable ? (
+              <button
+                className="icon secondary"
+                onClick={() => setExpanded((value) => !value)}
+                aria-label={expanded ? "Restore window" : "Expand window"}
+                title={expanded ? "Restore window" : "Expand window"}
+              >
+                {expanded ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+              </button>
+            ) : null}
+            <button className="icon secondary" disabled={closeDisabled} onClick={onClose} aria-label="Close"><X size={18} /></button>
+          </div>
         </header>
         {children}
       </section>
@@ -1273,7 +1288,7 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
   };
 
   return (
-    <Modal title="Application Workspace" onClose={onClose} wide>
+    <Modal title="Application Workspace" onClose={onClose} wide expandable>
       <div className="workspace-title">
         <div>
           <h2>{job.title}</h2>
@@ -1331,13 +1346,15 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
           <label><span>Contact email</span><input value={form.contact_email || ""} onChange={(event) => set("contact_email", event.target.value)} /></label>
           <label><span>Contact phone</span><input value={form.contact_phone || ""} onChange={(event) => set("contact_phone", event.target.value)} /></label>
           <label><span>Salary / rate</span><input value={form.salary || ""} onChange={(event) => set("salary", event.target.value)} /></label>
-          <label className="full candidate-context-field">
-            <div className="candidate-context-heading">
+          <details className="full candidate-context-field">
+            <summary className="candidate-context-heading">
               <span>Additional candidate evidence</span>
-              <small>Optional</small>
-            </div>
+              <span className="candidate-context-meta"><small>Optional</small><ChevronRight size={16} /></span>
+            </summary>
+            <div className="candidate-context-body">
             <textarea
               id="additional-candidate-context"
+              aria-label="Additional candidate evidence"
               rows={4}
               maxLength={8000}
               value={form.additional_candidate_context || ""}
@@ -1348,7 +1365,8 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
             <p id="additional-candidate-context-help">
               Saved with this application and treated as candidate-supplied evidence when generating documents or an LLM prompt. It does not alter your base resume.
             </p>
-          </label>
+            </div>
+          </details>
           <div className="full document-grid">
             <DropZone
               label="Cover letter"

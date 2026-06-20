@@ -3391,6 +3391,15 @@ h3 {
   width: min(1180px, 96vw);
 }
 
+.expanded-modal {
+  width: calc(100vw - 24px);
+  height: calc(100vh - 24px);
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .lane-setup-body {
   display: grid;
   gap: 12px;
@@ -3638,6 +3647,39 @@ h3 {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+
+.modal-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.candidate-context-heading::-webkit-details-marker {
+  display: none;
+}
+
+.candidate-context-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.candidate-context-meta svg {
+  transition: transform 160ms ease;
+}
+
+.candidate-context-field[open] .candidate-context-meta svg {
+  transform: rotate(90deg);
+}
+
+.candidate-context-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .candidate-context-heading small {
@@ -3987,8 +4029,14 @@ button.update-toast-close:hover:not(:disabled) {
 }
 
 .workspace-panel {
-  max-height: 60vh;
+  max-height: 68vh;
   overflow: auto;
+}
+
+.expanded-modal .workspace-panel {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }
 
 .two-col {
