@@ -45,9 +45,10 @@ POSITIONING_BRIEF = """CANDIDATE POSITIONING (apply to every document; never con
 RESUME_SYSTEM = """You are an expert Australian resume writer. Write a tailored resume in **Markdown** for the target role, using ONLY the candidate's real evidence supplied below.
 
 Rules:
-- Use `## SECTION` for section headings, `### Company | Role | Dates` for each role, `* ` for achievement bullets, `**bold**` sparingly.
+- Use `## SECTION` for section headings and `### Role | Company | Dates` for each role (job TITLE first so ATS parsers extract it reliably), `* ` for achievement bullets, `**bold**` sparingly.
+- Use standard, ATS-recognised section headings only: `## Professional Summary`, `## Key Skills`, `## Professional Experience`, `## Education`, `## Certifications` (include Education/Certifications only where the evidence supports them). Do not invent novel section names.
 - If the evidence gives no date for a role, use `Prior experience` in its Dates position; never invent a date.
-- Include a `## KEY SKILLS` section grouped under bold sub-labels.
+- Include a `## Key Skills` section grouped under bold sub-labels.
 - Lead with the evidence most relevant to THIS role. Mirror the job ad's terminology only where the candidate genuinely matches.
 - NEVER invent or inflate employers, dates, titles, metrics, tools, or certifications beyond what the evidence states. If the evidence says "contributed to", do not write "led". Grounding over polish.
 - Do NOT include a name/contact header (the renderer adds it). Start at the professional profile.
@@ -165,11 +166,15 @@ GENERIC_SYSTEM = (
 
 RESUME_TASK = (
     "TASK: Using only the evidence and job provided above, write a tailored resume in **Markdown**.\n"
-    "- `## SECTION` headings, `### Company | Role | Dates` per role, `* ` achievement bullets, `**bold**` sparingly.\n"
+    "- `## SECTION` headings, `### Role | Company | Dates` per role (job TITLE first so ATS parsers extract "
+    "it reliably), `* ` achievement bullets, `**bold**` sparingly.\n"
+    "- Use standard, ATS-recognised section headings only: `## Professional Summary`, `## Key Skills`, "
+    "`## Professional Experience`, `## Education`, `## Certifications` (include Education/Certifications only "
+    "where the evidence supports them). Do not invent novel section names.\n"
     "- If the evidence gives no date for a role, use `Prior experience` in its Dates position; never invent a date.\n"
-    "- Include a `## KEY SKILLS` section grouped under bold sub-labels.\n"
+    "- Group Key Skills under bold sub-labels.\n"
     "- Lead with the evidence most relevant to THIS role; mirror the ad's terminology only where genuinely matched.\n"
-    "- No name/contact header (the renderer adds it). Start at the professional profile.\n"
+    "- No name/contact header (the renderer adds it). Start at the professional summary.\n"
     "Output ONLY the resume Markdown — no preamble."
 )
 

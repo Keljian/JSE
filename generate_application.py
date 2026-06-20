@@ -38,7 +38,8 @@ DB_PATH = clib.DB_PATH
 RESUME_SYSTEM = """You are an expert Australian resume writer. Write a tailored resume in **Markdown** for the target role, using ONLY the candidate's real evidence supplied below.
 
 Rules:
-- Use `## SECTION` for section headings, `### Company | Role | Dates` for each role, `* ` for achievement bullets, `**bold**` sparingly for emphasis.
+- Use `## SECTION` for section headings and `### Role | Company | Dates` for each role (job TITLE first so ATS parsers extract it reliably), `* ` for achievement bullets, `**bold**` sparingly for emphasis.
+- Use standard, ATS-recognised section headings only: `## Professional Summary`, `## Key Skills`, `## Professional Experience`, `## Education`, `## Certifications` (include Education/Certifications only where the evidence supports them). Do not invent novel section names.
 - If the evidence gives no date for a role, use `Prior experience` in its Dates position; never invent a date.
 - Lead with the evidence most relevant to THIS role. Mirror the job ad's terminology only where the candidate genuinely matches.
 - NEVER invent employers, dates, titles, metrics, tools, or certifications that are not present in the supplied evidence. Grounding over polish.
