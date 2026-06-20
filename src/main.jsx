@@ -2294,10 +2294,12 @@ function ScraperPluginBuilder({ profileId, busy, onBuild, onTest }) {
   const [testResult, setTestResult] = useState(null);
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const disabled = busy || working;
-  const canBuild = form.source_name.trim() && form.careers_url.trim() && !disabled;
+  const hasRequiredFields = Boolean(form.source_name.trim() && form.careers_url.trim());
+  const canBuild = hasRequiredFields && !disabled;
 
   const build = async () => {
     setError("");
@@ -2327,24 +2329,59 @@ function ScraperPluginBuilder({ profileId, busy, onBuild, onTest }) {
     }
   };
 
+  if (!expanded) {
+    return (
+      <div className="scraper-builder-launch">
+        <span className="scraper-builder-launch-icon"><Wrench size={18} /></span>
+        <div><strong>Create a custom searcher</strong><span>Give JSE a careers page and it will inspect, generate and verify a scraper plugin.</span></div>
+        <button className="secondary" onClick={() => setExpanded(true)}><Plus size={15} /> New scraper</button>
+      </div>
+    );
+  }
+
   return (
-    <div className="scraper-builder">
-      <div className="settings-section-head">
-        <h4>Build A Scraper Plugin</h4>
-        <button className="secondary" disabled={!canBuild} onClick={build}><Sparkles size={16} /> Generate</button>
+    <section className="scraper-builder">
+      <header className="scraper-builder-head">
+        <div className="scraper-builder-title">
+          <span><Wrench size={18} /></span>
+          <div><h4>Create a custom searcher</h4><p>JSE will inspect the source, write the plugin and run a verification pass.</p></div>
+        </div>
+        <button className="ghost icon-only" disabled={working} aria-label="Close scraper builder" title="Close builder" onClick={() => setExpanded(false)}><X size={17} /></button>
+      </header>
+
+      <div className="scraper-builder-step">
+        <div className="scraper-builder-step-head"><span>1</span><div><strong>Source</strong><small>Where should JSE look for roles?</small></div></div>
+        <div className="scraper-builder-fields source-fields">
+          <label><span>Source name <b>Required</b></span><input value={form.source_name} placeholder="Deakin University Careers" onChange={(event) => update("source_name", event.target.value)} /></label>
+          <label><span>Company <em>Optional</em></span><input value={form.company_name} placeholder="Deakin University" onChange={(event) => update("company_name", event.target.value)} /></label>
+          <label className="wide"><span>Careers or search URL <b>Required</b></span><input type="url" value={form.careers_url} placeholder="https://careers.example.com/jobs" onChange={(event) => update("careers_url", event.target.value)} /></label>
+        </div>
       </div>
-      <div className="form-grid compact">
-        <label><span>Source name</span><input value={form.source_name} placeholder="Example Careers" onChange={(event) => update("source_name", event.target.value)} /></label>
-        <label><span>Company</span><input value={form.company_name} placeholder="Example Pty Ltd" onChange={(event) => update("company_name", event.target.value)} /></label>
-        <label className="full"><span>Careers or search URL</span><input value={form.careers_url} placeholder="https://example.com/jobs" onChange={(event) => update("careers_url", event.target.value)} /></label>
-        <label><span>Mode</span><select value={form.mode} onChange={(event) => update("mode", event.target.value)}><option value="keyword">Keyword search</option><option value="sweep">Sweep all listings</option></select></label>
-        <label><span>Platform hint</span><input value={form.platform_hint} placeholder="PageUp, Workday, SmartRecruiters, custom" onChange={(event) => update("platform_hint", event.target.value)} /></label>
-        <label><span>Location default</span><input value={form.location} placeholder="Melbourne VIC" onChange={(event) => update("location", event.target.value)} /></label>
-        <label><span>Test keyword</span><input value={form.test_keyword} onChange={(event) => update("test_keyword", event.target.value)} /></label>
-        <label><span>Page limit</span><input type="number" min="1" max="5" value={form.max_pages} onChange={(event) => update("max_pages", event.target.value)} /></label>
-        <label className="full"><span>Notes for the local LLM</span><textarea rows={3} value={form.notes} placeholder="Known listing card CSS, pagination notes, details page patterns, fields to capture..." onChange={(event) => update("notes", event.target.value)} /></label>
+
+      <div className="scraper-builder-step">
+        <div className="scraper-builder-step-head"><span>2</span><div><strong>Search behaviour</strong><small>Use conservative test settings for the first run.</small></div></div>
+        <div className="scraper-builder-fields behaviour-fields">
+          <label><span>Mode</span><select value={form.mode} onChange={(event) => update("mode", event.target.value)}><option value="keyword">Keyword search</option><option value="sweep">Sweep all listings</option></select></label>
+          <label><span>Default location</span><input value={form.location} placeholder="Melbourne VIC" onChange={(event) => update("location", event.target.value)} /></label>
+          <label><span>Test keyword</span><input value={form.test_keyword} placeholder="business analyst" onChange={(event) => update("test_keyword", event.target.value)} /></label>
+          <label><span>Test pages</span><input type="number" min="1" max="5" value={form.max_pages} onChange={(event) => update("max_pages", event.target.value)} /></label>
+        </div>
       </div>
+
+      <details className="scraper-builder-advanced">
+        <summary><span><strong>Advanced guidance</strong><small>Optional platform clues or selector notes</small></span><ChevronRight size={16} /></summary>
+        <div className="scraper-builder-fields advanced-fields">
+          <label><span>Platform hint</span><input value={form.platform_hint} placeholder="PageUp, Workday, SmartRecruiters or custom" onChange={(event) => update("platform_hint", event.target.value)} /></label>
+          <label><span>Notes for the local LLM</span><textarea rows={2} value={form.notes} placeholder="Known listing-card selectors, pagination behaviour, detail-page patterns or fields to capture…" onChange={(event) => update("notes", event.target.value)} /></label>
+        </div>
+      </details>
+
       {error ? <p className="settings-alert">{error}</p> : null}
+
+      <footer className="scraper-builder-actions">
+        <span>{working ? "Inspecting the source and generating the plugin…" : hasRequiredFields ? "Ready to inspect the source" : "Add a source name and careers URL to continue"}</span>
+        <button disabled={!canBuild} onClick={build}>{working ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />} {working ? "Generating…" : "Generate plugin"}</button>
+      </footer>
       {result ? (
         <div className="builder-result">
           <div>
@@ -2376,7 +2413,7 @@ function ScraperPluginBuilder({ profileId, busy, onBuild, onTest }) {
           {(testResult.logs || []).length ? <small>{testResult.logs.slice(-4).join(" | ")}</small> : null}
         </div>
       ) : null}
-    </div>
+    </section>
   );
 }
 
