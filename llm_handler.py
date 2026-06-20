@@ -219,8 +219,25 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    json_response_formats = []
     if json_mode:
-        payload["response_format"] = {"type": "json_object"}
+        # OpenAI-compatible servers disagree on the supported JSON mode. Older
+        # runtimes accept json_object, while newer llama.cpp/LM Studio-style
+        # endpoints may require json_schema (or explicitly allow only text).
+        # Start with the least restrictive structured mode and negotiate only
+        # when the endpoint rejects response_format itself.
+        json_response_formats = [
+            {"type": "json_object"},
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "jse_json_response",
+                    "schema": {"type": "object", "additionalProperties": True},
+                },
+            },
+            {"type": "text"},
+        ]
+        payload["response_format"] = json_response_formats[0]
         # Hint Qwen3 to skip its thinking mode for structured-output tasks.
         # The /no_think token is honoured by Qwen3 chat templates; servers that
         # ignore it simply pass the literal token through harmlessly.
@@ -231,7 +248,9 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
                 messages[-1] = {**messages[-1], "content": f"{content}\n\n/no_think"}
                 payload["messages"] = messages
 
-    for attempt in range(UNSLOTH_MAX_RETRIES):
+    response_format_index = 0
+    transient_attempt = 0
+    while True:
         if concurrency.cancel_event.is_set():
             raise concurrency.OperationCancelledError("Operation cancelled.")
         
@@ -240,10 +259,20 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
             return _strip_reasoning_blocks(data["choices"][0]["message"]["content"])
         except LLMHTTPError as e:
             status_code = e.status_code
+            response_format_rejected = (
+                json_mode
+                and status_code == 400
+                and "response_format" in str(e.body or "").lower()
+            )
+            if response_format_rejected and response_format_index < len(json_response_formats) - 1:
+                response_format_index += 1
+                payload["response_format"] = json_response_formats[response_format_index]
+                continue
             if status_code in (429, 503):
-                if attempt < UNSLOTH_MAX_RETRIES - 1:
-                    delay = UNSLOTH_RETRY_DELAY * (attempt + 1)
-                    print(f"Rate limited / server busy. Retrying in {delay}s... (attempt {attempt + 1}/{UNSLOTH_MAX_RETRIES})")
+                if transient_attempt < UNSLOTH_MAX_RETRIES - 1:
+                    transient_attempt += 1
+                    delay = UNSLOTH_RETRY_DELAY * transient_attempt
+                    print(f"Rate limited / server busy. Retrying in {delay}s... (attempt {transient_attempt}/{UNSLOTH_MAX_RETRIES})")
                     time.sleep(delay)
                     continue
                 else:
@@ -253,14 +282,16 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
             else:
                 raise Exception(f"Local endpoint HTTP error: {e}. Response: {e.body[:500]}")
         except TimeoutError:
-            if attempt < UNSLOTH_MAX_RETRIES - 1:
-                print(f"Local endpoint timeout. Retrying in {UNSLOTH_RETRY_DELAY}s... (attempt {attempt + 1}/{UNSLOTH_MAX_RETRIES})")
+            if transient_attempt < UNSLOTH_MAX_RETRIES - 1:
+                transient_attempt += 1
+                print(f"Local endpoint timeout. Retrying in {UNSLOTH_RETRY_DELAY}s... (attempt {transient_attempt}/{UNSLOTH_MAX_RETRIES})")
                 time.sleep(UNSLOTH_RETRY_DELAY)
                 continue
             else:
                 raise Exception(f"Local endpoint timed out after {UNSLOTH_MAX_RETRIES} attempts.")
         except LLMRequestError as e:
-            if attempt < UNSLOTH_MAX_RETRIES - 1:
+            if transient_attempt < UNSLOTH_MAX_RETRIES - 1:
+                transient_attempt += 1
                 print(f"Local endpoint request error: {e}. Retrying in {UNSLOTH_RETRY_DELAY}s...")
                 time.sleep(UNSLOTH_RETRY_DELAY)
                 continue

@@ -40,8 +40,6 @@ ALLOWED_IMPORT_ROOTS = {
     "urllib",
     "urllib3",
 }
-# Built-in scraper ids that a generated plugin must never overwrite.
-RESERVED_PLUGIN_IDS = {"seek", "linkedin"}
 BLOCKED_CALLS = {"eval", "exec", "compile", "open", "__import__", "input"}
 
 
@@ -52,6 +50,20 @@ def _slug(value):
 
 def _json(data):
     return json.dumps(data or {}, indent=2, sort_keys=True)
+
+
+def _existing_plugin_path(plugin_id):
+    """Return an installed plugin directory for this id, if one exists.
+
+    Seek and LinkedIn are conventional ids, not permanently reserved words.
+    A generated plugin may use either id after the corresponding bundled or
+    user plugin directory has actually been removed.
+    """
+    for root in (PLUGIN_ROOT, REPAIR_ROOT):
+        candidate = Path(root) / plugin_id
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _extract_json_object(text):
@@ -451,14 +463,9 @@ def generate_plugin(answers):
 def save_generated_plugin(generated):
     manifest = generated["manifest"]
     plugin_id = _slug(manifest["id"])
-    if plugin_id in RESERVED_PLUGIN_IDS:
-        raise ValueError(
-            f"'{plugin_id}' is a reserved built-in scraper id. "
-            "Choose a different name for the generated scraper."
-        )
     PLUGIN_ROOT.mkdir(parents=True, exist_ok=True)
     target = PLUGIN_ROOT / plugin_id
-    if target.exists():
+    if _existing_plugin_path(plugin_id):
         raise ValueError(
             f"A scraper plugin named '{plugin_id}' already exists. "
             "Choose a different name, or remove the existing plugin first."
@@ -535,11 +542,7 @@ def build_and_install(answers, max_attempts=None, log_callback=None):
     # Fail fast on id collisions before spending any LLM calls (mirrors the
     # final save_generated_plugin guards; the id is deterministic from answers).
     intended_id = _slug(answers.get("plugin_id") or answers.get("source_name") or answers.get("name"))
-    if intended_id in RESERVED_PLUGIN_IDS:
-        raise ValueError(
-            f"'{intended_id}' is a reserved built-in scraper id. Choose a different name."
-        )
-    if (PLUGIN_ROOT / intended_id).exists():
+    if _existing_plugin_path(intended_id):
         raise ValueError(
             f"A scraper plugin named '{intended_id}' already exists. "
             "Choose a different name, or remove the existing plugin first."
