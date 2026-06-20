@@ -16,6 +16,10 @@ Markdown the model is expected to emit:
     **bold** inline anywhere
     (blank line)             -> spacing
     plain text               -> body paragraph
+
+The renderer keeps the output ATS-friendly on purpose: a single linear column,
+real Word bullet lists (no tables/text boxes/columns/images), contact details in
+the body (not a Word header), and explicit outline levels on headings.
 """
 from __future__ import annotations
 
@@ -44,8 +48,49 @@ def _bottom_border(paragraph):
         pass
 
 
+# ATS parsers tokenise on real spaces/hyphens; invisible Unicode separators that
+# the model (or a pasted source doc) can emit will glue or split keywords —
+# "Project Manager" read as one token, soft-hyphens splitting words. Fold them to
+# plain equivalents. Visible punctuation (en/em dashes, bullets, smart quotes) is
+# left untouched so the document looks identical.
+_ATS_CHAR_MAP = {
+    " ": " ",  # no-break space
+    " ": " ",  # narrow no-break space
+    " ": " ",  # figure space
+    " ": " ",  # thin space
+    "​": "",   # zero-width space
+    "‌": "",   # zero-width non-joiner
+    "‍": "",   # zero-width joiner
+    "﻿": "",   # BOM / zero-width no-break space
+    "­": "",   # soft hyphen
+    "‑": "-",  # non-breaking hyphen -> hyphen
+}
+
+
+def _ats_normalize(text):
+    if not text:
+        return text
+    for bad, good in _ATS_CHAR_MAP.items():
+        if bad in text:
+            text = text.replace(bad, good)
+    return text
+
+
+def _set_outline_level(paragraph, level):
+    """Tag a heading with a Word outline level. Invisible to the reader, but it
+    gives ATS/PDF structure parsers an explicit section hierarchy to follow."""
+    try:
+        pPr = paragraph._element.get_or_add_pPr()
+        lvl = OxmlElement("w:outlineLvl")
+        lvl.set(qn("w:val"), str(level))
+        pPr.append(lvl)
+    except Exception:
+        pass
+
+
 def _add_inline(paragraph, text):
     """Render the small Markdown subset used by generated documents."""
+    text = _ats_normalize(text)
     token_re = re.compile(r"(\*\*[^*]+\*\*|(?<!\*)\*[^*\n]+\*(?!\*))")
     position = 0
     for match in token_re.finditer(text):
@@ -77,17 +122,18 @@ def _contact_header(doc, info):
     info = info or {}
     name = f"{info.get('first_name', '')} {info.get('last_name', '')}".strip() or "Curriculum Vitae"
     name_p = doc.add_paragraph()
-    r = name_p.add_run(name)
+    r = name_p.add_run(_ats_normalize(name))
     r.bold = True
     r.font.size = Pt(20)
     name_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     name_p.paragraph_format.space_after = Pt(2)
+    _set_outline_level(name_p, 0)
 
     bits = [info.get("phone"), info.get("email"), info.get("linkedin")]
     contact = "  |  ".join(b for b in bits if b)
     if contact:
         c = doc.add_paragraph()
-        cr = c.add_run(contact)
+        cr = c.add_run(_ats_normalize(contact))
         cr.font.size = Pt(10)
         c.alignment = WD_ALIGN_PARAGRAPH.CENTER
         c.paragraph_format.space_after = Pt(8)
@@ -116,19 +162,21 @@ def render_markdown_to_docx(markdown_text, output_path, personal_info=None,
 
         if line.startswith("# "):
             p = doc.add_paragraph()
-            run = p.add_run(line[2:].strip())
+            run = p.add_run(_ats_normalize(line[2:].strip()))
             run.bold = True
             run.font.size = Pt(18)
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             p.paragraph_format.space_after = Pt(6)
+            _set_outline_level(p, 0)
         elif line.startswith("## "):
             p = doc.add_paragraph()
-            run = p.add_run(line[3:].strip().upper())
+            run = p.add_run(_ats_normalize(line[3:].strip()).upper())
             run.bold = True
             run.font.size = Pt(12)
             _bottom_border(p)
             p.paragraph_format.space_before = Pt(12)
             p.paragraph_format.space_after = Pt(4)
+            _set_outline_level(p, 1)
         elif line.startswith("### "):
             p = doc.add_paragraph()
             _add_inline(p, _role_heading_with_date(line[4:]))
@@ -136,6 +184,7 @@ def render_markdown_to_docx(markdown_text, output_path, personal_info=None,
                 run.bold = True
             p.paragraph_format.space_before = Pt(8)
             p.paragraph_format.space_after = Pt(2)
+            _set_outline_level(p, 2)
         elif line.startswith(("* ", "- ")):
             p = doc.add_paragraph(style="List Bullet")
             p.paragraph_format.left_indent = Inches(0.25)
@@ -200,7 +249,7 @@ def render_cover_letter_to_docx(content, output_path, personal_info=None, base_t
 
         if re.fullmatch(r"(re:|subject:).*", low):
             p = doc.add_paragraph()
-            r = p.add_run(s)
+            r = p.add_run(_ats_normalize(s))
             r.bold = True
             p.paragraph_format.space_before = Pt(10)
             p.paragraph_format.space_after = Pt(6)
