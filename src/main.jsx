@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import aboutArtwork from "./assets/jse-about.png";
+import jseIcon from "../assets/jse-icon.png";
 
 const PIPELINE = [
   { id: "new", label: "New", defaultAction: "Review fit", actionOffset: 2 },
@@ -514,7 +515,7 @@ function OnboardingWizard({ prerequisites, profile, busy, onComplete, onSkip }) 
   return (
     <div className="modal-backdrop onboarding-backdrop" role="presentation">
       <section className="modal onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
-        <div className="onboarding-brand"><BriefcaseBusiness size={24} /><strong>JSE setup</strong><span>Step {step + 1} of 3</span></div>
+        <div className="onboarding-brand"><img className="onboarding-brand-icon" src={jseIcon} alt="" /><strong>JSE setup</strong><span>Step {step + 1} of 3</span></div>
         {step === 0 ? (
           <>
             <h2 id="onboarding-title">Welcome to JSE</h2>
@@ -4270,7 +4271,7 @@ function App() {
       {onboardingOpen ? <OnboardingWizard prerequisites={prerequisites} profile={activeProfile} busy={onboardingBusy} onComplete={finishOnboarding} onSkip={skipOnboarding} /> : null}
       <aside className="nav-rail">
         <div className="brand">
-          <BriefcaseBusiness />
+          <img className="brand-icon" src={jseIcon} alt="" />
           <div><strong>JSE</strong><span>Application ATS</span></div>
         </div>
         <button className={view === "dashboard" ? "active nav-btn" : "nav-btn"} onClick={() => setView("dashboard")}><BarChart3 size={18} /> Dashboard</button>

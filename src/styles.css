@@ -276,10 +276,12 @@ h3 {
   margin-bottom: 8px;
 }
 
-.brand svg {
-  color: #1f5b4e;
-  width: 30px;
-  height: 30px;
+.brand-icon {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: 9px;
+  object-fit: contain;
 }
 
 .brand strong,
@@ -4247,6 +4249,13 @@ button.update-toast-close:hover:not(:disabled) {
   align-items: center;
   gap: 10px;
   color: #1f5f50;
+}
+
+.onboarding-brand-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  object-fit: contain;
 }
 
 .onboarding-brand span {

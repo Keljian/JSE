@@ -5,6 +5,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const rootDir = path.resolve(__dirname, "..");
+const appIconPath = path.join(rootDir, "assets", "jse-icon.png");
 const bridgePath = path.join(rootDir, "python_bridge.py");
 const runningTasks = new Map();
 const bridgeChildren = new Set();
@@ -335,6 +336,7 @@ function createWindow() {
     minWidth: 1080,
     minHeight: 720,
     backgroundColor: "#f7f7f2",
+    icon: appIconPath,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -607,6 +609,9 @@ ipcMain.on("task:cancelAll", () => {
 });
 
 app.whenReady().then(() => {
+  if (process.platform === "darwin" && app.dock) {
+    app.dock.setIcon(appIconPath);
+  }
   prepareWritableWorkspace();
   startBridgeWorker();
   createWindow();

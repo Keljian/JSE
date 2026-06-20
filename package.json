@@ -55,6 +55,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "assets/**/*",
       "scraper_plugins/**/*",
       "tools/**/*",
       "build/python/**/*",
@@ -66,6 +67,7 @@
       "search_terms.json"
     ],
     "win": {
+      "icon": "assets/jse-icon.ico",
       "signAndEditExecutable": false,
       "target": [
         {
@@ -77,6 +79,7 @@
       ]
     },
     "mac": {
+      "icon": "assets/jse-icon.icns",
       "identity": null,
       "gatekeeperAssess": false,
       "target": [
@@ -98,6 +101,7 @@
     },
     "linux": {
       "category": "Utility",
+      "icon": "assets/jse-icon.png",
       "maintainer": "Keljian",
       "target": [
         {
