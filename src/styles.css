@@ -4816,7 +4816,15 @@ button.update-toast-close:hover:not(:disabled) {
 .contact-candidates label.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }
 .contact-candidates input { width: 15px; min-height: 15px; }
 .contact-candidates label > span { display: grid; gap: 2px; }
+.contact-candidates label strong { display: flex; align-items: center; gap: 6px; }
+.contact-candidates label strong em { padding: 1px 5px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 9px; font-style: normal; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.contact-candidates label.recommended { border-color: #9fcbb8; }
 .contact-candidates small { color: var(--text-muted); font-size: 11px; }
+.contact-diagnostics { color: var(--text-muted); font-size: 11px; }
+.contact-diagnostics summary { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.contact-diagnostics[open] summary svg { transform: rotate(90deg); }
+.contact-diagnostics .contact-candidates { margin-top: 6px; }
+.contact-candidates.compact label { opacity: .85; padding: 5px 7px; }
 .contact-warning { color: #8a5a1b !important; }
 
 @media (max-width: 760px) {

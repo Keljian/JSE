@@ -110,7 +110,36 @@ class IntelligenceIntegrationTests(unittest.TestCase):
         self.assertTrue(strategy["cautions"])
         self.assertIn("Sean Mantri", captured["prompt"])
 
-    def test_contact_research_splits_conflicting_name_and_email_with_provenance(self):
+    def test_contact_extraction_pairs_details_by_proximity_and_rejects_prose(self):
+        records = db.extract_contact_records("""
+            For more information about the role
+            contact Sean Mantri on 0420 425 141
+            josh.dmonte@talentinternational.com
+
+            centre technologies with
+            liam.lasslett@talentinternational.com
+        """)
+        names = {item["name"] for item in records}
+        self.assertIn("Josh Dmonte", names)
+        self.assertIn("Liam Lasslett", names)
+        self.assertNotIn("About The Role", names)
+        self.assertNotIn("Centre Technologies", names)
+
+    def test_scraped_job_persists_structured_contact_records(self):
+        added = db.add_job({
+            "title": "Contact Record Test",
+            "company": "Example Recruitment",
+            "location": "Melbourne VIC",
+            "url": "https://example.test/contact-record-test",
+            "description": "For further information contact Jane Citizen\njane.citizen@example.com\n0400 111 222",
+        }, "Seek", profile_id=1)
+        self.assertTrue(added)
+        with db.get_db_connection() as conn:
+            row = conn.execute("SELECT contact_person, contact_records_json FROM jobs WHERE url = ?", ("https://example.test/contact-record-test",)).fetchone()
+        self.assertEqual("Jane Citizen", row["contact_person"])
+        self.assertIn("jane.citizen@example.com", row["contact_records_json"])
+
+    def test_contact_research_ignores_noisy_labels_and_limits_visible_choices(self):
         target = {
             "name": "Talent International",
             "target_type": "recruiter",
@@ -118,27 +147,31 @@ class IntelligenceIntegrationTests(unittest.TestCase):
             "evidence": [{
                 "title": "Agile Lead",
                 "url": "https://jobs.example/agile-lead",
-                "contact_person": "Sean Mantri",
-                "contact_email": "josh.dmonte@talentinternational.com",
-                "contact_phone": "0420 425 141",
+                "contacts": [
+                    {"name": "Sean Mantri on", "email": "josh.dmonte@talentinternational.com", "phone": "0420 425 141"},
+                    {"name": "centre technologies", "email": "liam.lasslett@talentinternational.com"},
+                    {"name": "about the role", "email": "chris.mackay@talentinternational.com"},
+                    {"name": "Anita Fonseka on", "email": "anita.fonseka@talentinternational.com"},
+                ],
             }],
         }
 
         def fake_search(query, limit=5):
-            if "Sean Mantri" in query:
-                return [{"url": "https://www.linkedin.com/in/sean-mantri", "title": "Sean Mantri - Technology Recruitment Consultant - Talent International", "snippet": "Technology recruitment consultant", "source_type": "LinkedIn public result"}]
             if "Josh Dmonte" in query:
                 return [{"url": "https://www.talentinternational.com/team/josh-dmonte", "title": "Josh Dmonte - Talent International", "snippet": "Recruitment consultant", "source_type": "Public web result"}]
             return []
 
         research = contact_research.research_target_contacts(target, search_func=fake_search)
         names = {candidate["name"] for candidate in research["candidates"]}
-        self.assertIn("Sean Mantri", names)
         self.assertIn("Josh Dmonte", names)
-        self.assertTrue(research["conflicts"])
-        self.assertTrue(research["requires_selection"])
+        self.assertIn("Liam Lasslett", names)
+        self.assertNotIn("Centre Technologies", names)
+        self.assertNotIn("About The Role", names)
+        self.assertFalse(research["conflicts"])
+        self.assertLessEqual(len(research["visible_candidate_ids"]), 3)
+        self.assertGreaterEqual(research["discarded_labels_count"], 3)
         saved = db.save_hidden_market_contact_research(1, target["target_type"], target["target_key"], target["name"], research)
-        chosen = next(candidate for candidate in research["candidates"] if candidate["name"] == "Sean Mantri")
+        chosen = next(candidate for candidate in research["candidates"] if candidate["name"] == "Josh Dmonte")
         selected = db.select_hidden_market_contact(1, target["target_type"], target["target_key"], chosen["candidate_id"])
         self.assertEqual(chosen["candidate_id"], selected["research"]["selected_candidate_id"])
         self.assertFalse(selected["research"]["requires_selection"])

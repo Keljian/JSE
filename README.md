@@ -317,14 +317,15 @@ coverage percentages because sparse salary, contact, or structured-role data
 should reduce confidence rather than masquerade as certainty.
 
 Before writing a person-specific strategy, JSE reconciles names, email addresses
-and phone numbers across the source advertisements, then checks publicly indexed
-organisation/team pages and professional-profile search results. Candidate
-contacts retain source URLs, freshness and confidence. If a name conflicts with
-an email owner—or two people remain similarly plausible—strategy generation
-pauses until you select the intended person. Public LinkedIn result metadata may
-be used for discovery, but JSE does not authenticate to or scrape LinkedIn
-profiles. Public research requires internet access; failures fall back safely to
-advertisement evidence or an organisation-level strategy.
+and phone numbers within their original contact blocks, then checks publicly
+indexed organisation/team pages and professional-profile search results. The
+best-supported person is recommended, with no more than two credible alternatives
+shown; rejected labels and weaker candidates remain folded under extraction
+diagnostics. Strategy generation pauses only when two independently supported
+people remain similarly plausible. Public LinkedIn result metadata may be used
+for discovery, but JSE does not authenticate to or scrape LinkedIn profiles.
+Public research failures fall back safely to advertisement evidence or an
+organisation-level strategy.
 
 Leadership-gap targets are hypotheses, not confirmed vacancies. Their cards
 show counter-evidence and confidence; validate the reporting structure before

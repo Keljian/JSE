@@ -1667,20 +1667,34 @@ function IntelligenceStrategy({ strategy }) {
 function IntelligenceContactResearch({ research, onSelect, busy }) {
   if (!research || !Object.keys(research).length) return null;
   const candidates = research.candidates || [];
+  const visibleIds = new Set(research.visible_candidate_ids || []);
+  const visible = candidates.filter((candidate) => visibleIds.has(candidate.candidate_id)).slice(0, 3);
+  const shown = visible.length ? visible : candidates.slice(0, 3);
+  const hidden = candidates.filter((candidate) => !shown.some((item) => item.candidate_id === candidate.candidate_id));
+  const renderCandidate = (candidate, selectable = true) => (
+    <label key={candidate.candidate_id} className={`${research.selected_candidate_id === candidate.candidate_id ? "selected" : ""} ${research.recommended_candidate_id === candidate.candidate_id ? "recommended" : ""}`}>
+      {selectable ? <input type="radio" name={`contact-${research.target_name}`} checked={research.selected_candidate_id === candidate.candidate_id} disabled={busy} onChange={() => onSelect(candidate.candidate_id)} /> : null}
+      <span>
+        <strong>{candidate.name}{research.recommended_candidate_id === candidate.candidate_id ? <em>Recommended</em> : null}</strong>
+        <small>{candidate.role || "Role not independently confirmed"} · {candidate.confidence} confidence ({candidate.confidence_score})</small>
+        <small>{[candidate.email, candidate.phone].filter(Boolean).join(" · ") || "No direct details confirmed"}</small>
+      </span>
+      {candidate.profile_url ? <button type="button" className="link-button" onClick={(event) => { event.preventDefault(); window.jobAssistant.openExternal(candidate.profile_url); }}><ExternalLink size={13} /> Profile</button> : null}
+    </label>
+  );
   return (
     <section className={`contact-research ${research.requires_selection ? "needs-selection" : ""}`}>
       <header><strong>Contact research</strong><span>{research.public_results_checked || 0} public result{research.public_results_checked === 1 ? "" : "s"} checked</span></header>
-      {(research.conflicts || []).map((conflict) => <p className="contact-conflict" key={conflict}><AlertTriangle size={13} /> {conflict}</p>)}
-      {research.requires_selection ? <p className="contact-prompt">Choose the person JSE should address. Strategy generation is paused until the identity conflict is resolved.</p> : null}
-      <div className="contact-candidates">
-        {candidates.map((candidate) => (
-          <label key={candidate.candidate_id} className={research.selected_candidate_id === candidate.candidate_id ? "selected" : ""}>
-            <input type="radio" name={`contact-${research.target_name}`} checked={research.selected_candidate_id === candidate.candidate_id} disabled={busy} onChange={() => onSelect(candidate.candidate_id)} />
-            <span><strong>{candidate.name}</strong><small>{candidate.role || "Role not confirmed"} · {candidate.confidence} confidence ({candidate.confidence_score})</small><small>{[candidate.email, candidate.phone].filter(Boolean).join(" · ") || "No direct details confirmed"}</small></span>
-            {candidate.profile_url ? <button type="button" className="link-button" onClick={(event) => { event.preventDefault(); window.jobAssistant.openExternal(candidate.profile_url); }}><ExternalLink size={13} /> Profile</button> : null}
-          </label>
-        ))}
-      </div>
+      {(research.conflicts || []).length ? <p className="contact-conflict"><AlertTriangle size={13} /> Independent sources disagree about this contact. Choose the best-supported person.</p> : null}
+      {research.requires_selection ? <p className="contact-prompt">Two well-supported contacts are close. Choose who the strategy should address.</p> : null}
+      <div className="contact-candidates">{shown.map((candidate) => renderCandidate(candidate))}</div>
+      {(hidden.length || research.discarded_labels_count) ? (
+        <details className="contact-diagnostics">
+          <summary><ChevronRight size={13} /> Extraction diagnostics ({hidden.length} other, {research.discarded_labels_count || 0} noisy label{research.discarded_labels_count === 1 ? "" : "s"} ignored)</summary>
+          {hidden.length ? <div className="contact-candidates compact">{hidden.map((candidate) => renderCandidate(candidate, false))}</div> : null}
+          {research.discarded_labels_count ? <small>JSE ignored nearby prose that did not reliably identify a person.</small> : null}
+        </details>
+      ) : null}
       {(research.warnings || []).map((warning) => <small className="contact-warning" key={warning}>{warning}</small>)}
       <small>{research.research_policy}</small>
     </section>

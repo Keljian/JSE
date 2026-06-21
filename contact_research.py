@@ -21,6 +21,8 @@ SEARCH_URL = "https://html.duckduckgo.com/html/?q={}"
 BING_RSS_URL = "https://www.bing.com/search?format=rss&q={}"
 USER_AGENT = "Mozilla/5.0 (compatible; JSE-ContactResearch/1.0)"
 GENERIC_EMAIL_NAMES = {"info", "jobs", "careers", "recruitment", "talent", "hello", "admin", "contact", "apply"}
+RESEARCH_VERSION = 2
+RELEVANT_ROLE_TERMS = {"technology", "digital", "it", "cloud", "data", "change", "transformation", "project", "program", "agile", "executive"}
 
 
 def _clean(value):
@@ -51,6 +53,33 @@ def _name_matches_email(name, email):
     left = set(_name_key(name).split())
     right = set(_name_key(inferred).split())
     return bool(left & right) and (next(iter(right), "") in left or len(left & right) >= 2)
+
+
+def _canonical_ad_contact(item):
+    email = _clean(item.get("email") or item.get("contact_email")).lower()
+    raw_name = _clean(item.get("name") or item.get("contact_person"))
+    explicit = db._canonical_person_name(raw_name)  # shared extraction contract
+    inferred = _email_inferred_name(email)
+    discarded = ""
+    if inferred:
+        if explicit and _name_matches_email(explicit, email):
+            name = explicit
+        else:
+            name = inferred
+            discarded = raw_name if raw_name and _name_key(raw_name) != _name_key(inferred) else ""
+    else:
+        name = explicit
+        discarded = raw_name if raw_name and not explicit else ""
+    if not name and not email and not item.get("phone") and not item.get("contact_phone"):
+        return None
+    return {
+        "name": name or email,
+        "email": email,
+        "phone": _clean(item.get("phone") or item.get("contact_phone")),
+        "quality": item.get("quality") or ("explicit" if explicit else "email-derived" if inferred else "unverified"),
+        "discarded_labels": [discarded] if discarded else [],
+        "conflicts": [],
+    }
 
 
 class _SearchParser(HTMLParser):
@@ -142,34 +171,35 @@ def public_web_search(query, limit=6, timeout=15):
 
 
 def contacts_from_ad_evidence(target):
-    """Reconcile ad contacts and split obvious name/email-owner conflicts."""
+    """Build people from structured ad contact blocks, discarding noisy labels."""
     raw = []
     evidence = list(target.get("evidence") or [])
-    if target.get("contact_person") or target.get("contact_email") or target.get("contact_phone"):
+    has_structured = any(item.get("contacts") for item in evidence)
+    if not has_structured and (target.get("contact_person") or target.get("contact_email") or target.get("contact_phone")):
         evidence.append({
             "contact_person": target.get("contact_person"), "contact_email": target.get("contact_email"),
             "contact_phone": target.get("contact_phone"), "url": target.get("url"), "title": "Aggregated target contact",
         })
     for item in evidence:
-        name = _clean(item.get("contact_person"))
-        email = _clean(item.get("contact_email")).lower()
-        phone = _clean(item.get("contact_phone"))
         source = {"url": item.get("url") or "", "title": item.get("title") or "Job advertisement", "source_type": "Job advertisement"}
-        if name and email and not _name_matches_email(name, email):
-            raw.append({"name": name, "email": "", "phone": phone, "sources": [source], "conflicts": [f"The same ad pairs {name} with {email}, whose address appears to belong to another person."]})
-            inferred = _email_inferred_name(email)
-            raw.append({"name": inferred or email, "email": email, "phone": "", "sources": [source], "conflicts": [f"Email inferred separately because it does not match the named contact {name}."]})
-        elif name or email or phone:
-            raw.append({"name": name or _email_inferred_name(email) or email or phone, "email": email, "phone": phone, "sources": [source], "conflicts": []})
+        contacts = item.get("contacts") or [{
+            "contact_person": item.get("contact_person"), "contact_email": item.get("contact_email"),
+            "contact_phone": item.get("contact_phone"),
+        }]
+        for contact in contacts:
+            canonical = _canonical_ad_contact(contact)
+            if canonical:
+                canonical.update({"sources": [source], "ad_mentions": 1})
+                raw.append(canonical)
 
     merged = {}
     for item in raw:
         key = item["email"] or _name_key(item["name"]) or re.sub(r"\D", "", item["phone"])
         candidate = merged.setdefault(key, {**item, "ad_mentions": 0})
-        candidate["ad_mentions"] += 1
+        candidate["ad_mentions"] += int(item.get("ad_mentions") or 1)
         candidate["email"] = candidate.get("email") or item.get("email")
         candidate["phone"] = candidate.get("phone") or item.get("phone")
-        candidate["conflicts"] = list(dict.fromkeys((candidate.get("conflicts") or []) + item.get("conflicts", [])))
+        candidate["discarded_labels"] = list(dict.fromkeys((candidate.get("discarded_labels") or []) + item.get("discarded_labels", [])))
         for source in item.get("sources", []):
             if source not in candidate["sources"]:
                 candidate["sources"].append(source)
@@ -190,15 +220,18 @@ def _attach_public_results(candidates, results, organisation):
         blob = _name_key(f"{result.get('title')} {result.get('snippet')}")
         matched = None
         for candidate in candidates:
-            surname = _name_key(candidate.get("name")).split()[-1:] or [""]
-            if surname[0] and surname[0] in blob:
+            tokens = set(_name_key(candidate.get("name")).split())
+            email = str(candidate.get("email") or "").lower()
+            result_text = f"{result.get('title') or ''} {result.get('snippet') or ''}".lower()
+            if (email and email in result_text) or (len(tokens) >= 2 and len(tokens & set(blob.split())) >= 2):
                 matched = candidate
                 break
         if not matched:
             name = _public_name_from_title(result.get("title"), organisation)
-            if not name:
+            organisation_tokens = set(_name_key(organisation).split())
+            if not name or not (organisation_tokens & set(blob.split())):
                 continue
-            matched = {"name": name, "email": "", "phone": "", "sources": [], "conflicts": [], "ad_mentions": 0}
+            matched = {"name": name, "email": "", "phone": "", "sources": [], "conflicts": [], "discarded_labels": [], "ad_mentions": 0, "quality": "public-only"}
             candidates.append(matched)
         source = {key: result.get(key) for key in ("url", "title", "snippet", "source_type")}
         if source not in matched["sources"]:
@@ -214,14 +247,16 @@ def _attach_public_results(candidates, results, organisation):
 def _score_candidates(candidates, organisation):
     for candidate in candidates:
         public_sources = [source for source in candidate.get("sources", []) if source.get("source_type") != "Job advertisement"]
-        score = min(45, int(candidate.get("ad_mentions") or 0) * 15)
-        score += 15 if candidate.get("email") else 0
+        score = min(30, int(candidate.get("ad_mentions") or 0) * 15)
+        score += 20 if candidate.get("email") else 0
         score += 8 if candidate.get("phone") else 0
         score += min(20, len(public_sources) * 10)
-        score += 12 if candidate.get("profile_url") else 0
-        score -= min(30, len(candidate.get("conflicts") or []) * 15)
+        score += 15 if candidate.get("profile_url") else 0
+        score += 15 if candidate.get("quality") in {"explicit", "provided", "scraper-provided"} else 5 if candidate.get("quality") == "email-derived" else 0
+        role_tokens = set(_name_key(candidate.get("role")).split())
+        score += 10 if role_tokens & RELEVANT_ROLE_TERMS else 0
         candidate["confidence_score"] = max(0, min(100, score))
-        candidate["confidence"] = "high" if score >= 70 else "medium" if score >= 40 else "low"
+        candidate["confidence"] = "high" if score >= 75 else "medium" if score >= 55 else "low"
         candidate["candidate_id"] = _candidate_id(candidate.get("name"), candidate.get("email"))
         candidate["organisation"] = organisation
     return sorted(candidates, key=lambda item: (item["confidence_score"], item.get("ad_mentions", 0)), reverse=True)
@@ -231,14 +266,17 @@ def research_target_contacts(target, search_func=public_web_search):
     organisation = _clean(target.get("name") or target.get("target_name"))
     candidates = contacts_from_ad_evidence(target)
     queries = []
+    domain = next((str(candidate.get("email") or "").split("@", 1)[1] for candidate in candidates if "@" in str(candidate.get("email") or "")), "")
     for candidate in candidates[:5]:
+        if candidate.get("email"):
+            queries.append(f'"{candidate["email"]}"')
         if candidate.get("name") and "@" not in candidate["name"]:
-            queries.append(f'"{candidate["name"]}" "{organisation}" recruiter OR consultant')
-    queries.extend([
-        f'"{organisation}" recruitment consultants technology',
-        f'site:linkedin.com/in "{organisation}" recruiter OR consultant OR talent',
-        f'"{organisation}" team recruitment',
-    ])
+            queries.append(f'"{candidate["name"]}" "{organisation}"')
+            queries.append(f'site:linkedin.com/in "{candidate["name"]}" "{organisation}"')
+            if domain:
+                queries.append(f'site:{domain} "{candidate["name"]}"')
+    if len(candidates) < 3:
+        queries.extend([f'"{organisation}" recruitment consultants technology', f'"{organisation}" team recruitment'])
     results, errors = [], []
     for query in list(dict.fromkeys(queries))[:8]:
         try:
@@ -248,25 +286,29 @@ def research_target_contacts(target, search_func=public_web_search):
     deduped = {item.get("url"): item for item in results if item.get("url")}
     candidates = _attach_public_results(candidates, list(deduped.values()), organisation)
     candidates = _score_candidates(candidates, organisation)
-    selected = candidates[0]["candidate_id"] if candidates else None
-    ambiguous = False
-    if candidates:
-        top = candidates[0]
-        second = candidates[1] if len(candidates) > 1 else None
-        ambiguous = bool(top.get("conflicts")) or top["confidence"] == "low" or bool(second and top["confidence_score"] - second["confidence_score"] < 12)
-        if ambiguous:
-            selected = None
+    credible = [candidate for candidate in candidates if candidate["confidence_score"] >= 45]
+    top = credible[0] if credible else None
+    second = credible[1] if len(credible) > 1 else None
+    ambiguous = bool(top and second and top["confidence_score"] >= 55 and second["confidence_score"] >= 55 and top["confidence_score"] - second["confidence_score"] < 15)
+    selected = None if ambiguous or not top or top["confidence_score"] < 55 else top["candidate_id"]
     conflicts = list(dict.fromkeys(conflict for candidate in candidates for conflict in candidate.get("conflicts", [])))
-    requires_selection = bool(candidates) and (ambiguous or not selected)
+    visible = credible[:3]
+    discarded_labels = list(dict.fromkeys(label for candidate in candidates for label in candidate.get("discarded_labels", []) if label))
+    requires_selection = ambiguous
     return {
+        "research_version": RESEARCH_VERSION,
         "target_name": organisation,
         "researched_at": datetime.now().isoformat(timespec="seconds"),
         "candidates": candidates,
         "selected_candidate_id": selected,
         "requires_selection": requires_selection,
+        "recommended_candidate_id": top["candidate_id"] if top else None,
+        "visible_candidate_ids": [candidate["candidate_id"] for candidate in visible],
+        "suppressed_candidate_count": max(0, len(candidates) - len(visible)),
+        "discarded_labels_count": len(discarded_labels),
         "conflicts": conflicts,
         "public_results_checked": len(deduped),
-        "warnings": (["No reliable person was found; the strategy will remain organisation-level."] if not candidates else []) + (["Public web research was unavailable; only job-ad contact evidence was used."] if errors and not deduped else []) + errors[:2],
+        "warnings": (["No reliable person was found; JSE will build an organisation-level strategy."] if not top else []) + (["Public research was unavailable; only job-ad evidence was used."] if errors and not deduped else []),
         "research_policy": "Public search metadata and organisation pages only; no authenticated LinkedIn scraping.",
     }
 
@@ -284,7 +326,7 @@ def enrich_target_contacts(profile_id, target, force=False):
     if cached and not force:
         try:
             researched = datetime.fromisoformat(str(cached.get("researched_at") or ""))
-            if researched >= datetime.now() - timedelta(days=7):
+            if researched >= datetime.now() - timedelta(days=7) and int((cached.get("research") or {}).get("research_version") or 0) == RESEARCH_VERSION:
                 return cached["research"]
         except (TypeError, ValueError):
             pass

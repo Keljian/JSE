@@ -740,14 +740,120 @@ def _closing_date_is_expired(metadata):
     return metadata.get("closing_date_source") in {"advertisement", "provided"} and _date_is_past(metadata.get("closing_date"))
 
 
+_CONTACT_NON_NAMES = {
+    "about", "apply", "application", "centre", "center", "company", "contact", "email",
+    "enquiries", "further", "information", "job", "jobs", "please", "phone", "position",
+    "recruitment", "role", "team", "technologies", "technology", "talent", "the", "via",
+}
+
+
+def _canonical_person_name(value):
+    name = _clean(value)
+    name = re.sub(r"(?i)\s+(?:on|via|at|email)\s*(?:[a-z][a-z0-9._-]*)?$", "", name).strip(" ,;:-")
+    words = name.split()
+    if not 2 <= len(words) <= 4:
+        return ""
+    if any(_company_key(word) in _CONTACT_NON_NAMES for word in words):
+        return ""
+    if not all(re.fullmatch(r"[A-Z][A-Za-z'’-]*|[A-Z]{2,}", word) for word in words):
+        return ""
+    return name
+
+
+def _contact_email_name(email):
+    local = str(email or "").split("@", 1)[0]
+    parts = [part for part in re.split(r"[._-]+", local) if part]
+    if len(parts) < 2 or any(not part.isalpha() or part.lower() in {"info", "jobs", "careers", "apply", "talent"} for part in parts):
+        return ""
+    return " ".join(part.capitalize() for part in parts[:3])
+
+
+def _contact_names_overlap(left, right):
+    a, b = set(_company_key(left).split()), set(_company_key(right).split())
+    return bool(a and b and (len(a & b) >= 2 or (len(a & b) == 1 and min(len(a), len(b)) == 1)))
+
+
+def extract_contact_records(text, provided=None):
+    """Extract evidence-local contact tuples without pairing unrelated globals."""
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in raw.split("\n") if line.strip()]
+    records = []
+    name_pattern = re.compile(
+        r"(?i:(?:please\s+)?contact|enquiries?(?:\s+to)?|for further information(?:\s+contact)?)"
+        r"[^\n]{0,40}?\b([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){1,3})\b"
+    )
+    email_pattern = re.compile(r"[\w.\-+]+@[\w.\-]+\.\w+")
+    phone_pattern = re.compile(r"(?:\+?61\s?\d[\d\s]{7,12}|0\d[\d\s]{8,12})")
+
+    for index, line in enumerate(lines):
+        for email_match in email_pattern.finditer(line):
+            email = email_match.group(0).lower()
+            nearby = "\n".join(lines[max(0, index - 2): min(len(lines), index + 3)])
+            explicit = ""
+            for candidate_line in lines[max(0, index - 2): min(len(lines), index + 2)]:
+                match = name_pattern.search(candidate_line)
+                if match:
+                    explicit = _canonical_person_name(match.group(1))
+                    if explicit:
+                        break
+            inferred = _contact_email_name(email)
+            if explicit and inferred and not _contact_names_overlap(explicit, inferred):
+                name, raw_label, quality = inferred, explicit, "email-derived"
+            else:
+                name, raw_label, quality = explicit or inferred, "", "explicit" if explicit else "email-derived"
+            phone_match = phone_pattern.search(nearby)
+            records.append({
+                "name": name, "email": email,
+                "phone": _clean(phone_match.group(0)) if phone_match else "",
+                "quality": quality, "raw_label": raw_label,
+                "evidence_text": _clean(nearby)[:400],
+            })
+
+    # Contact blocks without an email are still useful when a nearby phone is present.
+    for index, line in enumerate(lines):
+        match = name_pattern.search(line)
+        if not match:
+            continue
+        name = _canonical_person_name(match.group(1))
+        nearby = "\n".join(lines[max(0, index - 1): min(len(lines), index + 2)])
+        phone_match = phone_pattern.search(nearby)
+        phone = _clean(phone_match.group(0)) if phone_match else ""
+        phone_digits = re.sub(r"\D", "", phone)
+        phone_already_bound = any(phone_digits and phone_digits == re.sub(r"\D", "", item.get("phone") or "") for item in records)
+        if name and phone_match and not phone_already_bound and not any(_contact_names_overlap(name, item.get("name")) for item in records):
+            records.append({"name": name, "email": "", "phone": phone, "quality": "explicit", "raw_label": "", "evidence_text": _clean(nearby)[:400]})
+
+    for item in provided or []:
+        email = _clean(item.get("email") or item.get("contact_email")).lower()
+        explicit = _canonical_person_name(item.get("name") or item.get("contact_person"))
+        inferred = _contact_email_name(email)
+        name = explicit if explicit and (not inferred or _contact_names_overlap(explicit, inferred)) else inferred or explicit
+        if name or email or item.get("phone") or item.get("contact_phone"):
+            records.append({"name": name, "email": email, "phone": _clean(item.get("phone") or item.get("contact_phone")), "quality": "provided", "raw_label": "" if name == explicit else explicit, "evidence_text": "Scraper-provided contact"})
+
+    merged = {}
+    for item in records:
+        key = item.get("email") or _company_key(item.get("name")) or re.sub(r"\D", "", item.get("phone") or "")
+        if not key:
+            continue
+        current = merged.setdefault(key, item)
+        current["name"] = current.get("name") or item.get("name")
+        current["email"] = current.get("email") or item.get("email")
+        current["phone"] = current.get("phone") or item.get("phone")
+        if item.get("quality") in {"provided", "explicit"}:
+            current["quality"] = item["quality"]
+    return list(merged.values())
+
+
 def extract_job_metadata(job_data):
     """Best-effort extraction of closing date, contact details, and salary from ad text."""
-    text = _clean("\n".join([
+    raw_text = "\n".join([
         str(job_data.get("title") or ""),
         str(job_data.get("company") or ""),
         str(job_data.get("description") or ""),
         str(job_data.get("pdf_text") or ""),
-    ]))
+    ])
+    text = _clean(raw_text)
     metadata = {}
     for key in ("contact_person", "contact_email", "contact_phone", "salary", "closing_date"):
         if job_data.get(key):
@@ -768,25 +874,17 @@ def extract_job_metadata(job_data):
     if salary_match:
         metadata.setdefault("salary", _clean(salary_match.group(1)))
 
-    phone_match = re.search(r"(\+?61\s?\d[\d\s]{7,12}|0\d[\d\s]{8,12})", text)
-    if phone_match:
-        metadata.setdefault("contact_phone", _clean(phone_match.group(1)))
-
-    email_match = re.search(r"[\w.\-+]+@[\w.\-]+\.\w+", text)
-    if email_match:
-        metadata.setdefault("contact_email", email_match.group(0))
-
-    contact_patterns = [
-        r"(?:contact|enquiries|for further information).*?(?:contact\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
-        r"please contact\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
-    ]
-    for pattern in contact_patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            name = _clean(match.group(1))
-            if not any(word.lower() in {"apply", "email", "phone", "please"} for word in name.split()):
-                metadata.setdefault("contact_person", name)
-                break
+    provided_contacts = list(job_data.get("contact_records") or [])
+    if any(job_data.get(key) for key in ("contact_person", "contact_email", "contact_phone")):
+        provided_contacts.append({"name": job_data.get("contact_person"), "email": job_data.get("contact_email"), "phone": job_data.get("contact_phone")})
+    contact_records = extract_contact_records(raw_text, provided_contacts)
+    if contact_records:
+        primary = max(contact_records, key=lambda item: ({"provided": 3, "explicit": 2, "email-derived": 1}.get(item.get("quality"), 0), bool(item.get("email")), bool(item.get("phone"))))
+        metadata["contact_records"] = contact_records
+        metadata["contact_records_json"] = json.dumps(contact_records, ensure_ascii=False)
+        metadata["contact_person"] = primary.get("name") or metadata.get("contact_person")
+        metadata["contact_email"] = primary.get("email") or metadata.get("contact_email")
+        metadata["contact_phone"] = primary.get("phone") or metadata.get("contact_phone")
 
     if "closing_date" not in metadata:
         metadata["closing_date"] = _default_closing_date()
@@ -804,6 +902,7 @@ def _update_existing_scraped_job(conn, job_id, job_data, metadata, fingerprint=N
         "contact_person": metadata.get("contact_person"),
         "contact_email": metadata.get("contact_email"),
         "contact_phone": metadata.get("contact_phone"),
+        "contact_records_json": metadata.get("contact_records_json"),
         "salary": metadata.get("salary"),
         "closing_date_source": metadata.get("closing_date_source"),
         "description_fingerprint": fingerprint,
@@ -3134,10 +3233,10 @@ def add_job(job_data, source, profile_id=1, log_callback=None):
         INSERT OR IGNORE INTO jobs 
         (title, company, location, url, description, source, pdf_text, position_description_text, profile_id,
          date_scraped, last_interaction_at, updated_at, closing_date, contact_person,
-         contact_email, contact_phone, salary, closing_date_source, description_fingerprint, advertiser_company,
+         contact_email, contact_phone, contact_records_json, salary, closing_date_source, description_fingerprint, advertiser_company,
          actual_company, employer_type, company_confidence, company_intelligence,
          company_research_updated_at, last_seen_at, missing_sweeps) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 0)
     """
     try:
         with get_db_connection() as conn:
@@ -3190,7 +3289,7 @@ def add_job(job_data, source, profile_id=1, log_callback=None):
                 job_data.get('position_description_text') or job_data.get('pdf_text'),
                 profile_id, metadata.get("closing_date"),
                 metadata.get("contact_person"), metadata.get("contact_email"),
-                metadata.get("contact_phone"), metadata.get("salary"),
+                metadata.get("contact_phone"), metadata.get("contact_records_json"), metadata.get("salary"),
                 metadata.get("closing_date_source"), fingerprint,
                 company.get("advertiser_company"), company.get("actual_company"),
                 company.get("employer_type"), company.get("company_confidence"),
@@ -5083,12 +5182,17 @@ def _hidden_market_outcome_rates(profile_id=None, include_all_profiles=False):
 
 
 def _market_evidence(row, title, score, scraped):
+    try:
+        contacts = json.loads(row["contact_records_json"] or "[]")
+    except (TypeError, ValueError, IndexError):
+        contacts = []
     return {
         "job_id": row["id"], "title": title, "company": row["company"], "score": score,
         "seen": scraped, "url": row["url"], "application_url": row["application_url"],
         "location": row["location"], "source": row["source"],
         "contact_person": row["contact_person"], "contact_email": row["contact_email"],
         "contact_phone": row["contact_phone"],
+        "contacts": contacts,
     }
 
 
@@ -5145,7 +5249,8 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
             SELECT jobs.id, jobs.title, jobs.company, jobs.advertiser_company, jobs.actual_company,
                    jobs.employer_type, jobs.match_score, jobs.composite_score, jobs.pipeline_stage,
                    jobs.url, jobs.application_url, jobs.contact_person, jobs.contact_email,
-                   jobs.contact_phone, COALESCE(jobs.date_scraped, jobs.updated_at) AS scraped_at,
+                   jobs.contact_phone, jobs.contact_records_json,
+                   COALESCE(jobs.date_scraped, jobs.updated_at) AS scraped_at,
                    jobs.location, jobs.salary, jobs.source, postings.job_intelligence_json,
                    SUBSTR(LOWER(COALESCE(jobs.description, '')), 1, 4000) AS description_head
             FROM jobs

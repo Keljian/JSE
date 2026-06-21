@@ -28,6 +28,14 @@ All notable changes to JSE are documented here.
 
 ### Changed
 
+- Contact extraction now preserves per-ad contact blocks, pairs names, emails,
+  and phones by proximity, and rejects prose fragments masquerading as people.
+  Target research shows one recommended contact and at most two credible
+  alternatives; lower-quality candidates and extraction diagnostics start
+  folded away.
+- Identity selection now pauses strategy generation only when independently
+  supported contacts remain genuinely close. Cached contact research is
+  automatically refreshed under the stricter model.
 - Renamed the main Hidden Market navigation item to Intelligence.
 - Build Strategy now uses a resolved, evidence-backed person when available and
   safely falls back to an organisation-level approach when no reliable person

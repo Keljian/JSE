@@ -228,10 +228,13 @@ AI angles, while deterministic aggregation and fallback skill/work-mode
 extraction keep the workspace useful without it.
 
 Contact enrichment is implemented in `contact_research.py`. It reconciles
-contacts found in source ads, uses public search metadata and organisation pages,
-stores every source URL and conflict, and requires explicit selection when the
-identity remains ambiguous. It never logs into or scrapes authenticated LinkedIn
-pages. Cached research is refreshed after seven days.
+proximity-bound contact records extracted from source ads, discards non-person
+labels, and uses exact-email or full-name evidence when attaching public search
+metadata and organisation pages. The UI exposes one recommendation and at most
+two credible alternatives, with weaker candidates folded into diagnostics.
+Explicit selection is required only when independently supported identities
+remain close. It never logs into or scrapes authenticated LinkedIn pages. Cached
+research is refreshed after seven days or whenever the research model changes.
 
 ### 6. Application Document Generation
 

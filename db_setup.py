@@ -93,6 +93,7 @@ def setup_database():
     _add_column(cursor, "jobs", "contact_person", "TEXT")
     _add_column(cursor, "jobs", "contact_email", "TEXT")
     _add_column(cursor, "jobs", "contact_phone", "TEXT")
+    _add_column(cursor, "jobs", "contact_records_json", "TEXT")
     _add_column(cursor, "jobs", "resume_used", "TEXT")
     _add_column(cursor, "jobs", "resume_text", "TEXT")
     _add_column(cursor, "jobs", "cover_letter_path", "TEXT")
