@@ -1460,8 +1460,18 @@ def command_scrapers_rollback(payload):
 
 
 def command_jobs_list(payload):
+    import ad_signals
     rows = db.get_pipeline_jobs(payload)
-    return {"jobs": compact_job_dicts(rows) if payload.get("compact") else rows_to_dicts(rows)}
+    recurrence = db.recurrence_index(payload.get("profile_id"), bool(payload.get("include_all_profiles")))
+    compact = payload.get("compact")
+    jobs = []
+    for row in rows:
+        data = compact_job_dict(row, extra_fields=("ad_text",)) if compact else row_to_dict(row)
+        key = db.recurrence_key(data.get("company"), data.get("title"))
+        data["ad_signals"] = ad_signals.derive(data, recurrence.get(key, 1))
+        data.pop("ad_text", None)
+        jobs.append(data)
+    return {"jobs": jobs}
 
 
 def command_jobs_counts(payload):
@@ -1660,11 +1670,15 @@ def command_company_research_batch(payload):
 
 
 def command_jobs_detail(payload):
+    import ad_signals
     job = db.get_job_details(payload["job_id"])
     if job and db.company_intelligence_needs_refresh(job):
         job = db.refresh_job_company_intelligence(payload["job_id"])
+    job_dict = row_to_dict(job)
+    if job_dict:
+        job_dict["ad_signals"] = ad_signals.derive(job_dict, db.recurrence_count_for(job_dict))
     return {
-        "job": row_to_dict(job),
+        "job": job_dict,
         "events": rows_to_dicts(db.get_job_events(payload["job_id"])),
         "interviews": rows_to_dicts(db.get_interviews(payload["job_id"])),
         "application_kits": rows_to_dicts(db.get_application_kits(job_id=payload["job_id"])),

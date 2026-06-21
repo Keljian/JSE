@@ -298,6 +298,58 @@ function DialogModal({ dialog, onClose }) {
   );
 }
 
+const APPLY_CHANNEL_LABELS = {
+  recruiter: "Recruiter",
+  ats: "ATS apply",
+  email_direct: "Direct email",
+  board_apply: "Board apply",
+};
+
+function AdSignalChips({ signals }) {
+  if (!signals) return null;
+  const chips = [];
+  if (signals.urgency === "closing_soon") chips.push(["warn", `Closes ${signals.closes_in_days}d`]);
+  else if (signals.urgency === "fresh") chips.push(["good", "Fresh"]);
+  else if (signals.urgency === "stale") chips.push(["muted", `${signals.age_days}d old`]);
+  if (signals.is_recurring) chips.push(["warn", `Repost ×${signals.recurrence_count}`]);
+  if (signals.friction?.length) chips.push(["warn", `${signals.friction.length} hurdle${signals.friction.length > 1 ? "s" : ""}`, signals.friction.join(", ")]);
+  if (signals.apply_channel === "recruiter") chips.push(["muted", "Recruiter"]);
+  else if (signals.apply_channel === "ats") chips.push(["muted", "ATS"]);
+  if (!signals.salary_disclosed) chips.push(["muted", "No $"]);
+  if (!chips.length) return null;
+  return (
+    <div className="card-signals">
+      {chips.map(([tone, label, title], i) => (
+        <span key={i} className={`ad-chip ${tone}`} title={title || label}>{label}</span>
+      ))}
+    </div>
+  );
+}
+
+function AdSignalsBlock({ signals }) {
+  if (!signals) return null;
+  const rows = [];
+  if (signals.hiring_trigger && signals.hiring_trigger !== "unknown") rows.push(["Hiring trigger", signals.hiring_trigger]);
+  if (signals.reporting_line) rows.push(["Reports to", signals.reporting_line]);
+  if (signals.team_size != null) rows.push(["Team size", String(signals.team_size)]);
+  rows.push(["Apply via", APPLY_CHANNEL_LABELS[signals.apply_channel] || "Unknown"]);
+  rows.push(["Salary disclosed", signals.salary_disclosed ? "Yes" : "No"]);
+  if (signals.is_recurring) rows.push(["Recurrence", `Seen ${signals.recurrence_count}× (likely repost)`]);
+  if (signals.age_days != null) rows.push(["Vacancy age", `${signals.age_days} day${signals.age_days === 1 ? "" : "s"}`]);
+  if (signals.closes_in_days != null) rows.push(["Closes in", `${signals.closes_in_days} day${signals.closes_in_days === 1 ? "" : "s"}`]);
+  return (
+    <section className="ad-signals-block">
+      <h3>Ad signals</h3>
+      <AdSignalChips signals={signals} />
+      <dl className="ad-signals-grid">
+        {rows.map(([k, v]) => (<div key={k}><dt>{k}</dt><dd>{v}</dd></div>))}
+      </dl>
+      {signals.friction?.length ? <p className="ad-signals-friction"><strong>Application hurdles:</strong> {signals.friction.join(", ")}</p> : null}
+      {signals.ats_keywords?.length ? <p className="ad-signals-ats"><strong>ATS keywords:</strong> {signals.ats_keywords.join(" · ")}</p> : null}
+    </section>
+  );
+}
+
 const JobCard = React.memo(function JobCard({ job, onOpen, onDragStart, onReject }) {
   return (
     <article
@@ -314,6 +366,7 @@ const JobCard = React.memo(function JobCard({ job, onOpen, onDragStart, onReject
       </div>
       <p>{job.company || "Unknown company"}</p>
       <small>{job.profile_name || "Lane"} · {job.source || "Unknown source"}</small>
+      <AdSignalChips signals={job.ad_signals} />
       <div className="card-meta">
         {job.next_action ? <span>{job.next_action}</span> : <span>No next action</span>}
         <time>{job.next_action_date ? formatDate(job.next_action_date) : "No due date"}</time>
@@ -1316,6 +1369,7 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
       {activeTab === "Details" ? (
         <div className="workspace-panel two-col">
           <section>
+            <AdSignalsBlock signals={job.ad_signals} />
             <h3>Analysis</h3>
             {analyzing ? (
               <div className="thinking-card">
@@ -1653,17 +1707,17 @@ function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack
   );
 }
 
-function IntelligenceSignals({ signals, freshness, history }) {
+function IntelligenceSignals({ signals, freshness, history, momentum, sourceRoi }) {
   const groups = [
     ["Title families", signals?.title_families], ["Skills in demand", signals?.skills],
-    ["Salary bands", signals?.salary_bands], ["Locations", signals?.locations],
+    ["Locations", signals?.locations],
     ["Work modes", signals?.work_modes], ["Sources", signals?.sources],
   ];
   return (
     <section className="intelligence-signals">
       <div className="intelligence-freshness">
         <span><strong>{freshness?.jobs_considered || 0}</strong> jobs considered</span>
-        <span>Coverage: {freshness?.coverage?.structured_role_data || 0}% structured · {freshness?.coverage?.salary || 0}% salary · {freshness?.coverage?.contact || 0}% contact</span>
+        <span>Coverage: {freshness?.coverage?.structured_role_data || 0}% structured · {freshness?.coverage?.contact || 0}% contact</span>
         <span>Updated {formatDate(freshness?.as_of)}</span>
       </div>
       <div className="intelligence-signal-grid">
@@ -1675,6 +1729,20 @@ function IntelligenceSignals({ signals, freshness, history }) {
             ))}</div> : <p className="empty-inline">Not enough structured data yet.</p>}
           </section>
         ))}
+      </div>
+      <div className="intelligence-signal-grid">
+        <section className="campaign-section">
+          <header><h2>Employer hiring momentum</h2><strong>{momentum?.length || 0}</strong></header>
+          {(momentum || []).length ? <div className="signal-list">{momentum.map((item) => (
+            <div key={item.employer}><span title={item.employer}>{item.employer}</span><strong>{item.current}</strong><small className={item.delta > 0 ? "up" : item.delta < 0 ? "down" : ""}>{item.delta > 0 ? "+" : ""}{item.delta}</small></div>
+          ))}</div> : <p className="empty-inline">No employer running multiple roles yet.</p>}
+        </section>
+        <section className="campaign-section">
+          <header><h2>Source ROI</h2><strong>{sourceRoi?.length || 0}</strong></header>
+          {(sourceRoi || []).length ? <div className="signal-list">{sourceRoi.map((item) => (
+            <div key={item.source}><span>{item.source}</span><strong title="avg fit score">{item.avg_score}</strong><small title={`${item.high_fit} high-fit of ${item.roles}`}>{item.high_fit_rate}%</small></div>
+          ))}</div> : <p className="empty-inline">No source data yet.</p>}
+        </section>
       </div>
       {(history || []).length > 1 ? <section className="campaign-section intelligence-history"><header><h2>Saved market snapshots</h2><strong>{history.length}</strong></header><div>{history.map((item) => <span key={item.date}><time>{formatDate(item.date)}</time><strong>{(item.recruiters || 0) + (item.direct_employers || 0) + (item.leadership_gaps || 0)}</strong></span>)}</div></section> : null}
     </section>
@@ -1886,7 +1954,7 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
         <button className={section === "outcomes" ? "active" : ""} onClick={() => setSection("outcomes")}>Outcomes</button>
       </nav>
 
-      {section === "signals" ? <IntelligenceSignals signals={intel.signals} freshness={intel.freshness} history={intel.snapshot_history} /> : null}
+      {section === "signals" ? <IntelligenceSignals signals={intel.signals} freshness={intel.freshness} history={intel.snapshot_history} momentum={intel.employer_momentum} sourceRoi={intel.source_roi} /> : null}
 
       {section === "outreach" ? <section className="campaign-section hm-todo">
         <header>

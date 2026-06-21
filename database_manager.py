@@ -3799,6 +3799,46 @@ PIPELINE_SUMMARY_COLUMNS = (
 )
 
 
+def recurrence_key(company, title):
+    """Cheap normalised (company, title) key for repost matching."""
+    return (str(company or "").strip().lower(), str(title or "").strip().lower())
+
+
+def recurrence_index(profile_id=None, include_all_profiles=False):
+    """Map of normalised (company, title) -> count, only for roles seen 2+ times.
+
+    A single grouped query with HAVING returns just the recurring set (usually a
+    handful), so the board can flag reposts without an N+1 lookup or a full scan.
+    """
+    profile_clause, params = _profile_filter_clause(profile_id, include_all_profiles)
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT LOWER(TRIM(company)) AS c, LOWER(TRIM(title)) AS t, COUNT(*) AS n
+            FROM jobs
+            WHERE TRIM(COALESCE(title, '')) <> '' {profile_clause}
+            GROUP BY c, t
+            HAVING n >= 2
+            """,
+            params,
+        ).fetchall()
+    return {(row["c"], row["t"]): row["n"] for row in rows}
+
+
+def recurrence_count_for(job):
+    """Repost count for a single job dict/row (used by the detail view)."""
+    company = job.get("company") if hasattr(job, "get") else job["company"]
+    title = job.get("title") if hasattr(job, "get") else job["title"]
+    if not str(title or "").strip():
+        return 0
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE LOWER(TRIM(company)) = ? AND LOWER(TRIM(title)) = ?",
+            (str(company or "").strip().lower(), str(title or "").strip().lower()),
+        ).fetchone()
+    return row["n"] if row else 0
+
+
 def get_pipeline_jobs(filters=None):
     filters = filters or {}
     include_all_profiles = bool(filters.get("include_all_profiles"))
@@ -3878,6 +3918,9 @@ def get_pipeline_jobs(filters=None):
             + ", CASE WHEN jobs.company_intelligence LIKE '%ai_research%'"
             + " OR jobs.company_intelligence LIKE '%cached_company_profile%'"
             + " THEN 1 ELSE 0 END AS has_company_research"
+            # Truncated text so deterministic ad-signals (friction, trigger,
+            # reporting line) can be derived without shipping the full blob.
+            + ", SUBSTR(COALESCE(jobs.description, ''), 1, 2500) AS ad_text"
         )
     else:
         select_clause = "jobs.*"
@@ -4973,7 +5016,7 @@ def _finalise_market_target(entry, target_type, outcome_rates=None):
 
 
 def _market_signal_rows(rows, midpoint):
-    dimensions = {key: {} for key in ("title_families", "skills", "salary_bands", "locations", "work_modes", "sources")}
+    dimensions = {key: {} for key in ("title_families", "skills", "locations", "work_modes", "sources")}
     fallback_skills = (
         "stakeholder management", "vendor management", "cybersecurity", "cloud", "azure", "aws",
         "service delivery", "change management", "project management", "business analysis",
@@ -5008,7 +5051,6 @@ def _market_signal_rows(rows, midpoint):
             skills = [skill for skill in fallback_skills if skill in description]
         for skill in skills:
             bump("skills", skill, period)
-        bump("salary_bands", campaign_salary_band(row["salary"]), period)
         bump("locations", row["location"], period)
         work_mode = intel.get("work_mode")
         if not work_mode:
@@ -5255,10 +5297,60 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
     recruiter_items = [_finalise_market_target(item, "recruiter", outcome_rates) for item in recruiters.values()]
     employer_items = [_finalise_market_target(item, "direct_employer", outcome_rates) for item in employers.values()]
     gap_items = [_finalise_market_target(item, "leadership_gap", outcome_rates) for item in leadership_gaps]
+
+    # Tier 3 aggregates — single pass over the rows already in memory.
+    momentum = {}
+    sources = {}
+    for row in rows:
+        scraped = str(row["scraped_at"] or "")
+        period = _market_period(scraped, midpoint)
+        score = int(row["composite_score"] or row["match_score"] or 0)
+
+        name = _clean(row["actual_company"] if not _is_weak_company_candidate(row["actual_company"]) else row["company"])
+        key = _company_key(name)
+        if name and key and key != "unknown":
+            bucket = momentum.setdefault(key, {"employer": name, "roles": 0, "_current": 0, "_previous": 0, "best_score": 0, "last_seen": ""})
+            bucket["roles"] += 1
+            bucket[f"_{period}"] += 1
+            bucket["best_score"] = max(bucket["best_score"], score)
+            bucket["last_seen"] = max(bucket["last_seen"], scraped)
+
+        source = _clean(row["source"]) or "unknown"
+        srow = sources.setdefault(source, {"source": source, "roles": 0, "_score_sum": 0, "high_fit": 0})
+        srow["roles"] += 1
+        srow["_score_sum"] += score
+        if score >= 70:
+            srow["high_fit"] += 1
+
+    employer_momentum = sorted(
+        (
+            {
+                "employer": b["employer"], "roles": b["roles"],
+                "current": b["_current"], "previous": b["_previous"],
+                "delta": b["_current"] - b["_previous"],
+                "best_score": b["best_score"], "last_seen": b["last_seen"],
+            }
+            for b in momentum.values() if b["roles"] >= 2
+        ),
+        key=lambda item: (item["delta"], item["current"], item["roles"]), reverse=True,
+    )[:limit]
+
+    source_roi = sorted(
+        (
+            {
+                "source": s["source"], "roles": s["roles"],
+                "avg_score": round(s["_score_sum"] / s["roles"]) if s["roles"] else 0,
+                "high_fit": s["high_fit"],
+                "high_fit_rate": round(s["high_fit"] / s["roles"] * 100) if s["roles"] else 0,
+            }
+            for s in sources.values() if s["roles"] >= 1
+        ),
+        key=lambda item: (item["avg_score"], item["high_fit"]), reverse=True,
+    )
+
     row_count = len(rows)
     coverage = {
         "structured_role_data": round(sum(1 for row in rows if _market_job_intelligence(row)) / row_count * 100) if row_count else 0,
-        "salary": round(sum(1 for row in rows if row["salary"]) / row_count * 100) if row_count else 0,
         "contact": round(sum(1 for row in rows if row["contact_person"] or row["contact_email"] or row["contact_phone"]) / row_count * 100) if row_count else 0,
     }
     payload = {
@@ -5266,6 +5358,8 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "freshness": {"as_of": datetime.now().isoformat(timespec="seconds"), "jobs_considered": row_count, "window_start": since, "comparison_split": midpoint, "coverage": coverage},
         "signals": _market_signal_rows(rows, midpoint),
+        "employer_momentum": employer_momentum,
+        "source_roi": source_roi,
         "outcome_rates": outcome_rates,
         "recruiters": sorted(recruiter_items, key=lambda item: (item["opportunity_score"], item["last_seen"]), reverse=True)[:limit],
         "direct_employers": sorted(employer_items, key=lambda item: (item["opportunity_score"], item["last_seen"]), reverse=True)[:limit],

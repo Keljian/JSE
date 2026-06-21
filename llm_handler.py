@@ -743,6 +743,8 @@ def _fallback_job_intelligence(job):
         work_mode = "hybrid"
     elif any(term in text for term in ("on site", "on-site", "onsite")):
         work_mode = "onsite"
+    import ad_signals
+    derived = ad_signals.derive(job)
     return {
         "role_family": role_family,
         "seniority": seniority,
@@ -754,6 +756,10 @@ def _fallback_job_intelligence(job):
         "dealbreakers": [],
         "work_mode": work_mode,
         "employer_type_hint": "unknown",
+        "hiring_trigger": derived["hiring_trigger"],
+        "reporting_line": derived["reporting_line"],
+        "team_size": derived["team_size"],
+        "ats_keywords": derived["ats_keywords"],
         "confidence": "low",
         "fallback": True,
     }
@@ -799,6 +805,10 @@ def extract_job_intelligence(job, settings=None, log_callback=None):
   "dealbreakers":         [list of items framed as mandatory that filter candidates: clearance, on-site only, mandatory shift, citizenship, registration],
   "work_mode": "onsite | hybrid | remote | unknown",
   "employer_type_hint": "direct | recruiter | mixed | unknown",
+  "hiring_trigger": "growth | replacement | backfill | restructure | unknown",
+  "reporting_line": "who this role reports to, verbatim from the ad, or empty string",
+  "team_size": "integer number of reports/team members stated in the ad, or null",
+  "ats_keywords": [list of 8-15 EXACT terms/phrases an ATS parser would weight — pulled verbatim from the ad],
   "confidence": "low | medium | high"
 }}
 
@@ -806,6 +816,8 @@ HINTS
 - "recruiter": ad written by an agency, no end-client name, or generic 'our client'.
 - "direct": clear single employer named, application goes to the employer.
 - confidence = "low" when the ad is short, vague, or recruiter-written with no end client.
+- hiring_trigger: "growth"=new/expansion role, "replacement"=replacing a leaver, "backfill"=leave cover/fixed-term, "restructure"=new/reformed team.
+- ats_keywords: copy the ad's own wording (tools, certifications, methodologies, named systems) — do not paraphrase.
 
 JOB:
 ---

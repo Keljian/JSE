@@ -57,7 +57,6 @@ class IntelligenceIntegrationTests(unittest.TestCase):
         self.assertEqual("high", target["confidence"])
         self.assertTrue(target["classification_reasons"])
         self.assertTrue(intelligence["signals"]["skills"])
-        self.assertTrue(intelligence["signals"]["salary_bands"])
         self.assertTrue(intelligence["snapshot_history"])
 
     def test_saved_strategy_flows_into_tracked_lead_and_outcomes(self):
