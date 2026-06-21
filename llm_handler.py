@@ -2948,7 +2948,7 @@ JOB ADVERTISEMENT:
     return data, provider_label
 
 
-def hidden_market_strategy(target, lane_context="", settings=None):
+def _hidden_market_strategy_text_legacy(target, lane_context="", settings=None):
     """Generate a short, tailored outreach angle + concrete next steps for a
     hidden-market target using the local model. Returns plain prose (not JSON)."""
     target = target or {}
@@ -3002,3 +3002,70 @@ def hidden_market_strategy(target, lane_context="", settings=None):
     ]
     text = _call_unsloth(messages, temperature=0.3, max_tokens=600, json_mode=False, settings=settings)
     return (text or "").strip()
+
+
+def hidden_market_strategy(target, lane_context="", settings=None):
+    """Generate a structured, durable, evidence-grounded outreach strategy."""
+    target = target or {}
+    target_type = target.get("target_type") or "target"
+    facts = [
+        f"Target type: {target_type}",
+        f"Name: {target.get('name') or target.get('target_name') or 'Unknown'}",
+        f"Opportunity score: {target.get('opportunity_score') or 0}",
+        f"Identity confidence: {target.get('confidence') or 'unknown'}",
+        f"Recommended action: {target.get('recommended_action') or ''}",
+    ]
+    for label, key in (
+        ("Roles seen", "sample_titles"), ("Classification evidence", "classification_reasons"),
+        ("Counter evidence", "counter_evidence"), ("Domain", "domain"), ("Locations", "locations"),
+    ):
+        value = target.get(key)
+        if isinstance(value, list):
+            value = "; ".join(str(item) for item in value)
+        if value:
+            facts.append(f"{label}: {value}")
+    contact = " | ".join(
+        str(target.get(field)) for field in ("contact_person", "contact_email", "contact_phone") if target.get(field)
+    )
+    if contact:
+        facts.append(f"Known contact: {contact}")
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a pragmatic Australian hidden-job-market outreach strategist. "
+                "Use only supplied evidence. Never invent people, relationships, vacancies, or company facts. "
+                "Return only one valid JSON object with the requested keys."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Candidate lane context:\n" + (lane_context or "Not supplied.")
+                + "\n\nTarget evidence:\n" + "\n".join(facts)
+                + "\n\nReturn exactly: "
+                + '{"positioning_angle":"why approach now and how to position",'
+                + '"contact_persona":"specific role or person type to contact",'
+                + '"recommended_channel":"email | LinkedIn | phone | warm introduction | company site",'
+                + '"opening_message":"concise editable first message",'
+                + '"evidence_to_reference":["2-4 supplied facts"],'
+                + '"questions_to_ask":["2-4 useful questions"],'
+                + '"follow_up_sequence":["2-4 ordered steps"],'
+                + '"cautions":["uncertainties and claims not to make"]}.'
+            ),
+        },
+    ]
+    text = _call_unsloth(messages, temperature=0.2, max_tokens=1200, json_mode=True, settings=settings)
+    data = _extract_json(text)
+    if isinstance(data, dict):
+        return data
+    return {
+        "positioning_angle": (text or "").strip(),
+        "contact_persona": "Relevant hiring or talent leader",
+        "recommended_channel": "LinkedIn",
+        "opening_message": "",
+        "evidence_to_reference": [],
+        "questions_to_ask": [],
+        "follow_up_sequence": [],
+        "cautions": ["Review the generated angle against source evidence before sending."],
+    }

@@ -84,11 +84,12 @@ includes:
 
 - Dashboard with stage counts, upcoming actions, and cleanup prompts.
 - Campaign plan view (today's prioritised actions).
-- Hidden Market tab: mined recruiter / direct-employer / leadership-gap
-  intelligence, an outreach to-do tracker with its own lifecycle (multiple
-  contact/wait touchpoints, separate from the application pipeline), local-LLM
-  outreach strategy on demand, and one-click conversion of a lead into an
-  applied job.
+- Intelligence workspace with Market Signals, Targets, Outreach, and Outcomes
+  views. It mines recruiter / direct-employer / leadership-gap signals, retains
+  auditable source-job evidence and confidence, ranks targets with explainable
+  opportunity scores, stores structured local-LLM outreach strategies and daily
+  market snapshots, learns from response/meeting/conversion outcomes, and can
+  convert a successful lead into an applied job.
 - Pipeline board with job cards, scores, priorities, due dates, source badges,
   and drag/drop stage movement.
 - Search, manual-job, analysis, cleanup, and confirmation modals.

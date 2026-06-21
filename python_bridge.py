@@ -1820,11 +1820,17 @@ def command_hidden_market_get(payload):
     leads = db.list_hidden_market_leads(profile_id, include_all)
 
     tracked_keys = {(lead["target_type"], lead["target_key"]) for lead in leads}
+    saved_strategies = {
+        (item["target_type"], item["target_key"]): item
+        for item in db.list_hidden_market_strategies(profile_id or 1)
+    }
     for section, target_type in _HIDDEN_MARKET_SECTIONS:
         for item in intel.get(section, []):
             item["target_type"] = target_type
-            item["target_key"] = db.hidden_market_target_key(target_type, item["name"])
-            item["tracked"] = (target_type, item["target_key"]) in tracked_keys
+            item["target_key"] = db.hidden_market_target_key(target_type, item["name"], item.get("entity_key"))
+            legacy_key = db.hidden_market_target_key(target_type, item["name"])
+            item["tracked"] = (target_type, item["target_key"]) in tracked_keys or (target_type, legacy_key) in tracked_keys
+            item["saved_strategy"] = (saved_strategies.get((target_type, item["target_key"])) or {}).get("strategy") or {}
 
     today = date.today().isoformat()
     status_counts = {status: 0 for status in db.HIDDEN_MARKET_STATUSES}
@@ -1848,7 +1854,12 @@ def command_hidden_market_get(payload):
         "due_followups": due_followups,
         "converted": sum(1 for lead in leads if lead.get("outcome") == "converted"),
     }
-    return {"intel": intel, "leads": leads, "overview": overview}
+    try:
+        performance = db.get_hidden_market_stats(profile_id, include_all, payload.get("performance_days") or 30)
+    except Exception as exc:
+        emit("log", message=f"Intelligence outcome learning unavailable: {exc}")
+        performance = {}
+    return {"intel": intel, "leads": leads, "overview": overview, "performance": performance}
 
 
 def command_hidden_market_track(payload):
@@ -1861,6 +1872,11 @@ def command_hidden_market_track(payload):
         contact_email=payload.get("contact_email"),
         contact_phone=payload.get("contact_phone"),
         domain=payload.get("domain"),
+        outreach_channel=payload.get("outreach_channel"),
+        strategy=payload.get("strategy"),
+        opportunity_score=payload.get("opportunity_score"),
+        score_reasons=payload.get("score_reasons"),
+        target_key_override=payload.get("target_key"),
     )
     return {"lead": lead}
 
@@ -1916,11 +1932,20 @@ def command_hidden_market_strategy(payload):
     import llm_handler
 
     profile_id = payload.get("profile_id", 1)
-    text = llm_handler.hidden_market_strategy(
-        payload.get("target") or {},
+    target = payload.get("target") or {}
+    strategy = llm_handler.hidden_market_strategy(
+        target,
         lane_context=_hidden_market_lane_context(profile_id),
     )
-    return {"strategy": text}
+    saved = db.save_hidden_market_strategy(
+        profile_id,
+        target.get("target_type") or "target",
+        target.get("name") or target.get("target_name") or "Unknown target",
+        strategy,
+        provider="local",
+        target_key=target.get("target_key"),
+    )
+    return {"strategy": strategy, "saved": saved}
 
 
 def command_stats_summary(payload):

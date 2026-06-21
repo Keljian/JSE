@@ -198,6 +198,33 @@ The research flow is intentionally cautious. It should distinguish recruiter or
 advertiser information from the likely hiring company when the ad provides
 enough evidence.
 
+#### Intelligence workspace
+
+`database_manager.get_hidden_market_intel` now produces an explainable,
+lane-aware intelligence payload rather than anonymous aggregate counts. Target
+records retain source-job evidence, identity reasons and counter-evidence,
+confidence, momentum, a recommended next action, and an opportunity score based
+on fit, recurrence, recency, confidence, contactability, momentum, and observed
+outreach outcomes.
+
+```mermaid
+flowchart LR
+    Jobs["Jobs and structured role intelligence"] --> Signals["Market signals and period comparison"]
+    Jobs --> Targets["Resolved and ranked targets"]
+    Targets --> Evidence["Source jobs, confidence, reasons, cautions"]
+    Targets --> Strategy["Structured local-LLM outreach strategy"]
+    Strategy --> Leads["Outreach lifecycle and touchpoints"]
+    Leads --> Outcomes["Response, meeting, conversion calibration"]
+    Outcomes --> Targets
+    Signals --> Snapshots["Daily local market snapshots"]
+```
+
+Durable state lives in `hidden_market_leads`,
+`hidden_market_strategies`, and `market_intelligence_snapshots`. Strategies and
+snapshots contain no cloud requirement; the configured local model is used for
+AI angles, while deterministic aggregation and fallback skill/work-mode
+extraction keep the workspace useful without it.
+
 ### 6. Application Document Generation
 
 ```mermaid

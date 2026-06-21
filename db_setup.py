@@ -99,6 +99,17 @@ def setup_database():
     _add_column(cursor, "jobs", "cover_letter_text", "TEXT")
     _add_column(cursor, "jobs", "position_description_path", "TEXT")
     _add_column(cursor, "jobs", "position_description_text", "TEXT")
+    # PDF links discovered by scrapers were historically saved only in
+    # pdf_text, which made them invisible in the Application workspace.
+    # Backfill once (the predicate keeps this idempotent and preserves uploads).
+    cursor.execute(
+        """
+        UPDATE jobs
+        SET position_description_text = pdf_text
+        WHERE NULLIF(position_description_text, '') IS NULL
+          AND NULLIF(pdf_text, '') IS NOT NULL
+        """
+    )
     _add_column(cursor, "jobs", "additional_candidate_context", "TEXT")
     _add_column(cursor, "jobs", "interview_date", "TEXT")
     _add_column(cursor, "jobs", "interview_type", "TEXT")
@@ -805,6 +816,36 @@ def setup_database():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hidden_market_strategies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL,
+            target_type TEXT NOT NULL,
+            target_key TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            strategy_json TEXT NOT NULL,
+            provider TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(profile_id, target_type, target_key),
+            FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS market_intelligence_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_key TEXT NOT NULL,
+            profile_id INTEGER,
+            window_days INTEGER NOT NULL,
+            snapshot_date TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(scope_key, window_days, snapshot_date),
+            FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+        )
+    ''')
+
     # Migrations for tables created above. These must run AFTER the CREATE TABLE
     # statements: on a fresh database the ALTERs would otherwise silently no-op
     # (table missing) and the fragment tables would be created without the
@@ -816,6 +857,10 @@ def setup_database():
     _add_column(cursor, "application_kits", "review_updated_at", "TEXT")
     _add_column(cursor, "application_kits", "additional_candidate_context", "TEXT")
     _add_column(cursor, "hidden_market_leads", "converted_at", "TEXT")
+    _add_column(cursor, "hidden_market_leads", "outreach_channel", "TEXT")
+    _add_column(cursor, "hidden_market_leads", "strategy_json", "TEXT")
+    _add_column(cursor, "hidden_market_leads", "opportunity_score", "INTEGER")
+    _add_column(cursor, "hidden_market_leads", "score_reasons_json", "TEXT")
 
     # Typed fragment fields the LLM produces but the original schema dropped.
     # `keywords` drive activation, `anti_keywords` block misuse, `status`
@@ -857,6 +902,8 @@ def setup_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_llm_tasks_status ON local_llm_tasks(status, task_type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_llm_tasks_entity ON local_llm_tasks(entity_type, entity_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_hidden_market_leads_profile_status ON hidden_market_leads(profile_id, status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_hidden_market_strategies_profile ON hidden_market_strategies(profile_id, target_type)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_market_intel_snapshots_scope ON market_intelligence_snapshots(scope_key, window_days, snapshot_date)")
 
     # Create default "General" profile if it doesn't exist
     cursor.execute("SELECT COUNT(*) FROM profiles")

@@ -704,6 +704,14 @@ function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal }) 
     if (file) onDrop(file);
   };
   const fileName = displayFileName(value);
+  const browseForFile = async () => {
+    if (!window.jobAssistant.chooseDocument) {
+      inputRef.current?.click();
+      return;
+    }
+    const path = await window.jobAssistant.chooseDocument(`Select ${label.toLowerCase()}`);
+    if (path) uploadFile({ name: displayFileName(path), path });
+  };
 
   return (
     <div
@@ -716,7 +724,7 @@ function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal }) 
     >
       <div>
         <strong>{label}</strong>
-        <span title={value || ""}>{fileName || "Drop .docx, .doc, .pdf, .txt, or .md here"}</span>
+        <span title={value || ""}>{fileName || (text ? "Extracted document text attached" : "Drop .docx, .doc, .pdf, .txt, or .md here")}</span>
       </div>
       <div className="drop-zone-actions">
         <input
@@ -729,7 +737,7 @@ function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal }) 
             event.target.value = "";
           }}
         />
-        <button className="secondary" onClick={() => inputRef.current?.click()}><FolderOpen size={16} /> Upload</button>
+        <button className="secondary" onClick={browseForFile}><FolderOpen size={16} /> Upload</button>
         <button className="secondary" disabled={!text} onClick={onView}><FileText size={16} /> Open text</button>
         <button className="secondary" disabled={!value} onClick={onDownload}><Download size={16} /> Download</button>
         <button className="secondary" disabled={!value} onClick={onReveal}><ExternalLink size={16} /> Show</button>
@@ -1316,8 +1324,24 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
               </div>
             ) : null}
             <AnalysisReport text={job.ai_analysis} matchScore={job.match_score} />
-            <h3>Description</h3>
-            <p className="description"><LinkedText text={job.description || "No description captured."} /></p>
+            <div className="role-source-texts">
+              <section className="role-source-text job-ad-text">
+                <div className="role-source-heading">
+                  <span>Job advertisement</span>
+                  <small>Scraped from the listing</small>
+                </div>
+                <p className="description"><LinkedText text={job.description || "No job advertisement captured."} /></p>
+              </section>
+              {job.position_description_text ? (
+                <section className="role-source-text position-description-text">
+                  <div className="role-source-heading">
+                    <span>Position description</span>
+                    <small>PDF / attached document</small>
+                  </div>
+                  <p className="description"><LinkedText text={job.position_description_text} /></p>
+                </section>
+              ) : null}
+            </div>
           </section>
           <section className="form-grid stacked">
             <label><span>Stage</span><select value={form.pipeline_stage || "new"} onChange={(event) => set("pipeline_stage", event.target.value)}>{PIPELINE.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
@@ -1568,16 +1592,48 @@ function CampaignSection({ title, icon, items, empty, children }) {
   );
 }
 
-function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack, onStrategy, strategy, strategyBusy }) {
+function IntelligenceStrategy({ strategy }) {
+  if (!strategy || typeof strategy !== "object" || !Object.keys(strategy).length) return null;
+  return (
+    <div className="hm-strategy intelligence-strategy">
+      {strategy.positioning_angle ? <p><strong>Positioning:</strong> {strategy.positioning_angle}</p> : null}
+      <div className="intelligence-strategy-meta">
+        {strategy.contact_persona ? <span><strong>Contact:</strong> {strategy.contact_persona}</span> : null}
+        {strategy.recommended_channel ? <span><strong>Channel:</strong> {strategy.recommended_channel}</span> : null}
+      </div>
+      {strategy.opening_message ? <blockquote>{strategy.opening_message}</blockquote> : null}
+      {(strategy.evidence_to_reference || []).length ? <p><strong>Reference:</strong> {strategy.evidence_to_reference.join(" · ")}</p> : null}
+      {(strategy.questions_to_ask || []).length ? <p><strong>Ask:</strong> {strategy.questions_to_ask.join(" · ")}</p> : null}
+      {(strategy.follow_up_sequence || []).length ? <ol>{strategy.follow_up_sequence.map((step, index) => <li key={`${step}-${index}`}>{step}</li>)}</ol> : null}
+      {(strategy.cautions || []).length ? <p className="intelligence-caution"><strong>Caution:</strong> {strategy.cautions.join(" · ")}</p> : null}
+    </div>
+  );
+}
+
+function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack, onStrategy, strategy, strategyBusy, target, onOpenJob }) {
   return (
     <article className="hidden-target">
       <div>
         <strong>{name}</strong>
+        {target?.opportunity_score !== undefined ? <span className="hm-score">{target.opportunity_score}</span> : null}
+        {target?.confidence ? <span className={`hm-chip confidence-${target.confidence}`}>{target.confidence} confidence</span> : null}
         {chip ? <span className={`hm-chip ${chip.tone || ""}`}>{chip.label}</span> : null}
         <span>{meta}</span>
       </div>
       {detail ? <p><LinkedText text={detail} /></p> : null}
+      {target?.recommended_action ? <p className="intelligence-next"><strong>Next:</strong> {target.recommended_action}</p> : null}
       {titles?.length ? <small>{titles.join(" · ")}</small> : null}
+      {(target?.score_reasons || []).length ? <small className="intelligence-why">Why {target.opportunity_score}: {target.score_reasons.join(" · ")}</small> : null}
+      {(target?.evidence || []).length ? (
+        <details className="intelligence-evidence">
+          <summary><ChevronRight size={13} /> {target.evidence.length} source role{target.evidence.length === 1 ? "" : "s"} and classification evidence</summary>
+          <div>
+            {(target.classification_reasons || []).map((reason) => <p key={reason}><Check size={12} /> {reason}</p>)}
+            {(target.counter_evidence || []).map((reason) => <p key={reason} className="counter"><AlertTriangle size={12} /> {reason}</p>)}
+            <ul>{target.evidence.map((item) => <li key={item.job_id}><button className="link-button" onClick={() => onOpenJob(item.job_id)}>{item.title}</button><span>{item.company} · {item.score || 0}% · {formatDate(item.seen)} · {item.source}</span></li>)}</ul>
+          </div>
+        </details>
+      ) : null}
       {(onTrack || onStrategy) ? (
         <div className="hidden-target-actions">
           {onTrack ? (
@@ -1587,13 +1643,68 @@ function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack
           ) : null}
           {onStrategy ? (
             <button className="secondary" disabled={strategyBusy} onClick={onStrategy}>
-              {strategyBusy ? <Loader2 className="spin" size={14} /> : <Lightbulb size={14} />} AI angle
+              {strategyBusy ? <Loader2 className="spin" size={14} /> : <Lightbulb size={14} />} Build strategy
             </button>
           ) : null}
         </div>
       ) : null}
-      {strategy ? <div className="hm-strategy"><LinkedText text={strategy} /></div> : null}
+      <IntelligenceStrategy strategy={strategy} />
     </article>
+  );
+}
+
+function IntelligenceSignals({ signals, freshness, history }) {
+  const groups = [
+    ["Title families", signals?.title_families], ["Skills in demand", signals?.skills],
+    ["Salary bands", signals?.salary_bands], ["Locations", signals?.locations],
+    ["Work modes", signals?.work_modes], ["Sources", signals?.sources],
+  ];
+  return (
+    <section className="intelligence-signals">
+      <div className="intelligence-freshness">
+        <span><strong>{freshness?.jobs_considered || 0}</strong> jobs considered</span>
+        <span>Coverage: {freshness?.coverage?.structured_role_data || 0}% structured · {freshness?.coverage?.salary || 0}% salary · {freshness?.coverage?.contact || 0}% contact</span>
+        <span>Updated {formatDate(freshness?.as_of)}</span>
+      </div>
+      <div className="intelligence-signal-grid">
+        {groups.map(([title, items]) => (
+          <section className="campaign-section" key={title}>
+            <header><h2>{title}</h2><strong>{items?.length || 0}</strong></header>
+            {(items || []).length ? <div className="signal-list">{items.map((item) => (
+              <div key={item.label}><span>{item.label}</span><strong>{item.current}</strong><small className={item.delta > 0 ? "up" : item.delta < 0 ? "down" : ""}>{item.delta > 0 ? "+" : ""}{item.delta}</small></div>
+            ))}</div> : <p className="empty-inline">Not enough structured data yet.</p>}
+          </section>
+        ))}
+      </div>
+      {(history || []).length > 1 ? <section className="campaign-section intelligence-history"><header><h2>Saved market snapshots</h2><strong>{history.length}</strong></header><div>{history.map((item) => <span key={item.date}><time>{formatDate(item.date)}</time><strong>{(item.recruiters || 0) + (item.direct_employers || 0) + (item.leadership_gaps || 0)}</strong></span>)}</div></section> : null}
+    </section>
+  );
+}
+
+function IntelligencePerformance({ performance }) {
+  const groups = [
+    ["By target type", performance?.type_performance],
+    ["By outreach channel", performance?.channel_performance],
+    ["Opportunity score calibration", performance?.score_calibration],
+  ];
+  return (
+    <section className="intelligence-performance">
+      <div className="intelligence-kpis">
+        <article><span>Response rate</span><strong>{performance?.funnel?.contacted_plus ? `${performance.response_rate}%` : "—"}</strong></article>
+        <article><span>Conversion rate</span><strong>{performance?.funnel?.tracked ? `${performance.conversion_rate}%` : "—"}</strong></article>
+        <article><span>Follow-ups due</span><strong>{performance?.coverage?.due_followups || 0}</strong></article>
+      </div>
+      {groups.map(([title, items]) => (
+        <section className="campaign-section" key={title}>
+          <header><h2>{title}</h2><strong>{items?.length || 0}</strong></header>
+          {(items || []).length ? <div className="performance-table">
+            <div className="performance-head"><span>Segment</span><span>Tracked</span><span>Response</span><span>Meeting</span><span>Converted</span></div>
+            {items.map((item) => <div key={item.label}><strong>{item.label}</strong><span>{item.tracked}</span><span>{item.response_rate}%</span><span>{item.meetings}</span><span>{item.conversion_rate}%</span></div>)}
+          </div> : <p className="empty-inline">Log outreach channels and outcomes to build this comparison.</p>}
+        </section>
+      ))}
+      {(performance?.reads || []).length ? <section className="campaign-section"><header><h2>What the outcomes suggest</h2></header>{performance.reads.map((read) => <p className="settings-hint" key={read}>{read}</p>)}</section> : null}
+    </section>
   );
 }
 
@@ -1635,6 +1746,9 @@ function HiddenMarketLeadCard({ lead, onUpdate, onTouch, onConvert, onDelete, on
           {lead.outcome ? <span className={`hm-chip ${lead.outcome === "converted" ? "good" : ""}`}>{HM_OUTCOME_LABELS[lead.outcome] || lead.outcome}</span> : null}
         </div>
         <div className="hm-lead-controls">
+          <select value={lead.outreach_channel || ""} aria-label="Outreach channel" onChange={(event) => onUpdate(lead.id, { outreach_channel: event.target.value })}>
+            <option value="">Channel</option><option value="email">Email</option><option value="linkedin">LinkedIn</option><option value="phone">Phone</option><option value="warm introduction">Warm introduction</option><option value="company site">Company site</option>
+          </select>
           <select value={lead.status || "todo"} aria-label="Lead status" onChange={(event) => onUpdate(lead.id, { status: event.target.value })}>
             {Object.entries(HM_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
@@ -1647,9 +1761,12 @@ function HiddenMarketLeadCard({ lead, onUpdate, onTouch, onConvert, onDelete, on
       </div>
 
       {lead.action ? <p className="hm-lead-action">{lead.action}</p> : null}
+      {lead.opportunity_score ? <small className="intelligence-lead-score">Opportunity {lead.opportunity_score} · {(lead.score_reasons || []).join(" · ")}</small> : null}
       {[lead.contact_person, lead.contact_email, lead.contact_phone].filter(Boolean).length ? (
         <p className="hm-lead-contact"><LinkedText text={[lead.contact_person, lead.contact_email, lead.contact_phone].filter(Boolean).join(" · ")} /></p>
       ) : null}
+
+      <IntelligenceStrategy strategy={lead.strategy} />
 
       <label className="hm-lead-notes"><span>Notes</span>
         <textarea rows={2} defaultValue={lead.notes || ""} placeholder="Running notes about this lead..."
@@ -1702,11 +1819,13 @@ function HiddenMarketLeadCard({ lead, onUpdate, onTouch, onConvert, onDelete, on
 }
 
 function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack, onStrategy, onLeadUpdate, onTouch, onConvert, onDeleteLead, onOpenJob }) {
+  const [section, setSection] = useState("signals");
   const [strategies, setStrategies] = useState({});
   const [strategyBusy, setStrategyBusy] = useState("");
   const intel = data?.intel || {};
   const overview = data?.overview || {};
   const leads = data?.leads || [];
+  const performance = data?.performance || {};
   const counts = overview.status_counts || {};
 
   const runStrategy = async (target) => {
@@ -1725,8 +1844,10 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
       tracked={item.tracked}
       onTrack={() => onTrack(item)}
       onStrategy={() => runStrategy(item)}
-      strategy={strategies[item.target_key || item.name]}
+      strategy={strategies[item.target_key || item.name] || item.saved_strategy}
       strategyBusy={strategyBusy === (item.target_key || item.name)}
+      target={item}
+      onOpenJob={onOpenJob}
       {...extra}
     />
   );
@@ -1735,8 +1856,8 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
     <section className="campaign-view hidden-market-view">
       <div className="campaign-hero">
         <div className="plan-hero-main">
-          <h2><Radar size={20} /> Hidden Market</h2>
-          <p>Outreach intelligence mined from every advert seen — including the reject pile. Track leads here; they have their own to-do flow, separate from the application pipeline.</p>
+          <h2><Radar size={20} /> Intelligence</h2>
+          <p>Evidence-backed market signals, ranked targets, outreach work and outcome learning from every advert seen — including the reject pile.</p>
           <div className="plan-progress hm-overview">
             <span className="gate-chip">{overview.targets_surfaced || 0} targets surfaced</span>
             <span className="gate-chip">{overview.tracked_total || 0} tracked</span>
@@ -1758,7 +1879,16 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
         </div>
       </div>
 
-      <section className="campaign-section hm-todo">
+      <nav className="intelligence-tabs" aria-label="Intelligence views">
+        <button className={section === "signals" ? "active" : ""} onClick={() => setSection("signals")}>Market Signals</button>
+        <button className={section === "targets" ? "active" : ""} onClick={() => setSection("targets")}>Targets</button>
+        <button className={section === "outreach" ? "active" : ""} onClick={() => setSection("outreach")}>Outreach <span>{overview.open_total || 0}</span></button>
+        <button className={section === "outcomes" ? "active" : ""} onClick={() => setSection("outcomes")}>Outcomes</button>
+      </nav>
+
+      {section === "signals" ? <IntelligenceSignals signals={intel.signals} freshness={intel.freshness} history={intel.snapshot_history} /> : null}
+
+      {section === "outreach" ? <section className="campaign-section hm-todo">
         <header>
           <h2><ListTodo size={18} /> Outreach To-Do</h2>
           <strong>{leads.length}</strong>
@@ -1772,10 +1902,10 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
             ))}
           </div>
         )}
-      </section>
+      </section> : null}
 
-      <header className="hm-head">
-        <span>Mined from the last {overview.window_days || days} days. Identities are cross-checked against contact domains and ad language. "Track" adds a target to the to-do above; "AI angle" asks the local model for an approach.</span>
+      {section === "targets" ? <><header className="hm-head">
+        <span>Mined from the last {overview.window_days || days} days. Identities are cross-checked against contact domains and ad language. Expand the evidence before acting; Build strategy asks the local model for a saved outreach approach.</span>
       </header>
       <div className="hm-grid">
         <CampaignSection title="Recruiter Ledger" icon={<Send size={18} />} items={intel.recruiters} empty="No recruiters carrying relevant roles in the window yet.">
@@ -1802,7 +1932,8 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
             titles: gap.sample_titles,
           }))}
         </CampaignSection>
-      </div>
+      </div></> : null}
+      {section === "outcomes" ? <IntelligencePerformance performance={performance} /> : null}
     </section>
   );
 }
@@ -1892,7 +2023,7 @@ function CampaignPanel({ plan, busy, docsBusy, onStageAttack, onRefreshActions, 
       <section className="plan-list">
         {!plan ? <p className="empty-inline">{busy ? "Building today's plan..." : "Loading today's plan..."}</p> : null}
         {plan && !(plan.plan || []).length ? (
-          <p className="empty-inline">Nothing urgent on the board. Run a search to feed the queue, or open the Hidden Market tab for outreach targets.</p>
+          <p className="empty-inline">Nothing urgent on the board. Run a search to feed the queue, or open Intelligence for market signals and outreach targets.</p>
         ) : null}
         {(plan?.plan || []).map((item, index) => (
           <PlanItem
@@ -2060,7 +2191,7 @@ function StatsPanel({ stats, period, onPeriodChange, busy }) {
 
             {hm ? (
               <section className="dash-section">
-                <h2><Radar size={18} /> Hidden Market</h2>
+                <h2><Radar size={18} /> Intelligence Outreach</h2>
                 <h3>Outreach funnel</h3>
                 <StatBars items={hmFunnel} labelKey="label" countKey="count" />
                 <div className="stats-kv">
@@ -2372,8 +2503,8 @@ function ScraperPluginBuilder({ profileId, busy, onBuild, onTest }) {
       <div className="scraper-builder-step">
         <div className="scraper-builder-step-head"><span>1</span><div><strong>Source</strong><small>Where should JSE look for roles?</small></div></div>
         <div className="scraper-builder-fields source-fields">
-          <label><span>Source name <b>Required</b></span><input value={form.source_name} placeholder="Deakin University Careers" onChange={(event) => update("source_name", event.target.value)} /></label>
-          <label><span>Company <em>Optional</em></span><input value={form.company_name} placeholder="Deakin University" onChange={(event) => update("company_name", event.target.value)} /></label>
+          <label><span>Source name <b>Required</b></span><input value={form.source_name} placeholder="My source" onChange={(event) => update("source_name", event.target.value)} /></label>
+          <label><span>Company <em>Optional</em></span><input value={form.company_name} placeholder="My company" onChange={(event) => update("company_name", event.target.value)} /></label>
           <label className="wide"><span>Careers or search URL <b>Required</b></span><input type="url" value={form.careers_url} placeholder="https://careers.example.com/jobs" onChange={(event) => update("careers_url", event.target.value)} /></label>
         </div>
       </div>
@@ -3791,7 +3922,7 @@ function App() {
     }
   }, [activeProfileId, includeAllProfiles, hiddenMarketDays, invoke, appendLog]);
 
-  // Auto-load the Hidden Market tab on open and whenever the lane, scope, or
+  // Auto-load Intelligence on open and whenever the lane, scope, or
   // window changes. Declared after loadHiddenMarket so the dependency is not in
   // the temporal dead zone on first render.
   useEffect(() => {
@@ -3804,11 +3935,17 @@ function App() {
       await invoke("hiddenMarket:track", {
         profile_id: activeProfileId,
         target_type: target.target_type,
+        target_key: target.target_key,
         target_name: target.name,
         contact_person: target.contact_person,
         contact_email: target.contact_email,
         contact_phone: target.contact_phone,
         domain: target.domain,
+        action: target.recommended_action,
+        outreach_channel: target.saved_strategy?.recommended_channel,
+        strategy: target.saved_strategy,
+        opportunity_score: target.opportunity_score,
+        score_reasons: target.score_reasons,
       });
       await loadHiddenMarket();
     } catch (error) {
@@ -4053,7 +4190,13 @@ function App() {
   };
 
   const extractDroppedDocument = async (docType, file) => {
-    const filePath = window.jobAssistant.getPathForFile?.(file) || file.path || file.webkitRelativePath;
+    let filePath = file?.path || file?.webkitRelativePath;
+    try {
+      filePath = filePath || window.jobAssistant.getPathForFile?.(file);
+    } catch (error) {
+      appendLog(`Could not read the selected file path: ${toErrorMessage(error)}`);
+      return;
+    }
     if (!filePath) {
       appendLog("Could not read the dropped file path. Use a normal filesystem file, not a browser/cloud placeholder.");
       return;
@@ -4377,7 +4520,7 @@ function App() {
   const viewTitle = {
     dashboard: "Dashboard",
     campaign: "Campaign",
-    hiddenMarket: "Hidden Market",
+    hiddenMarket: "Intelligence",
     pipeline: "Pipeline",
     stats: "Stats",
     activity: "Activity",
@@ -4395,7 +4538,7 @@ function App() {
         </div>
         <button className={view === "dashboard" ? "active nav-btn" : "nav-btn"} onClick={() => setView("dashboard")}><BarChart3 size={18} /> Dashboard</button>
         <button className={view === "campaign" ? "active nav-btn" : "nav-btn"} onClick={() => setView("campaign")}><Target size={18} /> Campaign</button>
-        <button className={view === "hiddenMarket" ? "active nav-btn" : "nav-btn"} onClick={() => setView("hiddenMarket")}><Radar size={18} /> Hidden Market</button>
+        <button className={view === "hiddenMarket" ? "active nav-btn" : "nav-btn"} onClick={() => setView("hiddenMarket")}><Radar size={18} /> Intelligence</button>
         <button className={view === "pipeline" ? "active nav-btn" : "nav-btn"} onClick={() => setView("pipeline")}><KanbanSquare size={18} /> Pipeline</button>
         <button className={view === "stats" ? "active nav-btn" : "nav-btn"} onClick={() => setView("stats")}><TrendingUp size={18} /> Stats</button>
         <button className={view === "activity" ? "active nav-btn" : "nav-btn"} onClick={() => setView("activity")}><NotebookTabs size={18} /> Activity</button>

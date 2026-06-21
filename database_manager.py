@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
@@ -822,6 +823,17 @@ def _update_existing_scraped_job(conn, job_id, job_data, metadata, fingerprint=N
         if value is not None:
             assignments.append(f"{column} = ?")
             params.append(value)
+    scraped_position_text = job_data.get("position_description_text") or job_data.get("pdf_text")
+    if scraped_position_text:
+        # A scraper refresh may discover the linked position-description PDF
+        # after the job was first saved. Attach it to the application workspace,
+        # but never replace a document the user has already uploaded.
+        assignments.append(
+            "position_description_text = CASE "
+            "WHEN NULLIF(position_description_text, '') IS NULL THEN ? "
+            "ELSE position_description_text END"
+        )
+        params.append(scraped_position_text)
     if not assignments:
         assignments = []
     assignments.append("last_seen_at = datetime('now')")
@@ -3120,12 +3132,12 @@ def add_job(job_data, source, profile_id=1, log_callback=None):
     fingerprint = description_fingerprint(job_data.get('description'))
     query = """
         INSERT OR IGNORE INTO jobs 
-        (title, company, location, url, description, source, pdf_text, profile_id,
+        (title, company, location, url, description, source, pdf_text, position_description_text, profile_id,
          date_scraped, last_interaction_at, updated_at, closing_date, contact_person,
          contact_email, contact_phone, salary, closing_date_source, description_fingerprint, advertiser_company,
          actual_company, employer_type, company_confidence, company_intelligence,
          company_research_updated_at, last_seen_at, missing_sweeps) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 0)
     """
     try:
         with get_db_connection() as conn:
@@ -3174,7 +3186,9 @@ def add_job(job_data, source, profile_id=1, log_callback=None):
             params = (
                 job_data.get('title'), job_data.get('company'), job_data.get('location'),
                 normalized_url, job_data.get('description'), source,
-                job_data.get('pdf_text'), profile_id, metadata.get("closing_date"),
+                job_data.get('pdf_text'),
+                job_data.get('position_description_text') or job_data.get('pdf_text'),
+                profile_id, metadata.get("closing_date"),
                 metadata.get("contact_person"), metadata.get("contact_email"),
                 metadata.get("contact_phone"), metadata.get("salary"),
                 metadata.get("closing_date_source"), fingerprint,
@@ -4088,7 +4102,7 @@ def _matched_terms(haystack, terms):
 
 def _salary_numbers(value):
     text = str(value or "").lower().replace(",", "")
-    numbers = [int(match) for match in re.findall(r"\b(\d{2,4})\b", text)]
+    numbers = [int(match) for match in re.findall(r"\b(\d{2,7})\b", text)]
     normalized = []
     for number in numbers:
         if number < 1000 and number >= 80:
@@ -4898,18 +4912,192 @@ def _hidden_market_domain(row):
     return ""
 
 
+def _market_job_intelligence(row):
+    try:
+        return json.loads(row["job_intelligence_json"] or "{}")
+    except (TypeError, ValueError, KeyError):
+        return {}
+
+
+def _market_period(scraped, midpoint):
+    return "current" if str(scraped or "") >= midpoint else "previous"
+
+
+def _market_recency_points(last_seen):
+    try:
+        age = max(0, (datetime.now() - datetime.fromisoformat(str(last_seen).replace("Z", "+00:00").split("+")[0])).days)
+    except (TypeError, ValueError):
+        return 0
+    if age <= 7:
+        return 15
+    if age <= 21:
+        return 11
+    if age <= 45:
+        return 7
+    return 3
+
+
+def _finalise_market_target(entry, target_type, outcome_rates=None):
+    roles = int(entry.get("roles") or entry.get("ic_count") or 0)
+    best = int(entry.get("best_score") or 0)
+    current = int(entry.pop("_current", 0))
+    previous = int(entry.pop("_previous", 0))
+    confidence = entry.get("confidence") or "low"
+    confidence_points = {"high": 15, "medium": 10, "low": 5}.get(confidence, 5)
+    contactable = bool(entry.get("contact_person") or entry.get("contact_email") or entry.get("contact_phone") or entry.get("domain"))
+    outcome_rate = int((outcome_rates or {}).get(target_type, 0))
+    score = round(
+        min(35, best * 0.35)
+        + min(20, roles * 5)
+        + _market_recency_points(entry.get("last_seen"))
+        + confidence_points
+        + (10 if contactable else 0)
+        + (5 if current > previous else 0)
+        + min(10, outcome_rate * 0.1)
+    )
+    entry["opportunity_score"] = max(0, min(100, score))
+    entry["momentum"] = {"current": current, "previous": previous, "delta": current - previous}
+    entry["recommended_action"] = {
+        "recruiter": "Contact the named consultant, reference the strongest recent role, and ask about adjacent unadvertised mandates.",
+        "direct_employer": "Approach the relevant technology leader with evidence of recurring demand before the next role is advertised.",
+        "leadership_gap": "Validate the reporting structure first, then test whether the growing team has an unadvertised leadership need.",
+    }.get(target_type, "Review the evidence and choose a direct next step.")
+    entry["score_reasons"] = [
+        f"Best lane fit {best}%" if best else "No reliable fit score",
+        f"{roles} supporting role{'s' if roles != 1 else ''}",
+        f"{confidence} identity confidence",
+        "Direct contact or domain available" if contactable else "No direct contact captured",
+        f"Momentum {current - previous:+d} vs prior half-window",
+    ]
+    return entry
+
+
+def _market_signal_rows(rows, midpoint):
+    dimensions = {key: {} for key in ("title_families", "skills", "salary_bands", "locations", "work_modes", "sources")}
+    fallback_skills = (
+        "stakeholder management", "vendor management", "cybersecurity", "cloud", "azure", "aws",
+        "service delivery", "change management", "project management", "business analysis",
+        "data governance", "erp", "sap", "leadership", "people management", "itil", "power bi",
+    )
+
+    def bump(dimension, label, period):
+        label = _clean(str(label or ""))
+        if not label or label.lower() in {"unknown", "other"}:
+            return
+        bucket = dimensions[dimension].setdefault(label, {"label": label, "current": 0, "previous": 0})
+        bucket[period] += 1
+
+    def fallback_family(title):
+        value = str(title or "").lower()
+        if _matched_terms(value, CAMPAIGN_LEADERSHIP_TERMS): return "IT leadership"
+        if "business analyst" in value or re.search(r"\bba\b", value): return "business analysis"
+        if any(term in value for term in ("program", "programme", "project", "delivery", "transformation")): return "delivery"
+        if any(term in value for term in ("engineer", "embedded", "firmware", "mechatronic", "electronics")): return "engineering systems"
+        if "product" in value: return "product"
+        if any(term in value for term in ("support", "service desk", "helpdesk")): return "support"
+        return ""
+
+    for row in rows:
+        period = _market_period(row["scraped_at"], midpoint)
+        intel = _market_job_intelligence(row)
+        family = intel.get("role_family") or fallback_family(row["title"])
+        bump("title_families", family, period)
+        skills = list(intel.get("core_skills") or [])[:10]
+        if not skills:
+            description = str(row["description_head"] or "").lower()
+            skills = [skill for skill in fallback_skills if skill in description]
+        for skill in skills:
+            bump("skills", skill, period)
+        bump("salary_bands", campaign_salary_band(row["salary"]), period)
+        bump("locations", row["location"], period)
+        work_mode = intel.get("work_mode")
+        if not work_mode:
+            text = f"{row['location'] or ''} {row['description_head'] or ''}".lower()
+            work_mode = "remote" if "remote" in text else "hybrid" if "hybrid" in text or "work from home" in text else "onsite" if "on-site" in text or "onsite" in text else ""
+        bump("work_modes", work_mode, period)
+        bump("sources", row["source"], period)
+
+    result = {}
+    for dimension, buckets in dimensions.items():
+        items = []
+        for item in buckets.values():
+            item["count"] = item["current"] + item["previous"]
+            item["delta"] = item["current"] - item["previous"]
+            item["trend"] = "rising" if item["delta"] > 0 else "declining" if item["delta"] < 0 else "steady"
+            items.append(item)
+        result[dimension] = sorted(items, key=lambda item: (item["current"], item["count"]), reverse=True)[:12]
+    return result
+
+
+def _hidden_market_outcome_rates(profile_id=None, include_all_profiles=False):
+    leads = list_hidden_market_leads(profile_id, include_all_profiles)
+    totals, positive = Counter(), Counter()
+    for lead in leads:
+        target_type = lead.get("target_type") or "target"
+        totals[target_type] += 1
+        if lead.get("outcome") in {"replied", "meeting", "converted"}:
+            positive[target_type] += 1
+    return {key: round(positive[key] / total * 100) if total else 0 for key, total in totals.items()}
+
+
+def save_market_intelligence_snapshot(profile_id, include_all_profiles, window_days, payload):
+    scope_key = "all" if include_all_profiles else f"profile:{int(profile_id or 1)}"
+    summary = {
+        "generated_at": payload.get("generated_at"),
+        "target_counts": {key: len(payload.get(key) or []) for key in ("recruiters", "direct_employers", "leadership_gaps")},
+        "signals": payload.get("signals") or {},
+    }
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO market_intelligence_snapshots
+                (scope_key, profile_id, window_days, snapshot_date, payload_json)
+            VALUES (?, ?, ?, date('now'), ?)
+            ON CONFLICT(scope_key, window_days, snapshot_date) DO UPDATE SET
+                payload_json = excluded.payload_json, created_at = datetime('now')
+            """,
+            (scope_key, None if include_all_profiles else int(profile_id or 1), int(window_days), json.dumps(summary, ensure_ascii=False)),
+        )
+        conn.commit()
+
+
+def get_market_intelligence_snapshot_history(profile_id, include_all_profiles, window_days, limit=30):
+    scope_key = "all" if include_all_profiles else f"profile:{int(profile_id or 1)}"
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT snapshot_date, payload_json FROM market_intelligence_snapshots
+            WHERE scope_key = ? AND window_days = ?
+            ORDER BY snapshot_date DESC LIMIT ?
+            """,
+            (scope_key, int(window_days), int(limit)),
+        ).fetchall()
+    history = []
+    for row in reversed(rows):
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        history.append({"date": row["snapshot_date"], **(payload.get("target_counts") or {})})
+    return history
+
+
 def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60, limit=12):
+    days = max(14, int(days or 60))
     profile_clause, params = _profile_filter_clause(profile_id, include_all_profiles)
-    since = (datetime.now() - timedelta(days=int(days or 60))).isoformat(timespec="seconds")
+    since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    midpoint = (datetime.now() - timedelta(days=max(7, days // 2))).isoformat(timespec="seconds")
     with get_db_connection() as conn:
         rows = conn.execute(
             f"""
             SELECT jobs.id, jobs.title, jobs.company, jobs.advertiser_company, jobs.actual_company,
                    jobs.employer_type, jobs.match_score, jobs.composite_score, jobs.pipeline_stage,
                    jobs.url, jobs.application_url, jobs.contact_person, jobs.contact_email,
-                   jobs.contact_phone, jobs.date_scraped, jobs.location,
+                   jobs.contact_phone, COALESCE(jobs.date_scraped, jobs.updated_at) AS scraped_at,
+                   jobs.location, jobs.salary, jobs.source, postings.job_intelligence_json,
                    SUBSTR(LOWER(COALESCE(jobs.description, '')), 1, 4000) AS description_head
             FROM jobs
+            LEFT JOIN job_postings AS postings ON postings.url = jobs.url
             WHERE COALESCE(jobs.date_scraped, jobs.updated_at) >= ?
             {profile_clause}
             """,
@@ -4919,6 +5107,7 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
     recruiters = {}
     employers = {}
     employer_roles = {}
+    outcome_rates = _hidden_market_outcome_rates(profile_id, include_all_profiles)
     for row in rows:
         title = str(row["title"] or "")
         title_lower = title.lower()
@@ -4926,7 +5115,8 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
         leadership_title = bool(_matched_terms(title_lower, CAMPAIGN_LEADERSHIP_TERMS))
         tech_title = bool(_role_tokens(title) & BROAD_RELEVANT_TITLES)
         relevant = score >= 50 or leadership_title
-        scraped = str(row["date_scraped"] or "")
+        scraped = str(row["scraped_at"] or "")
+        period = _market_period(scraped, midpoint)
 
         # Cross-check identity against everything the advert offers, not just
         # the scrape-time classifier: agency-sounding names and recruiter
@@ -4959,48 +5149,78 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
         # cold application every time.
         if is_recruiter_row and relevant:
             name = advertiser_name
-            entry = recruiters.setdefault(_company_key(name), {
+            recruiter_key = f"domain:{domain}" if domain and _agency_like_name(name) else _company_key(name)
+            entry = recruiters.setdefault(recruiter_key, {
                 "name": name, "roles": 0, "best_score": 0, "last_seen": "",
-                "contact_person": "", "contact_email": "", "contact_phone": "", "sample_titles": [],
+                "entity_key": recruiter_key,
+                "contact_person": "", "contact_email": "", "contact_phone": "", "domain": domain,
+                "sample_titles": [], "evidence": [], "classification_reasons": [], "counter_evidence": [],
+                "confidence": "medium", "aliases": [], "_current": 0, "_previous": 0,
             })
             entry["roles"] += 1
+            entry[f"_{period}"] += 1
             entry["best_score"] = max(entry["best_score"], score)
             entry["last_seen"] = max(entry["last_seen"], scraped)
+            if name not in entry["aliases"]:
+                entry["aliases"].append(name)
+            reasons = []
+            if row["employer_type"] == "recruiter": reasons.append("scrape-time recruiter classification")
+            if _agency_like_name(name): reasons.append("agency-like identity")
+            if recruiter_language: reasons.append("recruiter language in advertisement")
+            entry["classification_reasons"] = sorted(set(entry["classification_reasons"] + reasons))
+            if domain_confirms:
+                entry["counter_evidence"] = sorted(set(entry["counter_evidence"] + ["contact domain resembles the named organisation"]))
+            entry["confidence"] = "high" if domain and reasons else "medium" if len(reasons) >= 2 else "low"
             for field in ("contact_person", "contact_email", "contact_phone"):
                 if not entry[field] and row[field]:
                     entry[field] = _clean(str(row[field]))
             if title and title not in entry["sample_titles"]:
                 entry["sample_titles"] = (entry["sample_titles"] + [title])[:3]
+            entry["evidence"].append({"job_id": row["id"], "title": title, "company": row["company"], "score": score, "seen": scraped, "url": row["url"], "location": row["location"], "source": row["source"]})
             continue
 
         # Direct-employer watchlist: only identities the advert itself
         # corroborates. Organisations that have hired this role family hire
         # it again — and usually try the hidden channels first.
-        employer_key = _company_key(employer_name)
+        employer_key = f"domain:{domain}" if domain_confirms else _company_key(employer_name)
         if verified_direct and employer_key and employer_key != "unknown":
             if relevant:
                 entry = employers.setdefault(employer_key, {
                     "name": employer_name, "roles": 0, "best_score": 0, "last_seen": "",
+                    "entity_key": employer_key,
                     "domain": "", "sample_titles": [], "locations": [], "verified": "ad signals",
+                    "evidence": [], "classification_reasons": [], "counter_evidence": [], "aliases": [],
+                    "confidence": "medium", "_current": 0, "_previous": 0,
                 })
                 entry["roles"] += 1
+                entry[f"_{period}"] += 1
                 entry["best_score"] = max(entry["best_score"], score)
                 entry["last_seen"] = max(entry["last_seen"], scraped)
                 entry["domain"] = entry["domain"] or domain
                 if domain_confirms:
                     entry["verified"] = "contact domain"
+                    entry["confidence"] = "high"
+                    entry["classification_reasons"] = sorted(set(entry["classification_reasons"] + ["contact or application domain corroborates employer identity"]))
+                else:
+                    entry["classification_reasons"] = sorted(set(entry["classification_reasons"] + ["direct-employer advertisement signals"]))
+                    entry["counter_evidence"] = sorted(set(entry["counter_evidence"] + ["no corroborating organisation domain captured"]))
+                if employer_name not in entry["aliases"]:
+                    entry["aliases"].append(employer_name)
                 if title and title not in entry["sample_titles"]:
                     entry["sample_titles"] = (entry["sample_titles"] + [title])[:3]
                 location = _clean(str(row["location"] or ""))
                 if location and location not in entry["locations"]:
                     entry["locations"] = (entry["locations"] + [location])[:2]
+                entry["evidence"].append({"job_id": row["id"], "title": title, "company": row["company"], "score": score, "seen": scraped, "url": row["url"], "location": row["location"], "source": row["source"]})
 
             # Leadership-gap detection input: track IC-vs-leadership postings
             # per verified direct employer regardless of personal fit score.
             if tech_title:
                 bucket = employer_roles.setdefault(employer_key, {
                     "name": employer_name, "ic_titles": [], "lead_count": 0,
-                    "last_seen": "", "domain": "",
+                    "entity_key": employer_key,
+                    "last_seen": "", "domain": "", "evidence": [], "sources": [],
+                    "_current": 0, "_previous": 0,
                 })
                 bucket["last_seen"] = max(bucket["last_seen"], scraped)
                 bucket["domain"] = bucket["domain"] or domain
@@ -5008,26 +5228,52 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
                     bucket["lead_count"] += 1
                 elif title not in bucket["ic_titles"]:
                     bucket["ic_titles"].append(title)
+                    bucket[f"_{period}"] += 1
+                    bucket["evidence"].append({"job_id": row["id"], "title": title, "company": row["company"], "score": score, "seen": scraped, "url": row["url"], "location": row["location"], "source": row["source"]})
+                    if row["source"] and row["source"] not in bucket["sources"]:
+                        bucket["sources"].append(row["source"])
 
     leadership_gaps = [
         {
             "name": bucket["name"],
+            "entity_key": bucket["entity_key"],
             "ic_count": len(bucket["ic_titles"]),
             "sample_titles": bucket["ic_titles"][:4],
             "last_seen": bucket["last_seen"],
             "domain": bucket["domain"],
+            "best_score": max((item.get("score") or 0 for item in bucket["evidence"]), default=0),
+            "evidence": bucket["evidence"],
+            "confidence": "high" if len(bucket["ic_titles"]) >= 4 and bucket["domain"] and len(bucket["sources"]) >= 2 else "medium" if bucket["domain"] else "low",
+            "classification_reasons": [f"{len(bucket['ic_titles'])} technical individual-contributor roles observed", "no leadership title observed in the selected window"],
+            "counter_evidence": (["Evidence comes from only one source"] if len(bucket["sources"]) < 2 else []) + ["Absence of an advertised leader does not prove an unadvertised vacancy"],
+            "_current": bucket["_current"], "_previous": bucket["_previous"],
         }
         for bucket in employer_roles.values()
         if len(bucket["ic_titles"]) >= 2 and bucket["lead_count"] == 0
     ]
 
-    return {
-        "window_days": int(days or 60),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "recruiters": sorted(recruiters.values(), key=lambda r: (r["roles"], r["last_seen"]), reverse=True)[:limit],
-        "direct_employers": sorted(employers.values(), key=lambda e: (e["best_score"], e["roles"]), reverse=True)[:limit],
-        "leadership_gaps": sorted(leadership_gaps, key=lambda g: (g["ic_count"], g["last_seen"]), reverse=True)[:limit],
+    recruiter_items = [_finalise_market_target(item, "recruiter", outcome_rates) for item in recruiters.values()]
+    employer_items = [_finalise_market_target(item, "direct_employer", outcome_rates) for item in employers.values()]
+    gap_items = [_finalise_market_target(item, "leadership_gap", outcome_rates) for item in leadership_gaps]
+    row_count = len(rows)
+    coverage = {
+        "structured_role_data": round(sum(1 for row in rows if _market_job_intelligence(row)) / row_count * 100) if row_count else 0,
+        "salary": round(sum(1 for row in rows if row["salary"]) / row_count * 100) if row_count else 0,
+        "contact": round(sum(1 for row in rows if row["contact_person"] or row["contact_email"] or row["contact_phone"]) / row_count * 100) if row_count else 0,
     }
+    payload = {
+        "window_days": days,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "freshness": {"as_of": datetime.now().isoformat(timespec="seconds"), "jobs_considered": row_count, "window_start": since, "comparison_split": midpoint, "coverage": coverage},
+        "signals": _market_signal_rows(rows, midpoint),
+        "outcome_rates": outcome_rates,
+        "recruiters": sorted(recruiter_items, key=lambda item: (item["opportunity_score"], item["last_seen"]), reverse=True)[:limit],
+        "direct_employers": sorted(employer_items, key=lambda item: (item["opportunity_score"], item["last_seen"]), reverse=True)[:limit],
+        "leadership_gaps": sorted(gap_items, key=lambda item: (item["opportunity_score"], item["last_seen"]), reverse=True)[:limit],
+    }
+    save_market_intelligence_snapshot(profile_id, include_all_profiles, days, payload)
+    payload["snapshot_history"] = get_market_intelligence_snapshot_history(profile_id, include_all_profiles, days)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -5040,8 +5286,66 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
 HIDDEN_MARKET_STATUSES = ("todo", "contacted", "awaiting", "done")
 
 
-def hidden_market_target_key(target_type, name):
-    return f"{target_type}:{_company_key(name)}"
+def hidden_market_target_key(target_type, name, entity_key=None):
+    identity = str(entity_key or "").strip().lower() or _company_key(name)
+    return f"{target_type}:{identity}"
+
+
+def _hidden_market_strategy_row(row):
+    if not row:
+        return None
+    data = dict(row)
+    try:
+        data["strategy"] = json.loads(data.pop("strategy_json") or "{}")
+    except (TypeError, ValueError):
+        data["strategy"] = {}
+    return data
+
+
+def get_hidden_market_strategy(profile_id, target_type, target_key):
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM hidden_market_strategies WHERE profile_id = ? AND target_type = ? AND target_key = ?",
+            (int(profile_id or 1), target_type, target_key),
+        ).fetchone()
+    return _hidden_market_strategy_row(row)
+
+
+def list_hidden_market_strategies(profile_id):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM hidden_market_strategies WHERE profile_id = ? ORDER BY updated_at DESC",
+            (int(profile_id or 1),),
+        ).fetchall()
+    return [_hidden_market_strategy_row(row) for row in rows]
+
+
+def save_hidden_market_strategy(profile_id, target_type, target_name, strategy, provider="local", target_key=None):
+    target_key = target_key or hidden_market_target_key(target_type, target_name)
+    payload = json.dumps(strategy or {}, ensure_ascii=False)
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO hidden_market_strategies
+                (profile_id, target_type, target_key, target_name, strategy_json, provider)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, target_type, target_key) DO UPDATE SET
+                target_name = excluded.target_name,
+                strategy_json = excluded.strategy_json,
+                provider = excluded.provider,
+                updated_at = datetime('now')
+            """,
+            (int(profile_id or 1), target_type, target_key, target_name, payload, provider),
+        )
+        conn.execute(
+            """
+            UPDATE hidden_market_leads SET strategy_json = ?, updated_at = datetime('now')
+            WHERE profile_id = ? AND target_type = ? AND target_key = ?
+            """,
+            (payload, int(profile_id or 1), target_type, target_key),
+        )
+        conn.commit()
+    return get_hidden_market_strategy(profile_id, target_type, target_key)
 
 
 def _hidden_market_lead_to_dict(row):
@@ -5050,6 +5354,14 @@ def _hidden_market_lead_to_dict(row):
         lead["touchpoints"] = json.loads(row["touchpoints"]) if row["touchpoints"] else []
     except (TypeError, ValueError):
         lead["touchpoints"] = []
+    try:
+        lead["strategy"] = json.loads(row["strategy_json"] or "{}") if row["strategy_json"] else {}
+    except (TypeError, ValueError, IndexError):
+        lead["strategy"] = {}
+    try:
+        lead["score_reasons"] = json.loads(row["score_reasons_json"] or "[]") if row["score_reasons_json"] else []
+    except (TypeError, ValueError, IndexError):
+        lead["score_reasons"] = []
     return lead
 
 
@@ -5078,12 +5390,19 @@ def list_hidden_market_leads(profile_id=None, include_all_profiles=False):
 
 
 def add_hidden_market_lead(profile_id, target_type, target_name, action=None,
-                           contact_person=None, contact_email=None, contact_phone=None, domain=None):
+                           contact_person=None, contact_email=None, contact_phone=None, domain=None,
+                           outreach_channel=None, strategy=None, opportunity_score=None, score_reasons=None,
+                           target_key_override=None):
     """Start tracking a hidden-market target. Idempotent on (profile, type, key):
     re-tracking an existing target returns the existing lead untouched."""
     target_type = str(target_type or "").strip() or "target"
     target_name = _clean(str(target_name or "")) or "Unknown target"
-    target_key = hidden_market_target_key(target_type, target_name)
+    target_key = target_key_override or hidden_market_target_key(target_type, target_name)
+    saved_strategy = get_hidden_market_strategy(profile_id, target_type, target_key)
+    if not strategy and saved_strategy:
+        strategy = saved_strategy.get("strategy") or {}
+    if not outreach_channel and strategy:
+        outreach_channel = strategy.get("recommended_channel")
     now = datetime.now().isoformat(timespec="seconds")
     with get_db_connection() as conn:
         existing = conn.execute(
@@ -5096,12 +5415,17 @@ def add_hidden_market_lead(profile_id, target_type, target_name, action=None,
             """
             INSERT INTO hidden_market_leads
                 (profile_id, target_type, target_key, target_name, action, status,
-                 contact_person, contact_email, contact_phone, domain, touchpoints, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, '[]', ?, ?)
+                 contact_person, contact_email, contact_phone, domain, outreach_channel,
+                 strategy_json, opportunity_score, score_reasons_json, touchpoints, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)
             """,
             (profile_id, target_type, target_key, target_name, _clean(str(action or "")) or None,
              _clean(str(contact_person or "")) or None, _clean(str(contact_email or "")) or None,
-             _clean(str(contact_phone or "")) or None, _clean(str(domain or "")) or None, now, now),
+             _clean(str(contact_phone or "")) or None, _clean(str(domain or "")) or None,
+             _clean(str(outreach_channel or "")) or None,
+             json.dumps(strategy or {}, ensure_ascii=False) if strategy else None,
+             int(opportunity_score or 0) or None,
+             json.dumps(score_reasons or [], ensure_ascii=False), now, now),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM hidden_market_leads WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -5110,7 +5434,7 @@ def add_hidden_market_lead(profile_id, target_type, target_name, action=None,
 
 def update_hidden_market_lead(lead_id, updates):
     allowed = {"action", "status", "outcome", "notes", "next_step_date",
-               "contact_person", "contact_email", "contact_phone", "domain"}
+               "contact_person", "contact_email", "contact_phone", "domain", "outreach_channel", "strategy_json"}
     fields = {key: value for key, value in (updates or {}).items() if key in allowed}
     if "status" in fields and fields["status"] not in HIDDEN_MARKET_STATUSES:
         raise ValueError(f"Invalid hidden-market status: {fields['status']}")
@@ -5246,6 +5570,17 @@ def get_hidden_market_stats(profile_id=None, include_all_profiles=False, days=7)
     due_followups = 0
     current = {"new_leads": 0, "touchpoints": 0, "conversions": 0}
     previous = {"new_leads": 0, "touchpoints": 0, "conversions": 0}
+    type_groups = {}
+    channel_groups = {}
+    score_groups = {}
+
+    def outcome_group(bucket, key, lead, contacted, positive, converted):
+        item = bucket.setdefault(key, {"label": key, "tracked": 0, "contacted": 0, "responses": 0, "meetings": 0, "converted": 0})
+        item["tracked"] += 1
+        item["contacted"] += 1 if contacted else 0
+        item["responses"] += 1 if positive else 0
+        item["meetings"] += 1 if lead.get("outcome") in {"meeting", "converted"} else 0
+        item["converted"] += 1 if converted else 0
 
     def bump(bucket_current, bucket_previous, timestamp, key):
         if not timestamp:
@@ -5258,13 +5593,21 @@ def get_hidden_market_stats(profile_id=None, include_all_profiles=False, days=7)
     for lead in leads:
         status = lead.get("status") or "todo"
         status_counts[status] = status_counts.get(status, 0) + 1
-        if status != "todo" or lead.get("touchpoints"):
+        contacted = bool(status != "todo" or lead.get("touchpoints"))
+        if contacted:
             contacted_plus += 1
         outcome = lead.get("outcome") or ""
-        if outcome in replied_outcomes:
+        positive = outcome in replied_outcomes
+        if positive:
             replied_plus += 1
-        if outcome == "converted":
+        converted = outcome == "converted"
+        if converted:
             converted_total += 1
+        score = int(lead.get("opportunity_score") or 0)
+        score_band = "70+" if score >= 70 else "50-69" if score >= 50 else "<50 / unscored"
+        outcome_group(type_groups, (lead.get("target_type") or "target").replace("_", " ").title(), lead, contacted, positive, converted)
+        outcome_group(channel_groups, (lead.get("outreach_channel") or "Unspecified").title(), lead, contacted, positive, converted)
+        outcome_group(score_groups, score_band, lead, contacted, positive, converted)
         next_step = lead.get("next_step_date")
         if next_step and status != "done" and next_step <= today:
             due_followups += 1
@@ -5297,6 +5640,22 @@ def get_hidden_market_stats(profile_id=None, include_all_profiles=False, days=7)
     if converted_total:
         reads.append(f"{converted_total} lead{'s' if converted_total != 1 else ''} converted to applications.")
 
+    def final_groups(groups):
+        items = []
+        for item in groups.values():
+            item["response_rate"] = round(item["responses"] / item["contacted"] * 100) if item["contacted"] else 0
+            item["conversion_rate"] = round(item["converted"] / item["tracked"] * 100) if item["tracked"] else 0
+            items.append(item)
+        return sorted(items, key=lambda item: item["tracked"], reverse=True)
+
+    type_performance = final_groups(type_groups)
+    channel_performance = final_groups(channel_groups)
+    score_calibration = final_groups(score_groups)
+    calibrated = [item for item in score_calibration if item["contacted"] >= 3]
+    if len(calibrated) >= 2:
+        best_band = max(calibrated, key=lambda item: (item["response_rate"], item["conversion_rate"]))
+        reads.append(f"The {best_band['label']} opportunity band currently produces the strongest response signal ({best_band['response_rate']}%).")
+
     return {
         "window_days": days,
         "funnel": {
@@ -5313,6 +5672,9 @@ def get_hidden_market_stats(profile_id=None, include_all_profiles=False, days=7)
         "market_mix": market_mix,
         "current": current,
         "previous": previous,
+        "type_performance": type_performance,
+        "channel_performance": channel_performance,
+        "score_calibration": score_calibration,
         "reads": reads,
     }
 

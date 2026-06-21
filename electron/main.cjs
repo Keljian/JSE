@@ -503,6 +503,15 @@ ipcMain.handle("dialog:template", async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle("dialog:document", async (_event, title = "Select document") => {
+  const result = await dialog.showOpenDialog({
+    title,
+    filters: [{ name: "Documents", extensions: ["docx", "doc", "pdf", "txt", "md"] }],
+    properties: ["openFile"]
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 ipcMain.handle("dialog:scraperPlugin", async () => {
   const result = await dialog.showOpenDialog({
     title: "Select scraper plugin folder or manifest",

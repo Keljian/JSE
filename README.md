@@ -37,6 +37,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 - [Local LLM Setup](#local-llm-setup)
 - [Cloud AI Setup](#cloud-ai-setup)
 - [Scraper Setup](#scraper-setup)
+- [Intelligence Workspace](#intelligence-workspace)
 - [Data Folders](#data-folders)
 - [Privacy & Data](#privacy--data)
 - [Typical Workflow](#typical-workflow)
@@ -78,6 +79,8 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 
 - **Hidden-market analysis.** See which recruiters are posting the matching jobs in your area, where your resume has gaps against demand, and which companies are hiring most heavily.
 - **Current-market analysis.** A rolling overview of how many available jobs match you over the last week/month, how many applications are out there, and how your own applications are progressing (cut-through rates).
+- **Explainable opportunity ranking.** Recruiters, employers, and possible leadership gaps are ranked using lane fit, recurrence, recency, momentum, identity confidence, contactability, and observed outreach outcomes, with source jobs retained for audit.
+- **Durable outreach intelligence.** Structured local-LLM strategies, channels, opening messages, evidence, questions, follow-ups, and cautions are saved locally with each target.
 
 ### By design
 
@@ -285,6 +288,37 @@ installed as local data-directory overrides, leaving the shipped plugin source
 untouched and retaining a private local backup for rollback.
 
 For the full plugin contract and manual build instructions, see `SCRAPER_PLUGIN.md`.
+
+---
+
+## Intelligence Workspace
+
+Open **Intelligence** from the main navigation. It is divided into four views:
+
+- **Market Signals** compares the current and prior half of the selected 30,
+  60, or 90-day window across title families, skills, salary bands, locations,
+  work modes, and sources. Daily local snapshots retain a longer trend history.
+- **Targets** ranks recruiter, direct-employer, and possible leadership-gap
+  opportunities. Expand a target's evidence to inspect the contributing jobs,
+  classification reasons, counter-evidence, confidence, freshness, and score
+  explanation.
+- **Outreach** tracks contacts separately from applications, including channel,
+  status, notes, touchpoints, next-step dates, saved strategy, and conversion to
+  the application pipeline.
+- **Outcomes** compares response, meeting, and conversion performance by target
+  type, outreach channel, and opportunity-score band. JSE uses these observed
+  outcomes to calibrate future target rankings.
+
+**Build strategy** uses the configured local model to create a structured, editable
+outreach strategy: positioning, contact persona, recommended channel, opening
+message, evidence to reference, questions, follow-up sequence, and cautions.
+Strategies and market snapshots remain in the local JSE data store. JSE shows
+coverage percentages because sparse salary, contact, or structured-role data
+should reduce confidence rather than masquerade as certainty.
+
+Leadership-gap targets are hypotheses, not confirmed vacancies. Their cards
+show counter-evidence and confidence; validate the reporting structure before
+making a speculative approach.
 
 ---
 

@@ -201,7 +201,10 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1):
             'location': job_info.get('location', "Victoria"),
             'url': job_url, 
             'description': description, 
-            'pdf_text': pdf_text_content.strip() if pdf_text_content else ""
+            'pdf_text': pdf_text_content.strip() if pdf_text_content else "",
+            # Keep the legacy analysis field and also expose grabbed PDF text
+            # where the application workspace expects a position description.
+            'position_description_text': pdf_text_content.strip() if pdf_text_content else ""
         }
 
         if description and len(description.strip()) >= 50:
