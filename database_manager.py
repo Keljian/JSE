@@ -5082,6 +5082,16 @@ def _hidden_market_outcome_rates(profile_id=None, include_all_profiles=False):
     return {key: round(positive[key] / total * 100) if total else 0 for key, total in totals.items()}
 
 
+def _market_evidence(row, title, score, scraped):
+    return {
+        "job_id": row["id"], "title": title, "company": row["company"], "score": score,
+        "seen": scraped, "url": row["url"], "application_url": row["application_url"],
+        "location": row["location"], "source": row["source"],
+        "contact_person": row["contact_person"], "contact_email": row["contact_email"],
+        "contact_phone": row["contact_phone"],
+    }
+
+
 def save_market_intelligence_snapshot(profile_id, include_all_profiles, window_days, payload):
     scope_key = "all" if include_all_profiles else f"profile:{int(profile_id or 1)}"
     summary = {
@@ -5218,7 +5228,7 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
                     entry[field] = _clean(str(row[field]))
             if title and title not in entry["sample_titles"]:
                 entry["sample_titles"] = (entry["sample_titles"] + [title])[:3]
-            entry["evidence"].append({"job_id": row["id"], "title": title, "company": row["company"], "score": score, "seen": scraped, "url": row["url"], "location": row["location"], "source": row["source"]})
+            entry["evidence"].append(_market_evidence(row, title, score, scraped))
             continue
 
         # Direct-employer watchlist: only identities the advert itself
@@ -5253,7 +5263,7 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
                 location = _clean(str(row["location"] or ""))
                 if location and location not in entry["locations"]:
                     entry["locations"] = (entry["locations"] + [location])[:2]
-                entry["evidence"].append({"job_id": row["id"], "title": title, "company": row["company"], "score": score, "seen": scraped, "url": row["url"], "location": row["location"], "source": row["source"]})
+                entry["evidence"].append(_market_evidence(row, title, score, scraped))
 
             # Leadership-gap detection input: track IC-vs-leadership postings
             # per verified direct employer regardless of personal fit score.
@@ -5271,7 +5281,7 @@ def get_hidden_market_intel(profile_id=None, include_all_profiles=False, days=60
                 elif title not in bucket["ic_titles"]:
                     bucket["ic_titles"].append(title)
                     bucket[f"_{period}"] += 1
-                    bucket["evidence"].append({"job_id": row["id"], "title": title, "company": row["company"], "score": score, "seen": scraped, "url": row["url"], "location": row["location"], "source": row["source"]})
+                    bucket["evidence"].append(_market_evidence(row, title, score, scraped))
                     if row["source"] and row["source"] not in bucket["sources"]:
                         bucket["sources"].append(row["source"])
 
@@ -5412,6 +5422,73 @@ def list_hidden_market_strategies(profile_id):
             (int(profile_id or 1),),
         ).fetchall()
     return [_hidden_market_strategy_row(row) for row in rows]
+
+
+def _contact_research_row(row):
+    if not row:
+        return None
+    data = dict(row)
+    try:
+        data["research"] = json.loads(data.pop("research_json") or "{}")
+    except (TypeError, ValueError):
+        data["research"] = {}
+    data["research"]["selected_candidate_id"] = data.get("selected_candidate_id")
+    if data.get("selected_candidate_id"):
+        data["research"]["requires_selection"] = False
+    return data
+
+
+def get_hidden_market_contact_research(profile_id, target_type, target_key):
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM hidden_market_contact_research WHERE profile_id = ? AND target_type = ? AND target_key = ?",
+            (int(profile_id or 1), target_type, target_key),
+        ).fetchone()
+    return _contact_research_row(row)
+
+
+def list_hidden_market_contact_research(profile_id):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM hidden_market_contact_research WHERE profile_id = ? ORDER BY researched_at DESC",
+            (int(profile_id or 1),),
+        ).fetchall()
+    return [_contact_research_row(row) for row in rows]
+
+
+def save_hidden_market_contact_research(profile_id, target_type, target_key, target_name, research):
+    research = dict(research or {})
+    selected = research.get("selected_candidate_id")
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO hidden_market_contact_research
+                (profile_id, target_type, target_key, target_name, research_json, selected_candidate_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, target_type, target_key) DO UPDATE SET
+                target_name = excluded.target_name,
+                research_json = excluded.research_json,
+                selected_candidate_id = excluded.selected_candidate_id,
+                researched_at = datetime('now'), updated_at = datetime('now')
+            """,
+            (int(profile_id or 1), target_type, target_key, target_name, json.dumps(research, ensure_ascii=False), selected),
+        )
+        conn.commit()
+    return get_hidden_market_contact_research(profile_id, target_type, target_key)
+
+
+def select_hidden_market_contact(profile_id, target_type, target_key, candidate_id):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE hidden_market_contact_research
+            SET selected_candidate_id = ?, updated_at = datetime('now')
+            WHERE profile_id = ? AND target_type = ? AND target_key = ?
+            """,
+            (candidate_id, int(profile_id or 1), target_type, target_key),
+        )
+        conn.commit()
+    return get_hidden_market_contact_research(profile_id, target_type, target_key)
 
 
 def save_hidden_market_strategy(profile_id, target_type, target_name, strategy, provider="local", target_key=None):

@@ -89,7 +89,10 @@ includes:
   auditable source-job evidence and confidence, ranks targets with explainable
   opportunity scores, stores structured local-LLM outreach strategies and daily
   market snapshots, learns from response/meeting/conversion outcomes, and can
-  convert a successful lead into an applied job.
+  convert a successful lead into an applied job. Building a strategy first
+  reconciles ad contacts with publicly indexed organisation and professional
+  profile sources, preserves provenance, and pauses for user selection when a
+  person's identity is ambiguous.
 - Pipeline board with job cards, scores, priorities, due dates, source badges,
   and drag/drop stage movement.
 - Search, manual-job, analysis, cleanup, and confirmation modals.

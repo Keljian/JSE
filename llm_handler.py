@@ -3016,7 +3016,7 @@ def _hidden_market_strategy_text_legacy(target, lane_context="", settings=None):
     return (text or "").strip()
 
 
-def hidden_market_strategy(target, lane_context="", settings=None):
+def hidden_market_strategy(target, lane_context="", settings=None, contact_research=None):
     """Generate a structured, durable, evidence-grounded outreach strategy."""
     target = target or {}
     target_type = target.get("target_type") or "target"
@@ -3041,12 +3041,28 @@ def hidden_market_strategy(target, lane_context="", settings=None):
     )
     if contact:
         facts.append(f"Known contact: {contact}")
+    contact_research = contact_research or {}
+    selected_id = contact_research.get("selected_candidate_id")
+    selected = next((item for item in contact_research.get("candidates", []) if item.get("candidate_id") == selected_id), None)
+    if selected:
+        facts.extend([
+            f"Selected person: {selected.get('name') or 'Unknown'}",
+            f"Selected person's current role: {selected.get('role') or 'Not confirmed'}",
+            f"Selected person's organisation: {selected.get('organisation') or target.get('name') or ''}",
+            f"Selected person's email: {selected.get('email') or 'Not confirmed'}",
+            f"Selected person's phone: {selected.get('phone') or 'Not confirmed'}",
+            f"Selected person's public profile: {selected.get('profile_url') or 'Not found'}",
+            f"Contact confidence: {selected.get('confidence') or 'unknown'} ({selected.get('confidence_score') or 0}/100)",
+            "Contact source URLs: " + "; ".join(source.get("url") or "" for source in selected.get("sources", []) if source.get("url")),
+            "Contact conflicts: " + ("; ".join(selected.get("conflicts") or []) or "None recorded"),
+        ])
     messages = [
         {
             "role": "system",
             "content": (
                 "You are a pragmatic Australian hidden-job-market outreach strategist. "
-                "Use only supplied evidence. Never invent people, relationships, vacancies, or company facts. "
+                "Use only supplied evidence. Address the selected person by name only when one is explicitly supplied. "
+                "Never invent people, job titles, relationships, vacancies, or company facts. "
                 "Return only one valid JSON object with the requested keys."
             ),
         },

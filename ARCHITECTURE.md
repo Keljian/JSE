@@ -212,18 +212,26 @@ flowchart LR
     Jobs["Jobs and structured role intelligence"] --> Signals["Market signals and period comparison"]
     Jobs --> Targets["Resolved and ranked targets"]
     Targets --> Evidence["Source jobs, confidence, reasons, cautions"]
-    Targets --> Strategy["Structured local-LLM outreach strategy"]
+    Targets --> Contacts["Public contact enrichment and identity resolution"]
+    Contacts --> Review["Confidence, provenance, conflicts, user selection"]
+    Review --> Strategy["Structured local-LLM outreach strategy"]
     Strategy --> Leads["Outreach lifecycle and touchpoints"]
     Leads --> Outcomes["Response, meeting, conversion calibration"]
     Outcomes --> Targets
     Signals --> Snapshots["Daily local market snapshots"]
 ```
 
-Durable state lives in `hidden_market_leads`,
-`hidden_market_strategies`, and `market_intelligence_snapshots`. Strategies and
+Durable state lives in `hidden_market_leads`, `hidden_market_strategies`,
+`hidden_market_contact_research`, and `market_intelligence_snapshots`. Strategies and
 snapshots contain no cloud requirement; the configured local model is used for
 AI angles, while deterministic aggregation and fallback skill/work-mode
 extraction keep the workspace useful without it.
+
+Contact enrichment is implemented in `contact_research.py`. It reconciles
+contacts found in source ads, uses public search metadata and organisation pages,
+stores every source URL and conflict, and requires explicit selection when the
+identity remains ambiguous. It never logs into or scrapes authenticated LinkedIn
+pages. Cached research is refreshed after seven days.
 
 ### 6. Application Document Generation
 

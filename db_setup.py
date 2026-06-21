@@ -846,6 +846,22 @@ def setup_database():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hidden_market_contact_research (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL,
+            target_type TEXT NOT NULL,
+            target_key TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            research_json TEXT NOT NULL,
+            selected_candidate_id TEXT,
+            researched_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(profile_id, target_type, target_key),
+            FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+        )
+    ''')
+
     # Migrations for tables created above. These must run AFTER the CREATE TABLE
     # statements: on a fresh database the ALTERs would otherwise silently no-op
     # (table missing) and the fragment tables would be created without the
@@ -904,6 +920,7 @@ def setup_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_hidden_market_leads_profile_status ON hidden_market_leads(profile_id, status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_hidden_market_strategies_profile ON hidden_market_strategies(profile_id, target_type)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_market_intel_snapshots_scope ON market_intelligence_snapshots(scope_key, window_days, snapshot_date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_hidden_market_contact_research_profile ON hidden_market_contact_research(profile_id, target_type)")
 
     # Create default "General" profile if it doesn't exist
     cursor.execute("SELECT COUNT(*) FROM profiles")

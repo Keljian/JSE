@@ -1664,7 +1664,30 @@ function IntelligenceStrategy({ strategy }) {
   );
 }
 
-function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack, onStrategy, strategy, strategyBusy, target, onOpenJob }) {
+function IntelligenceContactResearch({ research, onSelect, busy }) {
+  if (!research || !Object.keys(research).length) return null;
+  const candidates = research.candidates || [];
+  return (
+    <section className={`contact-research ${research.requires_selection ? "needs-selection" : ""}`}>
+      <header><strong>Contact research</strong><span>{research.public_results_checked || 0} public result{research.public_results_checked === 1 ? "" : "s"} checked</span></header>
+      {(research.conflicts || []).map((conflict) => <p className="contact-conflict" key={conflict}><AlertTriangle size={13} /> {conflict}</p>)}
+      {research.requires_selection ? <p className="contact-prompt">Choose the person JSE should address. Strategy generation is paused until the identity conflict is resolved.</p> : null}
+      <div className="contact-candidates">
+        {candidates.map((candidate) => (
+          <label key={candidate.candidate_id} className={research.selected_candidate_id === candidate.candidate_id ? "selected" : ""}>
+            <input type="radio" name={`contact-${research.target_name}`} checked={research.selected_candidate_id === candidate.candidate_id} disabled={busy} onChange={() => onSelect(candidate.candidate_id)} />
+            <span><strong>{candidate.name}</strong><small>{candidate.role || "Role not confirmed"} · {candidate.confidence} confidence ({candidate.confidence_score})</small><small>{[candidate.email, candidate.phone].filter(Boolean).join(" · ") || "No direct details confirmed"}</small></span>
+            {candidate.profile_url ? <button type="button" className="link-button" onClick={(event) => { event.preventDefault(); window.jobAssistant.openExternal(candidate.profile_url); }}><ExternalLink size={13} /> Profile</button> : null}
+          </label>
+        ))}
+      </div>
+      {(research.warnings || []).map((warning) => <small className="contact-warning" key={warning}>{warning}</small>)}
+      <small>{research.research_policy}</small>
+    </section>
+  );
+}
+
+function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack, onStrategy, strategy, strategyBusy, target, onOpenJob, contactResearch, onSelectContact }) {
   return (
     <article className="hidden-target">
       <div>
@@ -1702,6 +1725,7 @@ function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack
           ) : null}
         </div>
       ) : null}
+      <IntelligenceContactResearch research={contactResearch} onSelect={onSelectContact} busy={strategyBusy} />
       <IntelligenceStrategy strategy={strategy} />
     </article>
   );
@@ -1886,9 +1910,10 @@ function HiddenMarketLeadCard({ lead, onUpdate, onTouch, onConvert, onDelete, on
   );
 }
 
-function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack, onStrategy, onLeadUpdate, onTouch, onConvert, onDeleteLead, onOpenJob }) {
+function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack, onStrategy, onContactSelect, onLeadUpdate, onTouch, onConvert, onDeleteLead, onOpenJob }) {
   const [section, setSection] = useState("signals");
   const [strategies, setStrategies] = useState({});
+  const [contactResearch, setContactResearch] = useState({});
   const [strategyBusy, setStrategyBusy] = useState("");
   const intel = data?.intel || {};
   const overview = data?.overview || {};
@@ -1900,8 +1925,21 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
     const key = target.target_key || target.name;
     setStrategyBusy(key);
     try {
-      const text = await onStrategy(target);
-      if (text) setStrategies((current) => ({ ...current, [key]: text }));
+      const result = await onStrategy(target);
+      if (result?.contact_research) setContactResearch((current) => ({ ...current, [key]: result.contact_research }));
+      if (result?.strategy) setStrategies((current) => ({ ...current, [key]: result.strategy }));
+    } finally { setStrategyBusy(""); }
+  };
+
+  const selectContact = async (target, candidateId) => {
+    const key = target.target_key || target.name;
+    setStrategyBusy(key);
+    try {
+      const research = await onContactSelect(target, candidateId);
+      if (research) setContactResearch((current) => ({ ...current, [key]: research }));
+      const result = await onStrategy(target);
+      if (result?.contact_research) setContactResearch((current) => ({ ...current, [key]: result.contact_research }));
+      if (result?.strategy) setStrategies((current) => ({ ...current, [key]: result.strategy }));
     } finally { setStrategyBusy(""); }
   };
 
@@ -1916,6 +1954,8 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
       strategyBusy={strategyBusy === (item.target_key || item.name)}
       target={item}
       onOpenJob={onOpenJob}
+      contactResearch={contactResearch[item.target_key || item.name] || item.contact_research}
+      onSelectContact={(candidateId) => selectContact(item, candidateId)}
       {...extra}
     />
   );
@@ -4071,11 +4111,16 @@ function App() {
   const hiddenStrategy = async (target) => {
     try {
       const data = await invoke("hiddenMarket:strategy", { profile_id: activeProfileId, target });
-      return data?.strategy || "";
+      return data || {};
     } catch (error) {
       appendLog(`AI angle failed: ${toErrorMessage(error)}`);
-      return "";
+      return {};
     }
+  };
+
+  const hiddenContactSelect = async (target, candidateId) => {
+    const data = await invoke("hiddenMarket:contactSelect", { profile_id: activeProfileId, target, candidate_id: candidateId });
+    return data?.contact_research || null;
   };
 
   const saveWorkspace = async (updates) => {
@@ -4704,6 +4749,7 @@ function App() {
             onRefresh={loadHiddenMarket}
             onTrack={trackHiddenTarget}
             onStrategy={hiddenStrategy}
+            onContactSelect={hiddenContactSelect}
             onLeadUpdate={hiddenLeadUpdate}
             onTouch={hiddenLeadTouch}
             onConvert={hiddenLeadConvert}

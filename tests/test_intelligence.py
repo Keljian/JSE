@@ -15,6 +15,7 @@ os.environ["JSE_DATA_DIR"] = TEST_DATA
 import db_setup  # noqa: E402
 import database_manager as db  # noqa: E402
 import llm_handler  # noqa: E402
+import contact_research  # noqa: E402
 
 
 class IntelligenceIntegrationTests(unittest.TestCase):
@@ -31,6 +32,7 @@ class IntelligenceIntegrationTests(unittest.TestCase):
             conn.execute("DELETE FROM hidden_market_leads")
             conn.execute("DELETE FROM hidden_market_strategies")
             conn.execute("DELETE FROM market_intelligence_snapshots")
+            conn.execute("DELETE FROM hidden_market_contact_research")
             conn.execute("DELETE FROM jobs")
             for index in range(3):
                 conn.execute(
@@ -84,25 +86,63 @@ class IntelligenceIntegrationTests(unittest.TestCase):
 
     def test_ai_strategy_is_structured_and_evidence_bound(self):
         original = llm_handler._call_unsloth
-        llm_handler._call_unsloth = lambda *args, **kwargs: (
-            '{"positioning_angle":"Reference the recurring mandates",'
-            '"contact_persona":"Technology recruitment consultant",'
-            '"recommended_channel":"email","opening_message":"Hello",'
-            '"evidence_to_reference":["Three recent roles"],'
-            '"questions_to_ask":["Any adjacent mandates?"],'
-            '"follow_up_sequence":["Follow up in five days"],'
-            '"cautions":["Do not imply an exclusive mandate"]}'
-        )
+        captured = {}
+        def fake_call(messages, *args, **kwargs):
+            captured["prompt"] = str(messages)
+            return ('{"positioning_angle":"Reference the recurring mandates",'
+                    '"contact_persona":"Technology recruitment consultant",'
+                    '"recommended_channel":"email","opening_message":"Hello",'
+                    '"evidence_to_reference":["Three recent roles"],'
+                    '"questions_to_ask":["Any adjacent mandates?"],'
+                    '"follow_up_sequence":["Follow up in five days"],'
+                    '"cautions":["Do not imply an exclusive mandate"]}')
+        llm_handler._call_unsloth = fake_call
         try:
             strategy = llm_handler.hidden_market_strategy(
                 {"target_type": "recruiter", "name": "Hays", "sample_titles": ["Technology Manager"]},
                 lane_context="Senior technology leadership",
+                contact_research={"selected_candidate_id": "sean", "candidates": [{"candidate_id": "sean", "name": "Sean Mantri", "role": "Technology Recruitment Consultant", "confidence": "high", "confidence_score": 82, "sources": [{"url": "https://example.test/sean"}]}]},
             )
         finally:
             llm_handler._call_unsloth = original
         self.assertEqual("email", strategy["recommended_channel"])
         self.assertTrue(strategy["evidence_to_reference"])
         self.assertTrue(strategy["cautions"])
+        self.assertIn("Sean Mantri", captured["prompt"])
+
+    def test_contact_research_splits_conflicting_name_and_email_with_provenance(self):
+        target = {
+            "name": "Talent International",
+            "target_type": "recruiter",
+            "target_key": "recruiter:domain:talentinternational.com",
+            "evidence": [{
+                "title": "Agile Lead",
+                "url": "https://jobs.example/agile-lead",
+                "contact_person": "Sean Mantri",
+                "contact_email": "josh.dmonte@talentinternational.com",
+                "contact_phone": "0420 425 141",
+            }],
+        }
+
+        def fake_search(query, limit=5):
+            if "Sean Mantri" in query:
+                return [{"url": "https://www.linkedin.com/in/sean-mantri", "title": "Sean Mantri - Technology Recruitment Consultant - Talent International", "snippet": "Technology recruitment consultant", "source_type": "LinkedIn public result"}]
+            if "Josh Dmonte" in query:
+                return [{"url": "https://www.talentinternational.com/team/josh-dmonte", "title": "Josh Dmonte - Talent International", "snippet": "Recruitment consultant", "source_type": "Public web result"}]
+            return []
+
+        research = contact_research.research_target_contacts(target, search_func=fake_search)
+        names = {candidate["name"] for candidate in research["candidates"]}
+        self.assertIn("Sean Mantri", names)
+        self.assertIn("Josh Dmonte", names)
+        self.assertTrue(research["conflicts"])
+        self.assertTrue(research["requires_selection"])
+        saved = db.save_hidden_market_contact_research(1, target["target_type"], target["target_key"], target["name"], research)
+        chosen = next(candidate for candidate in research["candidates"] if candidate["name"] == "Sean Mantri")
+        selected = db.select_hidden_market_contact(1, target["target_type"], target["target_key"], chosen["candidate_id"])
+        self.assertEqual(chosen["candidate_id"], selected["research"]["selected_candidate_id"])
+        self.assertFalse(selected["research"]["requires_selection"])
+        self.assertTrue(saved["research"]["candidates"])
 
 
 if __name__ == "__main__":

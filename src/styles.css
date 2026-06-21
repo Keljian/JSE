@@ -4806,6 +4806,18 @@ button.update-toast-close:hover:not(:disabled) {
 .intelligence-strategy ol { margin: 0; padding-left: 20px; white-space: normal; }
 .intelligence-caution { color: #8a5a1b !important; }
 .intelligence-lead-score { color: var(--text-muted); }
+.contact-research { display: grid; gap: 7px; padding: 9px; border: 1px solid #cddfd5; border-radius: var(--radius-sm); background: #f5faf7; }
+.contact-research.needs-selection { border-color: #e2c98f; background: #fffaf0; }
+.hidden-target .contact-research header { display: flex; justify-content: space-between; gap: 8px; }
+.contact-research header span, .contact-research > small { color: var(--text-muted); font-size: 11px; }
+.contact-conflict, .contact-prompt { display: flex; align-items: flex-start; gap: 6px; color: #8a5a1b !important; }
+.contact-candidates { display: grid !important; gap: 6px; }
+.contact-candidates label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px; border: 1px solid var(--border); border-radius: 5px; background: #fff; cursor: pointer; }
+.contact-candidates label.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }
+.contact-candidates input { width: 15px; min-height: 15px; }
+.contact-candidates label > span { display: grid; gap: 2px; }
+.contact-candidates small { color: var(--text-muted); font-size: 11px; }
+.contact-warning { color: #8a5a1b !important; }
 
 @media (max-width: 760px) {
   .intelligence-tabs { flex-wrap: wrap; }

@@ -1838,6 +1838,10 @@ def command_hidden_market_get(payload):
         (item["target_type"], item["target_key"]): item
         for item in db.list_hidden_market_strategies(profile_id or 1)
     }
+    contact_research = {
+        (item["target_type"], item["target_key"]): item["research"]
+        for item in db.list_hidden_market_contact_research(profile_id or 1)
+    }
     for section, target_type in _HIDDEN_MARKET_SECTIONS:
         for item in intel.get(section, []):
             item["target_type"] = target_type
@@ -1845,6 +1849,7 @@ def command_hidden_market_get(payload):
             legacy_key = db.hidden_market_target_key(target_type, item["name"])
             item["tracked"] = (target_type, item["target_key"]) in tracked_keys or (target_type, legacy_key) in tracked_keys
             item["saved_strategy"] = (saved_strategies.get((target_type, item["target_key"])) or {}).get("strategy") or {}
+            item["contact_research"] = contact_research.get((target_type, item["target_key"])) or {}
 
     today = date.today().isoformat()
     status_counts = {status: 0 for status in db.HIDDEN_MARKET_STATUSES}
@@ -1944,12 +1949,17 @@ def _hidden_market_lane_context(profile_id):
 
 def command_hidden_market_strategy(payload):
     import llm_handler
+    import contact_research
 
     profile_id = payload.get("profile_id", 1)
     target = payload.get("target") or {}
+    research = contact_research.enrich_target_contacts(profile_id, target, force=bool(payload.get("force_contact_refresh")))
+    if research.get("requires_selection"):
+        return {"strategy": None, "contact_research": research, "requires_contact_selection": True}
     strategy = llm_handler.hidden_market_strategy(
         target,
         lane_context=_hidden_market_lane_context(profile_id),
+        contact_research=research,
     )
     saved = db.save_hidden_market_strategy(
         profile_id,
@@ -1959,7 +1969,19 @@ def command_hidden_market_strategy(payload):
         provider="local",
         target_key=target.get("target_key"),
     )
-    return {"strategy": strategy, "saved": saved}
+    return {"strategy": strategy, "saved": saved, "contact_research": research, "requires_contact_selection": False}
+
+
+def command_hidden_market_contact_select(payload):
+    profile_id = payload.get("profile_id", 1)
+    target = payload.get("target") or {}
+    target_type = target.get("target_type") or payload.get("target_type") or "target"
+    target_name = target.get("name") or target.get("target_name") or payload.get("target_name") or "Unknown target"
+    target_key = target.get("target_key") or payload.get("target_key") or db.hidden_market_target_key(target_type, target_name, target.get("entity_key"))
+    result = db.select_hidden_market_contact(profile_id, target_type, target_key, payload.get("candidate_id"))
+    if not result:
+        raise ValueError("No contact research exists for this target. Build strategy first.")
+    return {"contact_research": result["research"]}
 
 
 def command_stats_summary(payload):
@@ -2754,6 +2776,7 @@ COMMANDS = {
     "hiddenMarket:leadDelete": command_hidden_market_lead_delete,
     "hiddenMarket:convert": command_hidden_market_convert,
     "hiddenMarket:strategy": command_hidden_market_strategy,
+    "hiddenMarket:contactSelect": command_hidden_market_contact_select,
     "stats:summary": command_stats_summary,
     "scrape:run": command_scrape_run,
     "analysis:run": command_analysis_run,
