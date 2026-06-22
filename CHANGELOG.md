@@ -48,8 +48,16 @@ All notable changes to JSE are documented here.
     `AttributeError: 'dict' object has no attribute 'append'`.
   - Added an explicit "CRITICAL MISTAKES" anti-pattern block to every generation prompt
     showing the wrong vs correct form for `config_schema`, `database_manager` import,
-    `paused.wait()` usage, and the `found` integer requirement in dry-run returns. These
-    four mistakes appeared in every failed generation attempt observed in the LM Studio logs.
+    `paused.wait()` usage, `found` integer in dry-run returns, keyword title filtering,
+    and mode override. These mistakes appeared repeatedly in observed failure logs.
+  - Fixed generated scrapers filtering job listings by keyword in the job title — the model
+    was adding `if keyword.lower() not in title.lower(): continue` which causes dry-runs to
+    find zero jobs whenever the test keyword doesn't appear in any current listing titles.
+    Prompt now explicitly forbids title-based filtering and directs the model to pass keyword
+    as a URL search parameter instead (or fetch all jobs for single-employer pages).
+  - Fixed `_normalise_generation` to respect the user-chosen `mode` (sweep/keyword) from
+    the answers rather than trusting the model's manifest output. The model frequently changed
+    `mode: "sweep"` to `mode: "keyword"` for single-employer pages, breaking pagination logic.
 
 - Added a verified SQLite backup on every application launch. Automatic startup
   backups are stored in `Backups/` and rotate after the newest 12; manual and

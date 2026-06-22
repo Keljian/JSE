@@ -766,6 +766,9 @@ def _builder_prompt(answers, recon=None, feedback=None):
         "  GOOD: paused.wait()  <- correct, blocks while user has paused; resumes automatically",
         "  BAD:  'found': True  <- found must be an int (count of jobs parsed), not a bool",
         "  GOOD: 'found': len(jobs_list)  <- correct",
+        "  BAD:  if keyword and keyword.lower() not in title.lower(): continue  <- NEVER filter job titles by keyword text",
+        "  GOOD: pass keyword as a URL search param (e.g. ?q=keyword); if the site has no search, return ALL jobs",
+        "  BAD:  changing mode from 'sweep' to 'keyword' in the manifest  <- never override the mode from the answers",
         "",
         "PLUGIN CONTRACT:",
         f'- manifest.id must be "{plugin_id}".',
@@ -817,6 +820,8 @@ def _builder_prompt(answers, recon=None, feedback=None):
                 "Import database_manager as 'import database_manager as db', never 'from database_manager import db'. "
                 "Use 'paused.wait()' for pause support, never 'paused.is_set()'. "
                 "In dry_run return, 'found' must be an integer count, never a boolean. "
+                "NEVER filter job listings by keyword text in the title — pass keyword as a URL parameter instead, or fetch all jobs. "
+                "NEVER change the mode field in the manifest from what the user specified. "
                 "Use the available helpers (scraper_resource_manager, scrape_job_details) — do not reimplement them. "
                 "The scraper must be conservative, cancellable, and must never perform filesystem writes, "
                 "subprocess calls, shell calls, or credential handling."
@@ -869,7 +874,9 @@ def _normalise_generation(data, answers):
         "id": plugin_id,
         "module": "scraper.py",
         "callable": manifest.get("callable") or "scrape",
-        "mode": manifest.get("mode") if manifest.get("mode") in {"keyword", "sweep"} else (answers.get("mode") or "keyword"),
+        # answers.mode takes priority — the user chose it explicitly; the model
+        # frequently overrides "sweep" → "keyword" which breaks single-employer pages.
+        "mode": answers.get("mode") or (manifest.get("mode") if manifest.get("mode") in {"keyword", "sweep"} else "keyword"),
     })
     manifest["name"] = manifest.get("name") or answers.get("source_name") or plugin_id.replace("_", " ").title()
     manifest["source_name"] = manifest.get("source_name") or manifest["name"]
