@@ -755,6 +755,18 @@ def _builder_prompt(answers, recon=None, feedback=None):
     parts = [
         f"Build a JSE scraper plugin from these answers:\n{_json(answers)}",
         "",
+        "CRITICAL MISTAKES — these cause immediate failure, DO NOT make them:",
+        '  BAD:  "config_schema": {"base_url": {"type": "text", "default": ""}}  <- DICT, wrong!',
+        '  GOOD: "config_schema": [{"key": "base_url", "label": "Base Url", "type": "text", "default": ""}]  <- LIST',
+        "  BAD:  import database_manager; database_manager.add_job(...)  <- wrong",
+        "  BAD:  from database_manager import db; db.add_job(...)  <- wrong",
+        "  GOOD: import database_manager as db; db.add_job(...)  <- correct",
+        "  BAD:  if paused.is_set(): time.sleep(1)  <- wrong, paused.is_set() means NOT paused",
+        "  BAD:  while paused.is_set(): time.sleep(0.5)  <- wrong",
+        "  GOOD: paused.wait()  <- correct, blocks while user has paused; resumes automatically",
+        "  BAD:  'found': True  <- found must be an int (count of jobs parsed), not a bool",
+        "  GOOD: 'found': len(jobs_list)  <- correct",
+        "",
         "PLUGIN CONTRACT:",
         f'- manifest.id must be "{plugin_id}".',
         f'- manifest.name/source_name should be "{source_name}".',
@@ -801,6 +813,10 @@ def _builder_prompt(answers, recon=None, feedback=None):
                 "Return only valid JSON — no markdown fences, no text outside the JSON object. "
                 "The JSON must contain exactly: manifest, scraper_code, readme, notes, test_plan. "
                 "scraper_code must be complete runnable Python under 150 lines. "
+                "RULES: config_schema must be a JSON ARRAY of objects, never a dict. "
+                "Import database_manager as 'import database_manager as db', never 'from database_manager import db'. "
+                "Use 'paused.wait()' for pause support, never 'paused.is_set()'. "
+                "In dry_run return, 'found' must be an integer count, never a boolean. "
                 "Use the available helpers (scraper_resource_manager, scrape_job_details) — do not reimplement them. "
                 "The scraper must be conservative, cancellable, and must never perform filesystem writes, "
                 "subprocess calls, shell calls, or credential handling."
@@ -859,6 +875,18 @@ def _normalise_generation(data, answers):
     manifest["source_name"] = manifest.get("source_name") or manifest["name"]
     manifest["version"] = manifest.get("version") or "0.1.0"
     schema = manifest.get("config_schema") or []
+    # The LLM frequently generates config_schema as {"key": {"type": ..., "default": ...}}
+    # instead of the required [{"key": "...", "label": "...", "type": "...", "default": ...}].
+    if isinstance(schema, dict):
+        schema = [
+            {
+                "key": k,
+                "label": k.replace("_", " ").title(),
+                "type": "number" if k in ("max_pages",) else "text",
+                "default": v.get("default", "") if isinstance(v, dict) else v,
+            }
+            for k, v in schema.items()
+        ]
     keys = {item.get("key") for item in schema if isinstance(item, dict)}
     defaults = {
         "base_url": answers.get("careers_url") or answers.get("base_url") or "",

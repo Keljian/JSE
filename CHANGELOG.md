@@ -37,6 +37,14 @@ All notable changes to JSE are documented here.
   - Static validation now accepts the documented `scrape = decorated_function` pattern.
   - Added `SCRAPER_REFERENCE.md` — a living reference file injected into every build prompt
     covering the full scraper API, dry_run contract, allowed imports, and known ATS patterns.
+  - Fixed `config_schema` normalisation: the LLM reliably generates `config_schema` as a
+    dict (`{"key": {…}}`) rather than the required list (`[{"key": "...", …}]`). Generation
+    now converts dict-format schemas to the correct list shape instead of crashing with
+    `AttributeError: 'dict' object has no attribute 'append'`.
+  - Added an explicit "CRITICAL MISTAKES" anti-pattern block to every generation prompt
+    showing the wrong vs correct form for `config_schema`, `database_manager` import,
+    `paused.wait()` usage, and the `found` integer requirement in dry-run returns. These
+    four mistakes appeared in every failed generation attempt observed in the LM Studio logs.
 
 - Added a verified SQLite backup on every application launch. Automatic startup
   backups are stored in `Backups/` and rotate after the newest 12; manual and
