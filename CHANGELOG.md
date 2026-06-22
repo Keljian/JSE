@@ -6,6 +6,39 @@ All notable changes to JSE are documented here.
 
 ### Added
 
+- Improved scraper plugin generation success rate with layered prompt intelligence:
+  - Added ATS fingerprinting for 13 platforms (Greenhouse, Lever, Workday, SmartRecruiters,
+    PageUp, SuccessFactors, Taleo, BambooHR, Recruitee, Ashby, Jobvite, NGA, and others).
+    ATS is identified from the URL alone before the HTTP fetch, so the correct approach is
+    known even when sites block bots.
+  - Reconnaissance now extracts a real job card HTML snippet and up to 1 500 chars of
+    `__NEXT_DATA__` embedded JSON from the target page and injects them into the prompt so
+    the LLM derives selectors from actual markup rather than assumptions.
+  - Added a tier-routing directive that steers the LLM to the correct approach (JSON-LD,
+    embedded JSON, ATS REST API, static HTML + BeautifulSoup, or Selenium) based on
+    reconnaissance evidence.
+  - Added a `scraping_helpers` API reference (`scraper_resource_manager`, `scrape_job_details`,
+    `_get_pdf_text_from_url`) and a concrete `db.add_job` / concurrency pattern to every
+    generation prompt.
+  - Added an explicit code example of a working installed plugin (shortest matching HTTP or
+    Selenium plugin) as a concrete reference in each generation prompt; falls back to a
+    built-in minimal template when no plugins are installed yet.
+  - Added an explicit `dry_run` return-contract code block so the test harness dict shape
+    is unambiguous.
+  - Generation `max_tokens` reduced from 16 000 to 8 000 and the prompt now instructs
+    the LLM to stay under 150 lines and use helpers instead of re-implementing them,
+    eliminating mid-JSON truncation failures.
+  - Repair and second+ attempts use lower temperature (0.07/0.05 vs 0.15) for targeted
+    corrections rather than creative rewrites.
+  - Added `SCRAPER_REFERENCE.md` — a living reference file injected into every build prompt
+    covering the full scraper API, dry_run contract, allowed imports, and known ATS patterns.
+
+- Added a verified SQLite backup on every application launch. Automatic startup
+  backups are stored in `Backups/` and rotate after the newest 12; manual and
+  recovery backups are never included in that rotation.
+- Added **Recover database** beside database compaction in Settings. Recovery
+  validates the selected backup, preserves the current database, restores it,
+  and restarts JSE so every worker uses the recovered state.
 - Rebuilt the former Hidden Market area as an Intelligence workspace with
   Market Signals, ranked Targets, Outreach, and Outcomes views.
 - Added explainable opportunity scores using lane fit, recurrence, recency,

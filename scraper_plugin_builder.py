@@ -42,6 +42,174 @@ ALLOWED_IMPORT_ROOTS = {
 }
 BLOCKED_CALLS = {"eval", "exec", "compile", "open", "__import__", "input"}
 
+SCRAPER_REFERENCE_PATH = APP_ROOT / "SCRAPER_REFERENCE.md"
+
+_ATS_FINGERPRINTS = [
+    (["pageuppeople.com"], "PageUp", "selenium",
+     "PageUp portals render via JS. Use @scraper_resource_manager + scrape_job_details. "
+     "Job links contain /job/ or /listing/ paths. See the monash/knox bundled plugins."),
+    (["myworkdayjobs.com"], "Workday", "http_api",
+     'Workday REST API: POST /wday/cxs/{tenant}/{site}/jobs with body '
+     '{"searchText":"{keyword}","limit":20,"offset":0}. Tenant/site slugs are in the URL.'),
+    (["boards.greenhouse.io", "greenhouse.io/boards"], "Greenhouse", "http_api",
+     "Public JSON API: GET https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true "
+     "where {slug} is from the URL (e.g. boards.greenhouse.io/acme -> slug='acme')."),
+    (["jobs.lever.co"], "Lever", "http_api",
+     "Public JSON API: GET https://api.lever.co/v0/postings/{slug}?mode=json "
+     "where {slug} is from the URL (e.g. jobs.lever.co/acme -> slug='acme')."),
+    (["jobs.smartrecruiters.com"], "SmartRecruiters", "http_api",
+     "JSON API: GET https://api.smartrecruiters.com/v1/companies/{company}/postings"
+     "?keyword={keyword}&limit=100 where {company} is from the URL."),
+    (["successfactors.com", "sapsf.com"], "SAP SuccessFactors", "selenium",
+     "Heavy SPA. Use @scraper_resource_manager. Wait for job rows to load in main content area."),
+    (["taleo.net", "tbe.taleo.net"], "Taleo", "selenium",
+     "Legacy ATS. Use Selenium. Job listings appear in a table at /careersection/ paths."),
+    (["bamboohr.com"], "BambooHR", "http_api",
+     "JSON: GET https://{company}.bamboohr.com/careers/list returns a positions array."),
+    (["recruitee.com"], "Recruitee", "http_api",
+     "JSON API: GET https://{company}.recruitee.com/api/offers/?status=open."),
+    (["ashbyhq.com", "jobs.ashbyhq.com"], "Ashby", "http_api",
+     'JSON API: POST https://api.ashbyhq.com/posting-public/job/list '
+     'with body {"organizationHostedJobsPageName":"{slug}"}.'),
+    (["jobvite.com", "jobs.jobvite.com"], "Jobvite", "http_api",
+     "JSON API: GET https://jobs.jobvite.com/api/job?c={company_code} returns jobs list."),
+    (["nga.net", "ngahr.com"], "NGA.net", "selenium",
+     "Use Selenium for NGA.net portals. Job links in table rows."),
+]
+
+_TIER_DIRECTIVE = {
+    "jsonld": (
+        "REQUIRED APPROACH [A — JSON-LD]: Static HTML contains <script type='application/ld+json'> "
+        "JobPosting objects. Use requests to fetch, parse each script block with json.loads(). "
+        "No Selenium needed."
+    ),
+    "embedded": (
+        "REQUIRED APPROACH [B — Embedded JSON]: Job data is in __NEXT_DATA__ or __NUXT__ in the HTML. "
+        "Use requests to fetch, regex-extract the JSON blob, parse with json.loads(). "
+        "No Selenium needed."
+    ),
+    "http_api": (
+        "REQUIRED APPROACH [C — JSON API]: The ATS exposes a documented REST API (see ATS hint above). "
+        "Use requests.get/post against the API endpoint. No HTML parsing or Selenium needed."
+    ),
+    "http_bs4": (
+        "REQUIRED APPROACH [D — Static HTML]: Job links are visible in the static HTTP response. "
+        "Use requests + BeautifulSoup. Base your selectors on the container class hints shown below. "
+        "No Selenium needed."
+    ),
+    "selenium": (
+        "REQUIRED APPROACH [E — Selenium]: The site is JS-rendered or requires browser interaction. "
+        "Use @scraper_resource_manager decorator + scrape_job_details helper from scraping_helpers. "
+        "Assign scrape = your_decorated_function at module level."
+    ),
+    "uncertain": (
+        "APPROACH [F — uncertain]: Reconnaissance was inconclusive. Try requests + BeautifulSoup first. "
+        "If job data is absent from static HTML, use Selenium (@scraper_resource_manager). "
+        "Note limitations clearly in dry_run warnings."
+    ),
+}
+
+_MINIMAL_HTTP_EXAMPLE = """\
+import json, re, requests
+from bs4 import BeautifulSoup
+import database_manager as db
+from concurrency import cancel_event, paused, OperationCancelledError
+
+def scrape(keyword, status_callback=None, log_callback=None, profile_id=1,
+           base_url="", company_name="", location="", max_pages=3, dry_run=False, **config):
+    log = log_callback or print
+    sample_jobs, found = [], 0
+    try:
+        for page in range(1, max_pages + 1):
+            if cancel_event.is_set():
+                raise OperationCancelledError("Cancelled.")
+            paused.wait()
+            log(f"Fetching page {page}")
+            resp = requests.get(base_url, params={"keyword": keyword, "page": page},
+                                timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            # Option A — JSON API:
+            data = resp.json()
+            jobs = data.get("results") or data.get("jobs") or []
+            # Option B — BeautifulSoup (replace Option A):
+            # soup = BeautifulSoup(resp.text, "html.parser")
+            # jobs = soup.select(".job-card")  # adapt selector from recon
+            if not jobs:
+                log(f"Page {page}: no results, stopping.")
+                break
+            for item in jobs:
+                title = str(item.get("title") or "").strip()
+                company_str = str(item.get("company") or company_name).strip()
+                url = str(item.get("url") or "").strip()
+                description = str(item.get("description") or "").strip()
+                log(f"Found: {title}")
+                if not title or not url:
+                    continue
+                job = {"title": title, "company": company_str, "location": location,
+                       "url": url, "description": description, "search_keyword": keyword}
+                if dry_run:
+                    sample_jobs.append({"title": title, "company": company_str})
+                    found += 1
+                elif db.add_job(job, company_name, profile_id=profile_id, log_callback=log):
+                    found += 1
+            if dry_run and found:
+                break
+    except OperationCancelledError:
+        raise
+    except Exception as exc:
+        log(f"Scraper error: {exc}")
+        if dry_run:
+            return {"ok": False, "found": 0, "sample_jobs": [], "warnings": [str(exc)]}
+        return False
+    if dry_run:
+        return {"ok": found > 0, "found": found, "sample_jobs": sample_jobs[:3], "warnings": []}
+    return found > 0"""
+
+_MINIMAL_SELENIUM_EXAMPLE = """\
+import time
+from urllib.parse import urljoin
+from selenium.webdriver.common.by import By
+from scraping_helpers import scraper_resource_manager, scrape_job_details
+import database_manager as db
+from concurrency import cancel_event, paused, OperationCancelledError
+
+@scraper_resource_manager(wait_timeout=20)
+def _scrape_inner(driver, wait, keyword, status_callback, log_callback, location, max_pages,
+                  base_url="", company_name="", profile_id=1, dry_run=False, **config):
+    log = log_callback or print
+    log(f"Loading {base_url}")
+    driver.get(base_url)
+    time.sleep(4)
+    jobs_found = []
+    for selector in ['a[href*="/job/"]', 'a[href*="/vacancy/"]', 'a[href*="/listing/"]',
+                     '.job-title a', '.vacancy-title a', 'h3 a', 'h4 a']:
+        try:
+            links = driver.find_elements(By.CSS_SELECTOR, selector)
+            log(f"Selector {selector!r}: {len(links)} elements")
+            for link in links:
+                title = (link.text or "").strip()
+                href = link.get_attribute("href") or ""
+                if title and href and len(title) > 5:
+                    jobs_found.append({"title": title, "url": href,
+                                       "company": company_name, "location": location})
+            if jobs_found:
+                break
+        except Exception as exc:
+            log(f"Selector {selector!r} failed: {exc}")
+    if not jobs_found:
+        warnings = [f"No job links found at {base_url}. Page title: {driver.title}"]
+        log(warnings[0])
+        if dry_run:
+            return {"ok": False, "found": 0, "sample_jobs": [], "warnings": warnings}
+        return False
+    if dry_run:
+        sample = [{"title": j["title"], "company": j["company"]} for j in jobs_found[:3]]
+        return {"ok": True, "found": len(jobs_found), "sample_jobs": sample, "warnings": []}
+    saved = scrape_job_details(driver, wait, jobs_found, log, profile_id)
+    return saved > 0
+
+scrape = _scrape_inner"""
+
 
 def _slug(value):
     text = re.sub(r"[^a-zA-Z0-9]+", "_", str(value or "").strip().lower()).strip("_")
@@ -89,6 +257,113 @@ RECON_TIMEOUT = 20
 RECON_MAX_BYTES = 2_000_000
 RECON_USER_AGENT = "Mozilla/5.0 (compatible; JSE-ScraperBuilder/1.0)"
 _JOB_LINK_HINTS = ("job", "career", "vacanc", "position", "requisition", "/jobs/", "jobid", "job-id", "jr-")
+
+
+def _load_reference_md():
+    """Load SCRAPER_REFERENCE.md content for injection into the builder prompt."""
+    try:
+        if SCRAPER_REFERENCE_PATH.exists():
+            return SCRAPER_REFERENCE_PATH.read_text(encoding="utf-8")[:4000]
+    except Exception:
+        pass
+    return ""
+
+
+def _detect_ats(html, url):
+    """Return (ats_name, tier, hint) if the page/URL matches a known ATS, else (None, None, None)."""
+    blob = f"{url or ''} {html or ''}".lower()
+    for markers, ats_name, tier, hint in _ATS_FINGERPRINTS:
+        if any(marker in blob for marker in markers):
+            return ats_name, tier, hint
+    return None, None, None
+
+
+def _determine_tier(recon):
+    """Determine the recommended scraping approach tier from reconnaissance data."""
+    recon = recon or {}
+    ats = recon.get("ats") or {}
+    if ats.get("tier") == "http_api":
+        return "http_api"
+    if ats.get("tier") == "selenium":
+        return "selenium"
+    if (recon.get("jsonld") or {}).get("job_posting_found"):
+        return "jsonld"
+    if recon.get("embedded_state") or recon.get("next_data_sample"):
+        return "embedded"
+    if len(recon.get("candidate_links") or []) >= 3:
+        return "http_bs4"
+    render_hint = recon.get("render_hint") or ""
+    if "client-side" in render_hint or "SPA" in render_hint.upper():
+        return "selenium"
+    if not recon.get("fetched"):
+        return "uncertain"
+    return "uncertain"
+
+
+def _sample_job_card_html(soup, candidate_links):
+    """Extract a short HTML snippet from the first detected job card container."""
+    if not candidate_links or not soup:
+        return ""
+    try:
+        first_href = candidate_links[0].get("href") or ""
+        first_text = (candidate_links[0].get("text") or "")[:40]
+        anchor = None
+        for a in soup.find_all("a", href=True):
+            href = a.get("href") or ""
+            text = a.get_text() or ""
+            if (first_href and first_href.endswith(href.split("?")[0][-40:])) or \
+               (first_text and first_text[:20] in text):
+                anchor = a
+                break
+        if anchor is None:
+            return ""
+        parent = anchor
+        for _ in range(5):
+            parent = getattr(parent, "parent", None)
+            if parent is None:
+                break
+            tag = getattr(parent, "name", None)
+            classes = parent.get("class") if hasattr(parent, "get") else None
+            if tag in {"article", "li", "div", "tr", "section"} and classes:
+                return str(parent)[:800]
+        return str(anchor.parent)[:400] if getattr(anchor, "parent", None) else ""
+    except Exception:
+        return ""
+
+
+def _pick_example_plugin(tier):
+    """Return (code, plugin_name) for an installed working plugin matching the approach tier.
+
+    Prefers simpler (shorter) plugins. Falls back to (None, None) if none qualify.
+    """
+    use_selenium = tier == "selenium"
+    candidates = []
+    for root in (PLUGIN_ROOT, REPAIR_ROOT):
+        try:
+            root_path = Path(root)
+            if not root_path.exists():
+                continue
+            for plugin_dir in sorted(root_path.iterdir()):
+                if not plugin_dir.is_dir():
+                    continue
+                scraper_path = plugin_dir / "scraper.py"
+                if not scraper_path.exists():
+                    continue
+                code = scraper_path.read_text(encoding="utf-8-sig")
+                has_selenium = "scraper_resource_manager" in code or "webdriver" in code.lower()
+                if use_selenium == has_selenium:
+                    candidates.append((len(code), plugin_dir.name, code))
+        except Exception:
+            continue
+    if not candidates:
+        return None, None
+    candidates.sort()
+    _, name, code = candidates[0]
+    lines = code.splitlines()
+    trimmed = "\n".join(lines[:120])
+    if len(lines) > 120:
+        trimmed += "\n# ... (truncated for brevity)"
+    return trimmed, name
 
 
 def _looks_like_job_link(href, text):
@@ -199,6 +474,12 @@ def _reconnoitre(url, keyword=None):
         findings["error"] = "No fetchable http(s) URL provided."
         return findings
     fetch_url = url.replace("{keyword}", keyword or "") if (keyword and "{keyword}" in url) else url
+
+    # ATS detection from the URL alone — fires even if the HTTP fetch fails
+    ats_name_url, ats_tier_url, ats_hint_url = _detect_ats("", fetch_url)
+    if ats_name_url:
+        findings["ats"] = {"name": ats_name_url, "tier": ats_tier_url, "hint": ats_hint_url}
+
     try:
         import requests
 
@@ -210,6 +491,20 @@ def _reconnoitre(url, keyword=None):
     except Exception as exc:  # noqa: BLE001 - recon is best-effort
         findings["error"] = f"{type(exc).__name__}: {exc}"
         return findings
+
+    # Refine ATS detection with actual HTML content
+    ats_name, ats_tier, ats_hint = _detect_ats(html[:50_000], findings.get("final_url") or fetch_url)
+    if ats_name:
+        findings["ats"] = {"name": ats_name, "tier": ats_tier, "hint": ats_hint}
+
+    # __NEXT_DATA__ JSON sample (grab it before BeautifulSoup strips it)
+    next_data_match = re.search(
+        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+        html, re.IGNORECASE | re.DOTALL,
+    )
+    if next_data_match:
+        findings["next_data_sample"] = next_data_match.group(1)[:1500]
+
     soup = None
     try:
         from bs4 import BeautifulSoup
@@ -223,9 +518,11 @@ def _reconnoitre(url, keyword=None):
     if soup:
         if soup.title and soup.title.string:
             findings["page_title"] = soup.title.string.strip()[:160]
-        links, class_hints = _candidate_job_links(soup, findings.get("final_url") or fetch_url)
+        base = findings.get("final_url") or fetch_url
+        links, class_hints = _candidate_job_links(soup, base)
         findings["candidate_links"] = links
         findings["container_class_hints"] = class_hints
+        findings["sample_card_html"] = _sample_job_card_html(soup, links)
     return findings
 
 
@@ -234,30 +531,61 @@ def _recon_section(recon):
         reason = (recon or {}).get("error") or "no URL supplied"
         return (f"SITE RECONNAISSANCE: unavailable ({reason}). "
                 "Generate defensively, try multiple selector strategies, and add clear dry_run warnings.")
-    lines = [f"SITE RECONNAISSANCE for {recon.get('final_url') or recon.get('url')} (use this real evidence, not assumptions):"]
+    lines = [
+        f"SITE RECONNAISSANCE for {recon.get('final_url') or recon.get('url')} "
+        "(use this real evidence — do not rely on assumptions):"
+    ]
     if recon.get("page_title"):
         lines.append(f"- Page title: {recon['page_title']}")
     lines.append(f"- Render type: {recon.get('render_hint')}")
+
+    ats = recon.get("ats") or {}
+    if ats.get("name"):
+        lines.append(f"- DETECTED ATS: {ats['name']} — {ats.get('hint', '')}")
+
     jsonld = recon.get("jsonld") or {}
     if jsonld.get("job_posting_found"):
-        lines.append("- JSON-LD JobPosting FOUND -> STRONGLY PREFER parsing <script type=\"application/ld+json\"> "
-                     f"JobPosting objects. Available fields: {', '.join(jsonld.get('sample_fields', []))}")
+        lines.append(
+            "- JSON-LD JobPosting FOUND -> STRONGLY PREFER parsing <script type=\"application/ld+json\"> "
+            f"JobPosting objects. Available fields: {', '.join(jsonld.get('sample_fields', []))}"
+        )
         if jsonld.get("example"):
             lines.append(f"  Example JobPosting values: {jsonld['example']}")
     else:
         lines.append("- No JSON-LD JobPosting detected in static HTML.")
+
     if recon.get("embedded_state"):
-        lines.append(f"- Embedded client-state detected: {', '.join(recon['embedded_state'])}. "
-                     "The job data is likely inside this JSON blob, not the rendered HTML — parse it directly.")
+        lines.append(
+            f"- Embedded client-state detected: {', '.join(recon['embedded_state'])}. "
+            "Job data is likely inside this JSON blob — parse it directly rather than scraping HTML."
+        )
+
+    next_data = recon.get("next_data_sample") or ""
+    if next_data:
+        lines.append(
+            f"- __NEXT_DATA__ sample (first 1500 chars — inspect structure to locate the jobs array):\n{next_data}"
+        )
+
     links = recon.get("candidate_links") or []
     if links:
-        lines.append(f"- {len(links)} candidate job links observed in static HTML (sample):")
+        lines.append(f"- {len(links)} candidate job links found in static HTML (sample):")
         for link in links[:10]:
             lines.append(f"    text={link['text']!r} href={link['href']} container_class={link['container']!r}")
     else:
-        lines.append("- No obvious job links found in static HTML (the site may need a search query in the URL or be JS-rendered).")
+        lines.append(
+            "- No obvious job links found in static HTML "
+            "(the site may require a keyword in the URL or be JS-rendered)."
+        )
+
     if recon.get("container_class_hints"):
         lines.append(f"- Most common job-card container classes: {', '.join(recon['container_class_hints'])}")
+
+    card_html = recon.get("sample_card_html") or ""
+    if card_html:
+        lines.append(f"- Sample job card HTML (derive selectors from this real markup):\n{card_html}")
+
+    tier = _determine_tier(recon)
+    lines.append(f"\n{_TIER_DIRECTIVE.get(tier, _TIER_DIRECTIVE['uncertain'])}")
     return "\n".join(lines)
 
 
@@ -269,8 +597,11 @@ def _recon_public_summary(recon):
         "render_hint": recon.get("render_hint"),
         "jsonld_jobposting": bool((recon.get("jsonld") or {}).get("job_posting_found")),
         "embedded_state": recon.get("embedded_state") or [],
+        "next_data_found": bool(recon.get("next_data_sample")),
         "candidate_links": len(recon.get("candidate_links") or []),
         "container_class_hints": recon.get("container_class_hints") or [],
+        "ats": recon.get("ats") or {},
+        "tier": _determine_tier(recon),
         "error": recon.get("error"),
     }
 
@@ -285,63 +616,121 @@ def _feedback_section(feedback):
     )
 
 
+_HELPERS_REFERENCE = """\
+AVAILABLE HELPERS (import from scraping_helpers):
+
+1. scraper_resource_manager(wait_timeout=20) — DECORATOR for Selenium scrapers.
+   Manages headless Chrome with stealth settings. Decorated function signature:
+     def _inner(driver, wait, keyword, status_callback, log_callback, location, max_pages, **kwargs)
+   Assign to scrape at module level:  scrape = _inner
+
+2. scrape_job_details(driver, wait, jobs_list, log_callback, profile_id) — Selenium detail helper.
+   Visits each {'title', 'url', 'company', 'location'} dict, extracts description, calls db.add_job.
+   Returns int saved_count. Use instead of writing your own detail-page loop.
+
+3. _get_pdf_text_from_url(pdf_url, base_url, log_callback) — downloads and extracts PDF text.
+
+DATABASE:
+  import database_manager as db
+  db.add_job(job_dict, source_name, profile_id=profile_id, log_callback=log)
+  job_dict keys: title, company, location, url, description, pdf_text, salary, search_keyword
+
+CONCURRENCY:
+  from concurrency import cancel_event, paused, OperationCancelledError
+  if cancel_event.is_set(): raise OperationCancelledError("Cancelled.")
+  paused.wait()  # blocks while user has paused scraping\
+"""
+
+_DRY_RUN_CONTRACT = """\
+DRY-RUN CONTRACT (the test harness checks this exactly):
+  When dry_run=True:
+    - Fetch/parse at most 1-2 pages. Do NOT call db.add_job().
+    - Return this exact dict:
+        {"ok": True, "found": <int jobs parsed>, "sample_jobs": [{"title":"...","company":"..."}], "warnings": []}
+    - "ok" is True when at least one job was successfully parsed.
+  When dry_run=False:
+    - Call db.add_job() for every job. Return True if any were stored, else False.\
+"""
+
+
 def _builder_prompt(answers, recon=None, feedback=None):
     plugin_id = _slug(answers.get("plugin_id") or answers.get("source_name") or answers.get("name"))
     source_name = answers.get("source_name") or answers.get("name") or plugin_id.replace("_", " ").title()
     mode = answers.get("mode") if answers.get("mode") in {"keyword", "sweep"} else "keyword"
     default_keyword = answers.get("test_keyword") or "business analyst"
     max_pages = int(answers.get("max_pages") or 3)
+
+    tier = _determine_tier(recon) if recon else "uncertain"
+    mode_note = (
+        'mode="keyword": scraper takes a keyword and queries the site.'
+        ' mode="sweep": scraper ignores keyword and fetches all open jobs (e.g. a single employer careers page).'
+    )
+
+    # Pick a working installed plugin as a concrete example, or fall back to the minimal template.
+    example_code, example_name = _pick_example_plugin(tier)
+    if not example_code:
+        example_code = _MINIMAL_SELENIUM_EXAMPLE if tier == "selenium" else _MINIMAL_HTTP_EXAMPLE
+        example_name = "built-in reference"
+
+    reference_md = _load_reference_md()
+
+    parts = [
+        f"Build a JSE scraper plugin from these answers:\n{_json(answers)}",
+        "",
+        "PLUGIN CONTRACT:",
+        f'- manifest.id must be "{plugin_id}".',
+        f'- manifest.name/source_name should be "{source_name}".',
+        '- manifest.module must be "scraper.py", manifest.callable must be "scrape".',
+        f'- manifest.mode must be "{mode}". ({mode_note})',
+        "- config_schema should include base_url, company_name, location, max_pages, test_keyword.",
+        "- scraper.py must define:",
+        f'    def scrape(keyword, status_callback=None, log_callback=None, profile_id=1,',
+        f'               base_url="", company_name="", location="", max_pages={max_pages}, dry_run=False, **config):',
+        f'- default keyword for testing: "{default_keyword}", page limit: {max_pages}.',
+        "- Keep scraper_code concise (under 150 lines). Use helpers — do not reinvent WebDriver setup or detail loops.",
+        "- Log selectors tried and element counts: log(f\"Selector X: {N} elements\") — helps repair if it fails.",
+        "- Never include personal information.",
+        "",
+        _HELPERS_REFERENCE,
+        "",
+        _DRY_RUN_CONTRACT,
+        "",
+        _recon_section(recon),
+        _feedback_section(feedback),
+        "",
+        f"EXAMPLE WORKING PLUGIN (from '{example_name}' — follow this exact structure):",
+        example_code,
+    ]
+    if reference_md:
+        parts.insert(2, f"\nPROJECT REFERENCE:\n{reference_md}\n")
+
+    parts.append(
+        '\nReturn valid JSON in exactly this shape (no markdown fences, no text outside the JSON):\n'
+        '{\n'
+        '  "manifest": {...},\n'
+        '  "scraper_code": "complete Python source",\n'
+        '  "readme": "short markdown",\n'
+        '  "notes": ["..."],\n'
+        '  "test_plan": ["..."]\n'
+        '}'
+    )
+
     return [
         {
             "role": "system",
             "content": (
-                "You write safe JSE scraper plugins. Return only JSON. Do not use markdown. "
-                "The JSON must contain manifest, scraper_code, readme, notes, and test_plan. "
-                "The scraper must be conservative, cancellable, and must not perform filesystem writes, subprocess calls, "
-                "shell calls, credential handling, or browser automation unless explicitly requested."
+                "You write safe, concise JSE scraper plugins. "
+                "Return only valid JSON — no markdown fences, no text outside the JSON object. "
+                "The JSON must contain exactly: manifest, scraper_code, readme, notes, test_plan. "
+                "scraper_code must be complete runnable Python under 150 lines. "
+                "Use the available helpers (scraper_resource_manager, scrape_job_details) — do not reimplement them. "
+                "The scraper must be conservative, cancellable, and must never perform filesystem writes, "
+                "subprocess calls, shell calls, or credential handling."
             ),
         },
         {
             "role": "user",
-            "content": f"""
-Build a JSE scraper plugin from these answers:
-{_json(answers)}
-
-Plugin contract:
-- Folder contains scraper-plugin.json and scraper.py.
-- manifest.id must be "{plugin_id}".
-- manifest.name/source_name should be "{source_name}".
-- manifest.module must be "scraper.py".
-- manifest.callable must be "scrape".
-- manifest.mode must be "{mode}".
-- config_schema should include base_url, company_name, location, max_pages, and test_keyword when useful.
-- scraper.py must define:
-  def scrape(keyword, status_callback=None, log_callback=None, profile_id=1, base_url="", company_name="", location="", max_pages={max_pages}, dry_run=False, **config):
-- It must import database_manager as db and store jobs with db.add_job(job_data, source_name, profile_id=profile_id, log_callback=log_callback) unless dry_run is True.
-- In dry_run mode it must fetch/parse at most one or two pages and return a dict with ok, found, sample_jobs, warnings.
-- In normal mode it should return True when at least one job was stored, otherwise False.
-- It must check concurrency.cancel_event and concurrency.paused around page loops.
-- Use requests for HTTP. For HTML parsing you may use BeautifulSoup (bs4) or the standard-library html.parser. Avoid brittle sleeps.
-- Prefer structured data over brittle HTML selectors. If the reconnaissance below shows JSON-LD JobPosting, parse <script type="application/ld+json"> and read fields from it. If the page exposes embedded JSON state (e.g. __NEXT_DATA__) or a JSON API, target that instead of scraping rendered HTML.
-- Base selectors and parsing on the reconnaissance evidence below, not on assumptions. If reconnaissance shows the page is client-side rendered with no static job links, say so plainly in dry_run warnings and attempt the embedded JSON / API path.
-- Make selectors and parsing resilient (try a couple of fallbacks). If structure is uncertain, include clear warnings in dry_run.
-- Never include personal information.
-
-Testing assumptions:
-- default keyword: "{default_keyword}"
-- page limit: {max_pages}
-
-{_recon_section(recon)}{_feedback_section(feedback)}
-
-Return valid JSON exactly in this shape:
-{{
-  "manifest": {{...}},
-  "scraper_code": "complete Python source",
-  "readme": "short markdown instructions",
-  "notes": ["..."],
-  "test_plan": ["..."]
-}}
-""".strip(),
+            "content": "\n".join(parts),
         },
     ]
 
@@ -434,14 +823,14 @@ def _validate_code(code):
     return True
 
 
-def _generate_once(answers, recon, feedback=None):
+def _generate_once(answers, recon, feedback=None, temperature=0.15):
     """Single generation pass: LLM call (optionally with repair feedback),
     normalisation, and static validation. Reconnaissance is computed once by the
     caller and reused across repair attempts."""
     response = llm_handler._call_unsloth(  # pylint: disable=protected-access
         _builder_prompt(answers, recon, feedback),
-        temperature=0.15,
-        max_tokens=16000,
+        temperature=temperature,
+        max_tokens=8000,
         json_mode=True,
     )
     data = _normalise_generation(_extract_json_object(response), answers)
@@ -570,8 +959,9 @@ def build_and_install(answers, max_attempts=None, log_callback=None):
     with tempfile.TemporaryDirectory(prefix="jse_scraper_build_") as tmp_plugins:
         for attempt in range(1, max_attempts + 1):
             log(f"Generating scraper (attempt {attempt}/{max_attempts})...")
+            temperature = 0.15 if attempt == 1 else 0.07
             try:
-                generated = _generate_once(answers, recon, feedback)
+                generated = _generate_once(answers, recon, feedback, temperature=temperature)
             except Exception as exc:  # noqa: BLE001 - feed generation errors back in
                 last_error = exc
                 feedback = f"The previous output failed generation/validation: {type(exc).__name__}: {exc}"
@@ -862,8 +1252,9 @@ def repair_plugin(plugin_id, profile_id=1, keyword=None, max_pages=1,
         for attempt in range(1, attempts + 1):
             log(f"Repairing {plugin.get('name') or plugin_id} (attempt {attempt}/{attempts})...")
             generated = None
+            temperature = 0.10 if attempt == 1 else 0.05
             try:
-                generated = _generate_once(answers, recon, feedback)
+                generated = _generate_once(answers, recon, feedback, temperature=temperature)
                 _write_candidate(generated, tmp_plugins)
                 test = test_plugin(
                     plugin_id,
