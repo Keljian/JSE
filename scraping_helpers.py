@@ -16,6 +16,11 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import database_manager as db
 from concurrency import paused, cancel_event, OperationCancelledError
 
+PAGE_LOAD_TIMEOUT_SECONDS = 45
+SCRIPT_TIMEOUT_SECONDS = 30
+JOB_DETAIL_TIMEOUT_SECONDS = 120
+DESCRIPTION_PROBE_TIMEOUT_SECONDS = 3
+
 # --- Helper Functions ---
 def _get_pdf_text_from_url(pdf_url, base_url, log_callback):
     """Downloads a PDF from a URL and extracts its text."""
@@ -70,6 +75,8 @@ def scraper_resource_manager(wait_timeout=10):
             log = log_callback or print
             try:
                 driver = webdriver.Chrome(options=options)
+                driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
+                driver.set_script_timeout(SCRIPT_TIMEOUT_SECONDS)
                 
                 # Centralized browser stealth configurations
                 driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -89,7 +96,7 @@ def scraper_resource_manager(wait_timeout=10):
         return wrapper
     return decorator
 
-def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1):
+def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1, job_timeout_seconds=JOB_DETAIL_TIMEOUT_SECONDS):
     """
     Optimized helper to iterate job list, scrape details, and save to DB.
     Relies on explicit waits instead of fixed delays for better performance.
@@ -109,6 +116,8 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1):
         processed_urls.add(job_url)
 
         log(f"({i+1}/{len(job_list)}) Processing: {job_info['title']}")
+        job_deadline = time.monotonic() + max(15, float(job_timeout_seconds))
+        timed_out = False
         
         driver.execute_script("window.open('');")
         driver.switch_to.window(driver.window_handles[1])
@@ -118,7 +127,11 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1):
         max_retries = 2
 
         while retry_count <= max_retries:
+            if time.monotonic() >= job_deadline:
+                timed_out = True
+                break
             try:
+                driver.set_page_load_timeout(max(1, min(PAGE_LOAD_TIMEOUT_SECONDS, job_deadline - time.monotonic())))
                 driver.get(job_url)
                 description_found = False
                 
@@ -131,8 +144,13 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1):
                 ]
                 
                 for desc_selector in description_selectors:
+                    remaining = job_deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
                     try:
-                        desc_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, desc_selector)))
+                        probe_wait = WebDriverWait(driver, min(DESCRIPTION_PROBE_TIMEOUT_SECONDS, remaining))
+                        desc_element = probe_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, desc_selector)))
                         candidate_desc = desc_element.text.strip()
                         
                         if candidate_desc and len(candidate_desc) > 100:
@@ -146,6 +164,9 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1):
                         log(f"   Description selector '{desc_selector}' failed: {e}")
                         continue
                 
+                if timed_out:
+                    break
+
                 if not description_found:
                     try:
                         body_text = driver.find_element(By.TAG_NAME, "body").text
@@ -167,6 +188,9 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1):
                     unique_pdf_urls = {link.get_attribute('href') for link in pdf_links_found if link.get_attribute('href')}
                     log(f"   📄 Found {len(unique_pdf_urls)} unique PDF links")
                     for pdf_url in unique_pdf_urls:
+                        if time.monotonic() >= job_deadline:
+                            timed_out = True
+                            break
                         extracted_text = _get_pdf_text_from_url(pdf_url, driver.current_url, log_callback)
                         if extracted_text:
                             pdf_text_content += extracted_text + "\n\n"
@@ -183,6 +207,11 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1):
                     log(f"   ❌ Max retries reached for '{job_info['title']}'")
                     description = f"Job description could not be loaded after {max_retries + 1} attempts for: {job_info['title']}"
         
+        if time.monotonic() >= job_deadline:
+            timed_out = True
+        if timed_out:
+            log(f"   Timeout: skipped '{job_info['title']}' after {int(job_timeout_seconds)} seconds; continuing with the remaining adverts.")
+
         try:
             handles = driver.window_handles
             if len(handles) > 1:
@@ -207,7 +236,7 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1):
             'position_description_text': pdf_text_content.strip() if pdf_text_content else ""
         }
 
-        if description and len(description.strip()) >= 50:
+        if not timed_out and description and len(description.strip()) >= 50:
             if db.add_job(job_details, job_info['company'], profile_id, log_callback):
                 log(f"   ✅ Saved '{job_info['title']}' to database.")
                 saved_count += 1

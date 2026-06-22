@@ -21,8 +21,10 @@ let workerSeq = 0;
 let workerRestartTimer = null;
 const pendingRequests = new Map();
 const legacyUserDataDir = path.join(rootDir, "settings");
-const userDataDir = app.isPackaged ? app.getPath("userData") : legacyUserDataDir;
-const runtimeRootDir = app.isPackaged ? userDataDir : rootDir;
+// JSE is intentionally portable: its database and settings live beside the
+// application in the settings folder, regardless of launch mode.
+const userDataDir = legacyUserDataDir;
+const runtimeRootDir = rootDir;
 const cacheDir = path.join(app.getPath("temp"), `JSECache-${process.pid}`);
 const updateStatePath = path.join(userDataDir, "update-state.json");
 const UPDATE_CHECK_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
@@ -31,6 +33,7 @@ let updateCheckTimer = null;
 let updateDownloadRequested = false;
 let manualUpdateCheck = false;
 let currentUpdateStatus = { status: "idle" };
+const SEARCH_INACTIVITY_TIMEOUT_MS = 4 * 60 * 1000;
 let seleniumGcInterval = null;
 let seleniumGcKickTimer = null;
 let seleniumGcRunning = false;
@@ -560,6 +563,25 @@ ipcMain.on("task:start", (event, taskId, command, payload) => {
 
   let stdoutBuffer = "";
   let stderr = "";
+  let inactivityTimer = null;
+  let timedOut = false;
+  const clearInactivityTimer = () => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = null;
+  };
+  const refreshInactivityTimer = () => {
+    if (command !== "scrape:run") return;
+    clearInactivityTimer();
+    inactivityTimer = setTimeout(() => {
+      timedOut = true;
+      sendTaskEvent(event.sender, taskId, {
+        type: "error",
+        message: "Search stopped after 4 minutes without progress. Jobs already found were kept; run the search again to continue."
+      });
+      killProcessTree(child);
+    }, SEARCH_INACTIVITY_TIMEOUT_MS);
+  };
+  refreshInactivityTimer();
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
 
@@ -568,6 +590,7 @@ ipcMain.on("task:start", (event, taskId, command, payload) => {
   });
 
   child.stdout.on("data", (chunk) => {
+    refreshInactivityTimer();
     stdoutBuffer += chunk;
     const lines = stdoutBuffer.split(/\r?\n/);
     stdoutBuffer = lines.pop() || "";
@@ -582,10 +605,12 @@ ipcMain.on("task:start", (event, taskId, command, payload) => {
   });
 
   child.on("error", (error) => {
+    clearInactivityTimer();
     sendTaskEvent(event.sender, taskId, { type: "error", message: error.message });
   });
 
   child.on("close", (code, signal) => {
+    clearInactivityTimer();
     runningTasks.delete(taskId);
     if (stdoutBuffer.trim()) {
       try {
@@ -594,7 +619,7 @@ ipcMain.on("task:start", (event, taskId, command, payload) => {
         sendTaskEvent(event.sender, taskId, { type: "log", message: stdoutBuffer.trim() });
       }
     }
-    if (signal || code !== 0) {
+    if (!timedOut && (signal || code !== 0)) {
       sendTaskEvent(event.sender, taskId, {
         type: "error",
         message: signal ? "Task cancelled." : (stderr.trim() || `Task exited with code ${code}`)

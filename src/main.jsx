@@ -3761,6 +3761,9 @@ function App() {
           return next;
         });
         task.unsubscribe();
+        if (command.startsWith("scrape:")) {
+          refresh(refreshProfileId).catch((error) => appendLog(toErrorMessage(error)));
+        }
       }
     });
     setActiveTasks((current) => ({ ...current, [taskKind]: task }));

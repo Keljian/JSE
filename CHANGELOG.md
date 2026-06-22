@@ -28,6 +28,9 @@ All notable changes to JSE are documented here.
 
 ### Changed
 
+- The canonical database and settings location is now always the software's
+  `settings` folder, so development and packaged launches cannot silently show
+  different job histories.
 - Contact extraction now preserves per-ad contact blocks, pairs names, emails,
   and phones by proximity, and rejects prose fragments masquerading as people.
   Target research shows one recommended contact and at most two credible
@@ -45,6 +48,12 @@ All notable changes to JSE are documented here.
 - Scraped position-description text is now attached to the Application
   workspace without replacing a document uploaded by the user.
 - Document upload and path handling is more reliable in Electron.
+
+### Fixed
+
+- Search detail extraction now gives each advert a two-minute budget, uses
+  short selector probes, and stops a search worker after four minutes without
+  progress. Jobs already saved are retained when a timeout occurs.
 
 ### Privacy and safety
 
