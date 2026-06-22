@@ -256,7 +256,13 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
         
         try:
             data = _post_json(f"{local['base_url']}/chat/completions", headers, payload, timeout=120)
-            return _strip_reasoning_blocks(data["choices"][0]["message"]["content"])
+            msg = data["choices"][0]["message"]
+            text = (msg.get("content") or "").strip()
+            if not text:
+                # Thinking-mode models (qwythos, some Qwen3 configs) route all
+                # output to reasoning_content; content is always empty string.
+                text = (msg.get("reasoning_content") or "").strip()
+            return _strip_reasoning_blocks(text)
         except LLMHTTPError as e:
             status_code = e.status_code
             response_format_rejected = (

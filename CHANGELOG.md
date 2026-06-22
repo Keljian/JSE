@@ -37,6 +37,11 @@ All notable changes to JSE are documented here.
   - Static validation now accepts the documented `scrape = decorated_function` pattern.
   - Added `SCRAPER_REFERENCE.md` — a living reference file injected into every build prompt
     covering the full scraper API, dry_run contract, allowed imports, and known ATS patterns.
+  - Fixed local LLM response handling for thinking-mode models (qwythos, and Qwen3 configs
+    where `/no_think` is not honoured): these models always return empty `content` and put
+    all output — including the generated JSON — in the `reasoning_content` field. The LLM
+    call layer now falls back to `reasoning_content` when `content` is empty, so generations
+    that succeed in the model's reasoning trace are no longer silently discarded as failures.
   - Fixed `config_schema` normalisation: the LLM reliably generates `config_schema` as a
     dict (`{"key": {…}}`) rather than the required list (`[{"key": "...", …}]`). Generation
     now converts dict-format schemas to the correct list shape instead of crashing with
