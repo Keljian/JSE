@@ -235,22 +235,100 @@ def _existing_plugin_path(plugin_id):
 
 
 def _extract_json_object(text):
-    if hasattr(llm_handler, "_extract_json"):
-        data = llm_handler._extract_json(text)  # pylint: disable=protected-access
-        if isinstance(data, dict):
-            return data
+    if isinstance(text, dict):
+        return text
     raw = str(text or "")
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start == -1 or end <= start:
-        raise ValueError("The local LLM did not return a JSON object.")
+    # Some OpenAI-compatible local models double-encode structured output, or
+    # surround it with prose containing unrelated braces.  raw_decode lets us
+    # select the first *complete* object instead of greedily taking everything
+    # between the first and last brace.
+    decoder = json.JSONDecoder()
+    candidates = [raw]
     try:
-        return json.loads(raw[start:end + 1])
-    except json.JSONDecodeError as exc:
+        decoded = json.loads(raw)
+        if isinstance(decoded, dict):
+            return decoded
+        if isinstance(decoded, str):
+            candidates.insert(0, decoded)
+    except (TypeError, json.JSONDecodeError):
+        pass
+    if hasattr(llm_handler, "_escape_control_chars_in_json_strings"):
+        escaped = llm_handler._escape_control_chars_in_json_strings(raw)  # pylint: disable=protected-access
+        if escaped != raw:
+            candidates.append(escaped)
+    for candidate in candidates:
+        value_text = candidate.strip()
+        try:
+            value = json.loads(value_text)
+            if isinstance(value, dict):
+                return value
+        except (TypeError, json.JSONDecodeError):
+            pass
+        try:
+            value = ast.literal_eval(value_text)
+            if isinstance(value, dict):
+                return value
+        except (SyntaxError, ValueError):
+            pass
+        decoded_objects = []
+        for match in re.finditer(r"\{", candidate):
+            try:
+                value, consumed = decoder.raw_decode(candidate[match.start():])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                decoded_objects.append((value, consumed))
+        if decoded_objects:
+            # Prefer the scraper envelope over nested objects such as manifest
+            # or config_schema defaults, then prefer the most complete object.
+            decoded_objects.sort(
+                key=lambda item: (
+                    "scraper_code" in item[0],
+                    "manifest" in item[0],
+                    len(item[0]),
+                    item[1],
+                ),
+                reverse=True,
+            )
+            return decoded_objects[0][0]
+        # A few small models emit a Python dict despite the JSON instruction.
+        start, end = candidate.find("{"), candidate.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                value = ast.literal_eval(candidate[start:end + 1])
+                if isinstance(value, dict):
+                    return value
+            except (SyntaxError, ValueError):
+                pass
+    if not raw.strip():
         raise ValueError(
-            "The local LLM returned malformed or truncated JSON for the scraper plugin. "
-            "Try again, or simplify the scraper's scope."
-        ) from exc
+            "The local LLM returned an empty response. Check the selected model's LM Studio chat template "
+            "and context/output limits."
+        )
+    if "{" not in raw:
+        raise ValueError(
+            f"The local LLM returned text but no JSON object ({len(raw)} characters)."
+        )
+    raise ValueError(
+        "The local LLM returned malformed or truncated JSON for the scraper plugin."
+    )
+
+
+def _extract_python_code(text):
+    """Extract a Python-only fallback response from a less capable local LLM."""
+    raw = str(text or "").strip()
+    fenced = re.findall(r"```(?:python|py)?\s*(.*?)```", raw, flags=re.IGNORECASE | re.DOTALL)
+    candidates = fenced + [raw]
+    for candidate in candidates:
+        code = candidate.strip()
+        if "def scrape(" in code or ("scrape =" in code and "def " in code):
+            return code
+    if not raw:
+        raise ValueError(
+            "The local LLM returned an empty response. Check the selected model's LM Studio chat template "
+            "and context/output limits."
+        )
+    raise ValueError("The local LLM did not return a complete Python scraper.")
 
 
 RECON_TIMEOUT = 20
@@ -735,6 +813,39 @@ def _builder_prompt(answers, recon=None, feedback=None):
     ]
 
 
+def _builder_code_prompt(answers, recon=None, feedback=None):
+    """Compact Python-only fallback for models that struggle to JSON-escape code."""
+    plugin_id = _slug(answers.get("plugin_id") or answers.get("source_name") or answers.get("name"))
+    source_name = answers.get("source_name") or answers.get("name") or plugin_id.replace("_", " ").title()
+    max_pages = int(answers.get("max_pages") or 3)
+    parts = [
+        f"Write scraper.py only for JSE source {source_name!r} (plugin id {plugin_id!r}).",
+        f"Careers URL: {answers.get('careers_url') or answers.get('base_url') or ''}",
+        f"Company: {answers.get('company_name') or source_name}",
+        f"Default location: {answers.get('location') or ''}",
+        f"Test keyword: {answers.get('test_keyword') or 'business analyst'}; max pages: {max_pages}",
+        f"Mode: {answers.get('mode') or 'keyword'}; platform hint: {answers.get('platform_hint') or 'none'}",
+        f"User notes: {answers.get('notes') or 'none'}",
+        "",
+        _HELPERS_REFERENCE,
+        "",
+        _DRY_RUN_CONTRACT,
+        "",
+        _recon_section(recon),
+        _feedback_section(feedback),
+        "",
+        "Define scrape(keyword, status_callback=None, log_callback=None, profile_id=1, "
+        f"base_url=\"\", company_name=\"\", location=\"\", max_pages={max_pages}, "
+        "dry_run=False, **config), or assign scrape to a decorated function with those arguments.",
+        "Keep it under 150 lines and use only the imports/helpers allowed by the reference above.",
+        "Return ONLY complete Python source. Do not use JSON and do not use markdown fences.",
+    ]
+    return [
+        {"role": "system", "content": "You write safe, concise, runnable JSE Python scraper plugins."},
+        {"role": "user", "content": "\n".join(parts)},
+    ]
+
+
 def _normalise_generation(data, answers):
     plugin_id = _slug(answers.get("plugin_id") or data.get("manifest", {}).get("id") or answers.get("source_name"))
     manifest = dict(data.get("manifest") or {})
@@ -800,14 +911,18 @@ def _validate_code(code):
     # NOT exec the generated module: executing untrusted top-level code (with
     # full builtins) would defeat the static blocklist above and run any
     # import-time side effects of the generated plugin.
-    scrape_node = next(
-        (
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "scrape"
-        ),
-        None,
-    )
+    functions = {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    scrape_node = functions.get("scrape")
+    if scrape_node is None:
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            value = node.value
+            if any(isinstance(target, ast.Name) and target.id == "scrape" for target in targets):
+                if isinstance(value, ast.Name):
+                    scrape_node = functions.get(value.id)
+                break
     if scrape_node is None:
         raise ValueError("Generated scraper.py must define a callable scrape function.")
     args = scrape_node.args
@@ -823,17 +938,23 @@ def _validate_code(code):
     return True
 
 
-def _generate_once(answers, recon, feedback=None, temperature=0.15):
+def _generate_once(answers, recon, feedback=None, temperature=0.15, output_mode="structured_json"):
     """Single generation pass: LLM call (optionally with repair feedback),
     normalisation, and static validation. Reconnaissance is computed once by the
     caller and reused across repair attempts."""
+    python_only = output_mode == "python"
     response = llm_handler._call_unsloth(  # pylint: disable=protected-access
-        _builder_prompt(answers, recon, feedback),
+        _builder_code_prompt(answers, recon, feedback) if python_only else _builder_prompt(answers, recon, feedback),
         temperature=temperature,
         max_tokens=8000,
-        json_mode=True,
+        json_mode=output_mode == "structured_json",
     )
-    data = _normalise_generation(_extract_json_object(response), answers)
+    raw_data = (
+        {"manifest": {}, "scraper_code": _extract_python_code(response), "notes": [], "test_plan": []}
+        if python_only
+        else _extract_json_object(response)
+    )
+    data = _normalise_generation(raw_data, answers)
     scraper_plugins.validate_manifest(data["manifest"])
     _validate_code(data["scraper_code"])
     data["reconnaissance"] = _recon_public_summary(recon)
@@ -958,14 +1079,28 @@ def build_and_install(answers, max_attempts=None, log_callback=None):
 
     with tempfile.TemporaryDirectory(prefix="jse_scraper_build_") as tmp_plugins:
         for attempt in range(1, max_attempts + 1):
-            log(f"Generating scraper (attempt {attempt}/{max_attempts})...")
+            output_mode = "structured_json" if attempt == 1 else ("json_text" if attempt == 2 else "python")
+            mode_label = {
+                "structured_json": "structured JSON",
+                "json_text": "portable JSON text",
+                "python": "compact Python fallback",
+            }[output_mode]
+            log(f"Generating scraper (attempt {attempt}/{max_attempts}, {mode_label})...")
             temperature = 0.15 if attempt == 1 else 0.07
             try:
-                generated = _generate_once(answers, recon, feedback, temperature=temperature)
+                generated = _generate_once(
+                    answers, recon, feedback, temperature=temperature, output_mode=output_mode
+                )
             except Exception as exc:  # noqa: BLE001 - feed generation errors back in
                 last_error = exc
                 feedback = f"The previous output failed generation/validation: {type(exc).__name__}: {exc}"
-                history.append({"attempt": attempt, "ok": False, "stage": "generate", "error": str(exc)})
+                history.append({
+                    "attempt": attempt,
+                    "ok": False,
+                    "stage": "generate",
+                    "output_mode": output_mode,
+                    "error": str(exc),
+                })
                 log(f"Attempt {attempt} failed to generate valid code: {exc}")
                 continue
             last_valid = generated

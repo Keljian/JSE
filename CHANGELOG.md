@@ -30,6 +30,11 @@ All notable changes to JSE are documented here.
     eliminating mid-JSON truncation failures.
   - Repair and second+ attempts use lower temperature (0.07/0.05 vs 0.15) for targeted
     corrections rather than creative rewrites.
+  - Hardened local-LLM output handling for LM Studio and smaller models: the builder now
+    accepts fenced, double-encoded, Python-style, and prose-wrapped JSON; reports empty
+    responses with actionable chat-template guidance; and retries using structured JSON,
+    portable JSON text, then a compact Python-only fallback.
+  - Static validation now accepts the documented `scrape = decorated_function` pattern.
   - Added `SCRAPER_REFERENCE.md` — a living reference file injected into every build prompt
     covering the full scraper API, dry_run contract, allowed imports, and known ATS patterns.
 
