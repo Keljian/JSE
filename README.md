@@ -335,6 +335,15 @@ making a speculative approach.
 
 ## Data Folders
 
+JSE keeps its canonical database in `settings/job_applications.db`. Before any
+worker opens it, every application launch creates an integrity-checked SQLite
+backup in `Backups/`. The newest 12 automatic startup backups are retained;
+manual and recovery backups in that folder are left untouched.
+
+To restore one, open **Settings → Maintenance → Recover database**. JSE validates
+the selected SQLite backup, creates a `pre_restore_...` safety copy of the
+current database, restores the selection, and restarts automatically.
+
 These folders/files are local runtime data and may contain private information:
 
 | Path | Contents |

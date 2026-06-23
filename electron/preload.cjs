@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("jobAssistant", {
   chooseDocument: (title) => ipcRenderer.invoke("dialog:document", title),
   chooseScraperPlugin: () => ipcRenderer.invoke("dialog:scraperPlugin"),
   chooseFolder: (title) => ipcRenderer.invoke("dialog:folder", title),
+  chooseDatabaseBackup: () => ipcRenderer.invoke("dialog:databaseBackup"),
+  restoreDatabase: (backupPath) => ipcRenderer.invoke("database:restore", backupPath),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
   showPath: (filePath) => ipcRenderer.invoke("shell:showPath", filePath),

@@ -7,6 +7,8 @@ const { spawn } = require("node:child_process");
 const rootDir = path.resolve(__dirname, "..");
 const appIconPath = path.join(rootDir, "assets", "jse-icon.png");
 const bridgePath = path.join(rootDir, "python_bridge.py");
+const databaseBackupPath = path.join(rootDir, "tools", "backup_database.py");
+const databaseRestorePath = path.join(rootDir, "tools", "restore_database.py");
 const runningTasks = new Map();
 const bridgeChildren = new Set();
 
@@ -118,6 +120,76 @@ function prepareWritableWorkspace() {
   ]) {
     copySeedItem(path.join(rootDir, item), path.join(userDataDir, item));
   }
+}
+
+function backupDatabaseAtStartup() {
+  const databasePath = path.join(userDataDir, "job_applications.db");
+  const backupDir = path.join(rootDir, "Backups");
+  if (!fs.existsSync(databasePath) || !fs.existsSync(databaseBackupPath)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const child = spawn(getPythonCommand(), [databaseBackupPath, databasePath, backupDir, "--retain", "12"], {
+      cwd: rootDir,
+      env: { ...process.env, PYTHONNOUSERSITE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => {
+      console.error(`Startup database backup failed: ${error.message}`);
+      resolve(null);
+    });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        console.error(`Startup database backup failed: ${stderr.trim() || `exit code ${code}`}`);
+        resolve(null);
+        return;
+      }
+      resolve(stdout.trim() || null);
+    });
+  });
+}
+
+function runDatabaseRestore(backupPath) {
+  const databasePath = path.join(userDataDir, "job_applications.db");
+  const backupDir = path.join(rootDir, "Backups");
+  return new Promise((resolve, reject) => {
+    const child = spawn(getPythonCommand(), [databaseRestorePath, backupPath, databasePath, backupDir], {
+      cwd: rootDir,
+      env: { ...process.env, PYTHONNOUSERSITE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `Database recovery exited with code ${code}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout.trim()));
+      } catch {
+        reject(new Error("Database recovery returned an invalid result."));
+      }
+    });
+  });
 }
 
 function publishUpdateStatus(status) {
@@ -532,6 +604,42 @@ ipcMain.handle("dialog:folder", async (_event, title = "Select folder") => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle("dialog:databaseBackup", async () => {
+  const result = await dialog.showOpenDialog({
+    title: "Recover JSE database",
+    defaultPath: path.join(rootDir, "Backups"),
+    filters: [{ name: "SQLite database backups", extensions: ["db", "sqlite", "sqlite3"] }],
+    properties: ["openFile"]
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle("database:restore", async (_event, backupPath) => {
+  if (!backupPath || !path.isAbsolute(backupPath) || !fs.existsSync(backupPath)) {
+    throw new Error("Choose an existing database backup.");
+  }
+  isQuitting = true;
+  cancelAllBridgeProcesses();
+  const worker = bridgeWorker;
+  bridgeWorker = null;
+  for (const pending of pendingRequests.values()) pending.reject(new Error("Database recovery started."));
+  pendingRequests.clear();
+  killProcessTree(worker);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const result = await runDatabaseRestore(backupPath);
+    setTimeout(() => {
+      app.relaunch();
+      app.exit(0);
+    }, 250);
+    return result;
+  } catch (error) {
+    isQuitting = false;
+    startBridgeWorker();
+    throw error;
+  }
+});
+
 ipcMain.handle("shell:openExternal", (_event, url) => {
   if (!/^https?:\/\//i.test(url) && !/^mailto:/i.test(url)) return false;
   return shell.openExternal(url);
@@ -642,11 +750,12 @@ ipcMain.on("task:cancelAll", () => {
   cancelAllBridgeProcesses();
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (process.platform === "darwin" && app.dock) {
     app.dock.setIcon(appIconPath);
   }
   prepareWritableWorkspace();
+  await backupDatabaseAtStartup();
   startBridgeWorker();
   createWindow();
   configureAutoUpdater();

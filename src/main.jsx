@@ -2720,7 +2720,7 @@ function ModelSelect({ value, options, loading, placeholder, onChange, onRefresh
   );
 }
 
-function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onApplyFilters, onCompactDatabase, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onBuildScraper, onTestScraper, onDiagnoseScraper, onRepairScraper, onRollbackScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
+function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onApplyFilters, onCompactDatabase, onRecoverDatabase, onResetRejected, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onBuildScraper, onTestScraper, onDiagnoseScraper, onRepairScraper, onRollbackScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
   const [form, setForm] = useState(settings || {});
   const [globalForm, setGlobalForm] = useState(globalSettings || {});
   const [profileForm, setProfileForm] = useState({ name: "", resume_path: "" });
@@ -2730,6 +2730,9 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
   const [settingsScope, setSettingsScope] = useState("lane");
   const [section, setSection] = useState("profile");
   const [compacting, setCompacting] = useState(false);
+  const [recoveringDatabase, setRecoveringDatabase] = useState(false);
+  const [resettingRejected, setResettingRejected] = useState(false);
+  const [resetRejectedResult, setResetRejectedResult] = useState(null);
   const [compactResult, setCompactResult] = useState(null);
   const [providerTests, setProviderTests] = useState({});
   const [modelOptions, setModelOptions] = useState({});
@@ -2809,6 +2812,39 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
       setCompactResult(result);
     } finally {
       setCompacting(false);
+    }
+  };
+  const recoverDatabase = async () => {
+    const backupPath = await window.jobAssistant.chooseDatabaseBackup?.();
+    if (!backupPath) return;
+    const confirmed = await appConfirm({
+      title: "Recover database?",
+      message: "JSE will verify this backup, preserve the current database as a pre-restore backup, restore the selected file, and restart. Changes made after that backup will no longer be active.",
+      confirmLabel: "Restore and restart",
+      danger: true,
+    });
+    if (!confirmed) return;
+    setRecoveringDatabase(true);
+    try {
+      await onRecoverDatabase(backupPath);
+    } finally {
+      setRecoveringDatabase(false);
+    }
+  };
+  const resetRejected = async () => {
+    const confirmed = await appConfirm({
+      title: "Reset all rejected jobs?",
+      message: "All jobs in the Rejected column will be moved back to New and their analysis cleared, so they are re-scored on the next analysis run. Jobs rejected by the company are not affected.",
+      confirmLabel: "Reset to new",
+    });
+    if (!confirmed) return;
+    setResettingRejected(true);
+    setResetRejectedResult(null);
+    try {
+      const result = await onResetRejected();
+      setResetRejectedResult(result.count);
+    } finally {
+      setResettingRejected(false);
     }
   };
   const pluginConfigValue = (plugin, key) => {
@@ -3328,6 +3364,16 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
                 . Main DB {formatBytes(compactResult.before_main_bytes)} to {formatBytes(compactResult.after_main_bytes)}.
               </span>
             ) : <span>Checkpoint WAL and vacuum the local SQLite database.</span>}
+          </div>
+          <div className="maintenance-row">
+            <button className="secondary" disabled={recoveringDatabase} onClick={recoverDatabase}><FolderOpen size={16} /> {recoveringDatabase ? "Recovering..." : "Recover database"}</button>
+            <span>Restore a verified JSE backup. The current database is backed up first, then JSE restarts.</span>
+          </div>
+          <div className="maintenance-row">
+            <button className="secondary" disabled={resettingRejected} onClick={resetRejected}><RefreshCw size={16} /> {resettingRejected ? "Resetting..." : "Reset rejected to new"}</button>
+            {resetRejectedResult != null
+              ? <span>{resetRejectedResult} job{resetRejectedResult === 1 ? "" : "s"} reset. Run analysis to re-score them.</span>
+              : <span>Move all rejected jobs back to New and clear their scores so they are re-analysed from scratch.</span>}
           </div>
         </section>
         ) : null}
@@ -4134,7 +4180,6 @@ function App() {
       return {};
     }
   };
-
   const hiddenContactSelect = async (target, candidateId) => {
     const data = await invoke("hiddenMarket:contactSelect", { profile_id: activeProfileId, target, candidate_id: candidateId });
     return data?.contact_research || null;
@@ -4474,6 +4519,18 @@ function App() {
     appendLog("Compacting database...");
     const result = await invoke("database:compact");
     appendLog(`Database compacted. Reclaimed ${formatBytes(result.reclaimed_bytes)}.`);
+    return result;
+  };
+  const resetRejectedJobs = async () => {
+    const result = await invoke("jobs:resetRejected", { profile_id: activeProfileId });
+    appendLog(`Reset ${result.count} rejected job${result.count === 1 ? "" : "s"} to new.`);
+    await refresh();
+    return result;
+  };
+  const recoverDatabase = async (backupPath) => {
+    appendLog(`Recovering database from ${backupPath}...`);
+    const result = await window.jobAssistant.restoreDatabase(backupPath);
+    appendLog(`Database recovered (${result.jobs} jobs). Restarting JSE...`);
     return result;
   };
   const refreshScrapers = async () => {
@@ -4878,6 +4935,8 @@ function App() {
             onSaveProfile={saveProfile}
             onApplyFilters={applySettingsToFilters}
             onCompactDatabase={compactDatabase}
+            onRecoverDatabase={recoverDatabase}
+            onResetRejected={resetRejectedJobs}
             onImportResume={importResume}
             onSearchResumes={searchResumes}
             onScanMemory={scanProfileMemory}

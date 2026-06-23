@@ -1747,8 +1747,16 @@ def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_call
             if boost_hits or penalty_hits:
                 triage_reason += f" Preference flags: +{', '.join(boost_hits) or 'none'}; -{', '.join(penalty_hits) or 'none'}."
             if not keep:
-                triage_score = min(triage_score, TRIAGE_KEEP_THRESHOLD - 1)
-                triage_reason += " Triage keep=false; treating as below keep threshold."
+                if triage_score >= TRIAGE_KEEP_THRESHOLD:
+                    # Model returned keep=false for a score at or above the keep floor —
+                    # inconsistent with the KEEP RULE (keep=true when score >= 45 and no
+                    # knockout). Don't force the score below the auto-reject threshold;
+                    # store it as-is so the job stays for manual review.
+                    log(f"Triage keep=false inconsistency for job ID {job_id}: score {triage_score}% is above keep floor; storing uncapped.")
+                    triage_reason += " Triage keep=false (model inconsistency; score stored uncapped)."
+                else:
+                    triage_score = min(triage_score, TRIAGE_KEEP_THRESHOLD - 1)
+                    triage_reason += " Triage keep=false; treating as below keep threshold."
             log(f"Triage for job ID {job_id}: {triage_score}% - {triage_reason}")
             rescued = False
             if triage_score < FULL_ANALYSIS_TRIAGE_THRESHOLD:
@@ -1805,8 +1813,6 @@ JOB ADVERTISEMENT:
 ---
 {full_description_for_analysis[:9000]}
 ---"""
-        score = 0
-        analysis_text = "Analysis failed."
         json_string = ""
         llm_response_text = ""
 
@@ -1847,8 +1853,12 @@ JOB ADVERTISEMENT:
                             count=1,
                         )
             else:
-                log(f"Could not find JSON in response for job ID {job_id}.")
-                analysis_text = "Failed to find JSON in response.\n\n" + llm_response_text
+                # LLM returned an unparseable response. Skip this job rather than
+                # auto-rejecting it — a transient failure (empty response, server
+                # overload, model issue) must not permanently kill a good fit.
+                # analysis_signature is left as-is so the job is re-analysed next run.
+                log(f"Could not find JSON for job ID {job_id}; skipping (will retry). Response: {llm_response_text[:200]!r}")
+                continue
 
             fragment_score, alignment_json = (
                 _analysis_fragment_alignment(data, bool(fragment_context))
@@ -1870,22 +1880,17 @@ JOB ADVERTISEMENT:
                 log(f"Analyzed job ID {job_id}. Match score: {score}% ({reason}; composite = match)")
 
         except json.JSONDecodeError as e:
-            log(f"Error decoding JSON for job ID {job_id}: {e}")
-            log(f"Failing string: {json_string}")
-            error_text = f"Analysis failed: Malformed JSON.\nError: {e}\nResponse:\n{llm_response_text}"
-            db.update_job_analysis(job_id, error_text, 0, analysis_signature)
-            try:
-                db.update_job_fragment_alignment(job_id, None, _compose_score(0, None), None)
-            except Exception as exc:
-                log(f"Composite score persist skipped for job {job_id}: {exc}")
+            # Malformed JSON in an unexpected code path. Same safe-skip policy.
+            log(f"JSON decode error for job ID {job_id}: {e} — skipping (will retry).")
+            log(f"Failing string: {json_string[:300]}")
+        except concurrency.OperationCancelledError:
+            raise
         except Exception as e:
-            log(f"Error analyzing job ID {job_id}: {e}")
-            error_text = f"Analysis failed: {e}"
-            db.update_job_analysis(job_id, error_text, 0, analysis_signature)
-            try:
-                db.update_job_fragment_alignment(job_id, None, _compose_score(0, None), None)
-            except Exception as exc:
-                log(f"Composite score persist skipped for job {job_id}: {exc}")
+            if concurrency.cancel_event.is_set():
+                raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+            # Transient errors (timeout, server overload, model crash) must not
+            # permanently auto-reject jobs. Log and skip; next run will retry.
+            log(f"Error analysing job ID {job_id}: {e} — skipping (will retry).")
 
 
 def analyze_jobs(log_callback=None, resume_text: str = "", re_analyze: bool = False, status_filter: str = 'new', profile_id=1):

@@ -3391,6 +3391,53 @@ def reject_low_match_jobs(threshold=AUTO_REJECT_THRESHOLD, profile_id=None, log_
     return len(rows)
 
 
+def reset_rejected_to_new(profile_id=None):
+    """Move all auto/manually rejected jobs back to 'new' and clear their analysis so they are re-scored.
+
+    Only touches pipeline_stage='rejected'. Leaves 'rejected_by_company' and
+    'archived' alone — those reflect human or employer decisions.
+    """
+    profile_clause = "AND profile_id = ?" if profile_id else ""
+    params = [profile_id] if profile_id else []
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id FROM jobs
+            WHERE pipeline_stage = 'rejected'
+            {profile_clause}
+            """,
+            params,
+        ).fetchall()
+        job_ids = [row["id"] for row in rows]
+        if not job_ids:
+            return 0
+        placeholders = ",".join("?" * len(job_ids))
+        conn.execute(
+            f"""
+            UPDATE jobs
+            SET status = 'new',
+                pipeline_stage = 'new',
+                match_score = NULL,
+                composite_score = NULL,
+                ai_analysis = NULL,
+                analysis_signature = NULL,
+                next_action = NULL,
+                next_action_date = NULL,
+                updated_at = datetime('now'),
+                last_interaction_at = datetime('now')
+            WHERE id IN ({placeholders})
+            """,
+            job_ids,
+        )
+        for job_id in job_ids:
+            conn.execute(
+                "INSERT INTO application_events (job_id, event_type, title, details) VALUES (?, ?, ?, ?)",
+                (job_id, "stage", "Reset to new", "Bulk reset from rejected to new for re-analysis."),
+            )
+        conn.commit()
+    return len(job_ids)
+
+
 def refresh_closing_date_metadata(limit=2000, log_callback=None):
     """Re-parse active job ads for explicit closing dates and reject ads already closed."""
     updated = 0

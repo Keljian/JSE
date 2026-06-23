@@ -1569,6 +1569,12 @@ def command_jobs_cleanup_archive(payload):
     }
 
 
+def command_jobs_reset_rejected(payload):
+    profile_id = payload.get("profile_id")
+    count = db.reset_rejected_to_new(profile_id=profile_id)
+    return {"count": count}
+
+
 def command_jobs_move_profile(payload):
     job = db.move_job_to_profile(int(payload["job_id"]), int(payload["profile_id"]))
     return {
@@ -2753,6 +2759,7 @@ COMMANDS = {
     "jobs:updateStatus": command_jobs_update_status,
     "jobs:update": command_jobs_update,
     "jobs:cleanupArchive": command_jobs_cleanup_archive,
+    "jobs:resetRejected": command_jobs_reset_rejected,
     "jobs:moveProfile": command_jobs_move_profile,
     "company:classify": command_company_classify,
     "company:research": command_company_research,
