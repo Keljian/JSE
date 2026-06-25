@@ -6,6 +6,8 @@ All notable changes to JSE are documented here.
 
 ### Added
 
+- Added PDF conversion actions for `.doc` and `.docx` application documents
+  directly in the Application workspace.
 - Improved scraper plugin generation success rate with layered prompt intelligence:
   - Added ATS fingerprinting for 13 platforms (Greenhouse, Lever, Workday, SmartRecruiters,
     PageUp, SuccessFactors, Taleo, BambooHR, Recruitee, Ashby, Jobvite, NGA, and others).

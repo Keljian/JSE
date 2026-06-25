@@ -689,6 +689,118 @@ ipcMain.handle("shell:downloadFile", async (_event, filePath) => {
   fs.copyFileSync(abs, result.filePath);
   return { canceled: false, path: result.filePath };
 });
+
+function resolveDocumentPath(filePath) {
+  if (!filePath || typeof filePath !== "string") {
+    throw new Error("Choose a document to convert.");
+  }
+  if (path.isAbsolute(filePath)) return filePath;
+  const candidates = [
+    path.join(rootDir, filePath),
+    path.join(userDataDir, filePath)
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+}
+
+function convertWordDocumentToPdf(sourcePath) {
+  if (process.platform !== "win32") {
+    throw new Error("PDF conversion currently requires Windows with Microsoft Word installed.");
+  }
+  const abs = resolveDocumentPath(sourcePath);
+  if (!fs.existsSync(abs)) {
+    throw new Error(`Document file not found: ${abs}`);
+  }
+  if (!/\.docx?$/i.test(abs)) {
+    throw new Error("Only .doc and .docx application documents can be converted to PDF.");
+  }
+  const target = path.join(path.dirname(abs), `${path.basename(abs, path.extname(abs))}.pdf`);
+  if (fs.existsSync(target)) fs.unlinkSync(target);
+
+  const powershell = path.join(
+    process.env.SystemRoot || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe"
+  );
+  const script = `
+$ErrorActionPreference = 'Stop'
+$source = $env:JSE_CONVERT_SOURCE
+$target = $env:JSE_CONVERT_TARGET
+$word = $null
+$document = $null
+try {
+  $word = New-Object -ComObject Word.Application
+  $word.Visible = $false
+  $word.DisplayAlerts = 0
+  $document = $word.Documents.Open($source, $false, $true, $false)
+  $document.ExportAsFixedFormat($target, 17)
+  Write-Output $target
+} finally {
+  if ($document -ne $null) { $document.Close($false) }
+  if ($word -ne $null) { $word.Quit() }
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+}
+`;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(powershell, [
+      "-NoProfile",
+      "-NonInteractive",
+      "-STA",
+      "-WindowStyle",
+      "Hidden",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      script
+    ], {
+      env: {
+        ...process.env,
+        JSE_CONVERT_SOURCE: abs,
+        JSE_CONVERT_TARGET: target
+      },
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      killProcessTree(child);
+      reject(new Error("PDF conversion timed out while waiting for Microsoft Word."));
+    }, 120000);
+    child.stderr.setEncoding("utf8");
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", () => {});
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `PDF conversion exited with code ${code}`));
+        return;
+      }
+      if (!fs.existsSync(target)) {
+        reject(new Error(`PDF conversion did not create a file: ${target}`));
+        return;
+      }
+      resolve({ source_path: abs, pdf_path: target });
+    });
+  });
+}
+
+ipcMain.handle("document:convertPdf", (_event, filePath) => convertWordDocumentToPdf(filePath));
+
 ipcMain.on("task:start", (event, taskId, command, payload) => {
   const child = spawnBridgeProcess(command);
 

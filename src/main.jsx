@@ -751,12 +751,18 @@ function displayFileName(value) {
   return text.split(/[\\/]/).filter(Boolean).pop() || text;
 }
 
-function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal }) {
+function isWordDocumentPath(value) {
+  return /\.docx?$/i.test(String(value || "").trim());
+}
+
+function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal, onConvertPdf }) {
   const inputRef = useRef(null);
+  const [converting, setConverting] = useState(false);
   const uploadFile = (file) => {
     if (file) onDrop(file);
   };
   const fileName = displayFileName(value);
+  const canConvertPdf = Boolean(value && onConvertPdf && isWordDocumentPath(value));
   const browseForFile = async () => {
     if (!window.jobAssistant.chooseDocument) {
       inputRef.current?.click();
@@ -764,6 +770,15 @@ function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal }) 
     }
     const path = await window.jobAssistant.chooseDocument(`Select ${label.toLowerCase()}`);
     if (path) uploadFile({ name: displayFileName(path), path });
+  };
+  const convertPdf = async () => {
+    if (!canConvertPdf || converting) return;
+    setConverting(true);
+    try {
+      await onConvertPdf();
+    } finally {
+      setConverting(false);
+    }
   };
 
   return (
@@ -792,6 +807,7 @@ function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal }) 
         />
         <button className="secondary" onClick={browseForFile}><FolderOpen size={16} /> Upload</button>
         <button className="secondary" disabled={!text} onClick={onView}><FileText size={16} /> Open text</button>
+        <button className="secondary" disabled={!canConvertPdf || converting} onClick={convertPdf}>{converting ? <Loader2 className="spin" size={16} /> : <FileText size={16} />} PDF</button>
         <button className="secondary" disabled={!value} onClick={onDownload}><Download size={16} /> Download</button>
         <button className="secondary" disabled={!value} onClick={onReveal}><ExternalLink size={16} /> Show</button>
       </div>
@@ -1210,7 +1226,7 @@ function toDateTimeInputValue(value) {
   return text.replace(" ", "T").slice(0, 16);
 }
 
-function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiveTab, onClose, onSave, onApplicationDateApplied, onGenerateDocs, onGeneratePrompt, onCompanyResearch, onAddEvent, onAddInterview, onUpdateInterview, onDocumentDrop, onViewDocument, onDownloadDocument, onRevealDocument, onAnalyzeJob, onMoveProfile, analyzing, generatingDocs, researchingCompany, documentAiName, onRejectJob, onMoveInterested }) {
+function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiveTab, onClose, onSave, onApplicationDateApplied, onGenerateDocs, onGeneratePrompt, onCompanyResearch, onAddEvent, onAddInterview, onUpdateInterview, onDocumentDrop, onViewDocument, onDownloadDocument, onRevealDocument, onConvertDocumentPdf, onAnalyzeJob, onMoveProfile, analyzing, generatingDocs, researchingCompany, documentAiName, onRejectJob, onMoveInterested }) {
   const [form, setForm] = useState(job || {});
   const [targetProfileId, setTargetProfileId] = useState(job?.profile_id || "");
   const [profileMoving, setProfileMoving] = useState(false);
@@ -1454,6 +1470,7 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
               onView={() => onViewDocument("Cover letter text", form.cover_letter_text)}
               onDownload={() => onDownloadDocument(form.cover_letter_path)}
               onReveal={() => onRevealDocument(form.cover_letter_path)}
+              onConvertPdf={() => onConvertDocumentPdf(form.cover_letter_path, "cover_letter")}
             />
             <DropZone
               label="Resume"
@@ -1463,6 +1480,7 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
               onView={() => onViewDocument("Resume text", form.resume_text)}
               onDownload={() => onDownloadDocument(form.resume_used)}
               onReveal={() => onRevealDocument(form.resume_used)}
+              onConvertPdf={() => onConvertDocumentPdf(form.resume_used, "resume")}
             />
             <DropZone
               label="Position description"
@@ -1472,6 +1490,7 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
               onView={() => onViewDocument("Position description text", form.position_description_text)}
               onDownload={() => onDownloadDocument(form.position_description_path)}
               onReveal={() => onRevealDocument(form.position_description_path)}
+              onConvertPdf={() => onConvertDocumentPdf(form.position_description_path, "position_description")}
             />
           </div>
           <label><span>Next action</span><input value={form.next_action || ""} onChange={(event) => set("next_action", event.target.value)} /></label>
@@ -4303,6 +4322,40 @@ function App() {
     }
   };
 
+  const convertDocumentPdf = async (filePath, docType) => {
+    if (!workspace.job || !filePath) return;
+    try {
+      if (!window.jobAssistant.convertDocumentToPdf) {
+        appendLog("PDF conversion needs an app restart to activate.");
+        return;
+      }
+      const data = await window.jobAssistant.convertDocumentToPdf(filePath);
+      const docLabel = {
+        resume: "Resume",
+        cover_letter: "Cover letter",
+        position_description: "Position description"
+      }[docType] || "Application document";
+      await invoke("events:add", {
+        job_id: workspace.job.id,
+        event_type: "documents",
+        title: `${docLabel} converted to PDF`,
+        details: `Source: ${data.source_path || filePath}\nPDF: ${data.pdf_path}`
+      });
+      appendLog(`PDF created: ${data.pdf_path}`);
+      const detail = await invoke("jobs:detail", { job_id: workspace.job.id });
+      setWorkspace((current) => ({
+        ...current,
+        job: detail.job,
+        events: detail.events,
+        interviews: detail.interviews || current.interviews
+      }));
+      await window.jobAssistant.showPath(data.pdf_path);
+    } catch (error) {
+      appendLog(`PDF conversion failed: ${toErrorMessage(error)}`);
+      throw error;
+    }
+  };
+
   const scanProfileMemory = () => {
     if (!activeProfileId) return;
     runTask(
@@ -4980,6 +5033,7 @@ function App() {
           onViewDocument={(title, text) => setDocumentViewer({ title, text })}
           onDownloadDocument={downloadDocument}
           onRevealDocument={revealDocument}
+          onConvertDocumentPdf={convertDocumentPdf}
           onAnalyzeJob={() => analyzeJob(workspace.job)}
           onMoveProfile={moveWorkspaceProfile}
           analyzing={analysisBusy}

@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld("jobAssistant", {
   openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
   showPath: (filePath) => ipcRenderer.invoke("shell:showPath", filePath),
   downloadFile: (filePath) => ipcRenderer.invoke("shell:downloadFile", filePath),
+  convertDocumentToPdf: (filePath) => ipcRenderer.invoke("document:convertPdf", filePath),
   stopAllTasks: () => ipcRenderer.send("task:cancelAll"),
   startTask: (command, payload, onEvent) => {
     const taskId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
