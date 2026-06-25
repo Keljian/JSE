@@ -482,6 +482,11 @@ function startBridgeWorker() {
         pending.resolve(event.data);
       } else if (event.type === "error") {
         pendingRequests.delete(event.id);
+        if (isReadonlyDatabaseError(event.message)) {
+          pending.reject(new Error(`${event.message}\n\nThe Python bridge worker has been restarted. Please retry the action.`));
+          restartBridgeWorker("readonly database");
+          continue;
+        }
         pending.reject(new Error(event.message));
       }
       // "log" events on the invoke path have no consumer; ignore them.
@@ -495,18 +500,38 @@ function startBridgeWorker() {
   return child;
 }
 
-function handleWorkerExit(child) {
-  if (bridgeWorker !== child) return; // a newer worker already took over
-  bridgeWorker = null;
+function isReadonlyDatabaseError(message) {
+  return /readonly database/i.test(String(message || ""));
+}
+
+function rejectPendingWorkerRequests(error) {
   for (const pending of pendingRequests.values()) {
-    pending.reject(new Error("Python bridge worker exited."));
+    pending.reject(error);
   }
   pendingRequests.clear();
+}
+
+function scheduleBridgeWorkerRestart(delayMs = 500) {
   if (isQuitting || workerRestartTimer) return;
   workerRestartTimer = setTimeout(() => {
     workerRestartTimer = null;
     startBridgeWorker();
-  }, 500);
+  }, delayMs);
+}
+
+function restartBridgeWorker(reason = "worker restart") {
+  const worker = bridgeWorker;
+  bridgeWorker = null;
+  rejectPendingWorkerRequests(new Error(`Python bridge worker restarted: ${reason}.`));
+  if (worker) killProcessTree(worker);
+  scheduleBridgeWorkerRestart(250);
+}
+
+function handleWorkerExit(child) {
+  if (bridgeWorker !== child) return; // a newer worker already took over
+  bridgeWorker = null;
+  rejectPendingWorkerRequests(new Error("Python bridge worker exited."));
+  scheduleBridgeWorkerRestart();
 }
 
 function invokeViaWorker(command, payload = {}) {

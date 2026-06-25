@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import site
+import sqlite3
 import sys
 import threading
 import time
@@ -47,6 +48,16 @@ def emit(event_type, **payload):
     with _emit_lock:
         stream.write(line + "\n")
         stream.flush()
+
+
+def bridge_error_message(exc):
+    message = str(exc)
+    if isinstance(exc, sqlite3.OperationalError) and "readonly database" in message.lower():
+        return (
+            f"{message} (SQLite database: {db.DB_FILE}; data directory: {db.DATA_DIR}). "
+            "The bridge worker will be restarted; retry the action after the app refreshes."
+        )
+    return message
 
 
 def row_to_dict(row):
@@ -2831,7 +2842,7 @@ def _handle_serve_request(request_id, command, payload):
         result = handler(payload or {})
         emit("result", data=result)
     except Exception as exc:
-        emit("error", message=str(exc))
+        emit("error", message=bridge_error_message(exc))
     finally:
         _request_ctx.id = None
 
@@ -2855,7 +2866,7 @@ def serve():
         try:
             setup_database()
         except Exception as exc:
-            emit("log", message=f"Worker warmup failed: {exc}")
+            emit("log", message=f"Worker warmup failed: {bridge_error_message(exc)}")
 
     while True:
         raw = sys.stdin.readline()
@@ -2883,5 +2894,5 @@ if __name__ == "__main__":
         try:
             main()
         except Exception as exc:
-            emit("error", message=str(exc))
+            emit("error", message=bridge_error_message(exc))
             sys.exit(1)

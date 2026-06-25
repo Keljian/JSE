@@ -110,6 +110,9 @@ All notable changes to JSE are documented here.
 
 ### Fixed
 
+- Readonly SQLite failures during document generation now identify the active
+  database path and restart the persistent Python bridge worker so a stale
+  worker state does not keep blocking retries.
 - Search detail extraction now gives each advert a two-minute budget, uses
   short selector probes, and stops a search worker after four minutes without
   progress. Jobs already saved are retained when a timeout occurs.
