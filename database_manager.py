@@ -296,10 +296,10 @@ def _find_existing_equivalent_job(conn, profile_id, title, company):
     title_key, company_key = _job_identity_key(title, company)
     rows = conn.execute(
         """
-        SELECT id, title, company, pipeline_stage, status
+        SELECT id, title, company, profile_id, pipeline_stage, status
         FROM jobs
-        WHERE profile_id = ?
-        AND pipeline_stage NOT IN ('rejected', 'rejected_by_company', 'archived')
+        WHERE pipeline_stage NOT IN ('rejected', 'rejected_by_company', 'archived')
+        ORDER BY CASE WHEN profile_id = ? THEN 0 ELSE 1 END, id
         """,
         (profile_id,),
     ).fetchall()
@@ -3269,11 +3269,10 @@ def add_job(job_data, source, profile_id=1, log_callback=None):
                 duplicate = conn.execute(
                     """
                     SELECT id FROM jobs
-                    WHERE profile_id = ?
-                    AND description_fingerprint = ?
+                    WHERE description_fingerprint = ?
                     LIMIT 1
                     """,
-                    (profile_id, fingerprint),
+                    (fingerprint,),
                 ).fetchone()
                 if duplicate:
                     _update_existing_scraped_job(conn, duplicate["id"], job_data, metadata, fingerprint)
@@ -6675,23 +6674,21 @@ def dedupe_database(log_callback=None):
         rows = conn.execute("SELECT id, profile_id, url, description_fingerprint FROM jobs ORDER BY id").fetchall()
         normalized_by_id = {row["id"]: normalize_job_url(row["url"]) for row in rows}
         fingerprint_by_id = {row["id"]: row["description_fingerprint"] for row in rows}
-        keep_ids = set()
-        seen_urls = set()
-        seen_fingerprints = set()
+        duplicate_to_keep = {}
+        seen_urls = {}
+        seen_fingerprints = {}
         for row in rows:
             url_key = normalized_by_id[row["id"]]
-            fingerprint_key = (row["profile_id"], fingerprint_by_id[row["id"]]) if "profile_id" in row.keys() else None
+            fingerprint_key = fingerprint_by_id[row["id"]]
             if url_key in seen_urls:
+                duplicate_to_keep[row["id"]] = seen_urls[url_key]
                 continue
-            if fingerprint_key and fingerprint_key[1] and fingerprint_key in seen_fingerprints:
+            if fingerprint_key and fingerprint_key in seen_fingerprints:
+                duplicate_to_keep[row["id"]] = seen_fingerprints[fingerprint_key]
                 continue
-            keep_ids.add(row["id"])
-            seen_urls.add(url_key)
-            if fingerprint_key and fingerprint_key[1]:
-                seen_fingerprints.add(fingerprint_key)
-        if keep_ids:
-            placeholders = ",".join("?" for _ in keep_ids)
-            conn.execute(f"DELETE FROM jobs WHERE id NOT IN ({placeholders})", tuple(keep_ids))
+            seen_urls[url_key] = row["id"]
+            if fingerprint_key:
+                seen_fingerprints[fingerprint_key] = row["id"]
 
         identity_rows = conn.execute(
             """
@@ -6703,19 +6700,47 @@ def dedupe_database(log_callback=None):
         ).fetchall()
         identity_groups = {}
         for row in identity_rows:
+            if row["id"] in duplicate_to_keep:
+                continue
             if not _is_meaningful_job_identity(row["title"], row["company"]):
                 continue
-            key = (row["profile_id"], *_job_identity_key(row["title"], row["company"]))
+            key = _job_identity_key(row["title"], row["company"])
             identity_groups.setdefault(key, []).append(row)
-        delete_identity_ids = []
         for group in identity_groups.values():
             if len(group) < 2:
                 continue
             keep = max(group, key=lambda row: (_stage_dedupe_rank(row), str(row["recency"] or ""), row["id"]))
-            delete_identity_ids.extend(row["id"] for row in group if row["id"] != keep["id"])
-        if delete_identity_ids:
-            placeholders = ",".join("?" for _ in delete_identity_ids)
-            conn.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(delete_identity_ids))
+            for row in group:
+                if row["id"] != keep["id"]:
+                    duplicate_to_keep[row["id"]] = keep["id"]
+
+        if duplicate_to_keep:
+            for duplicate_id, keep_id in sorted(duplicate_to_keep.items()):
+                while keep_id in duplicate_to_keep:
+                    keep_id = duplicate_to_keep[keep_id]
+                duplicate_row = conn.execute("SELECT * FROM jobs WHERE id = ?", (duplicate_id,)).fetchone()
+                keep_row = conn.execute("SELECT * FROM jobs WHERE id = ?", (keep_id,)).fetchone()
+                if not duplicate_row or not keep_row:
+                    continue
+                posting_id = _upsert_job_posting_from_row(conn, keep_row)
+                _upsert_lane_opportunity_from_row(
+                    conn,
+                    keep_row,
+                    posting_id,
+                    keep_row["profile_id"] or 1,
+                )
+                _upsert_lane_opportunity_from_row(
+                    conn,
+                    duplicate_row,
+                    posting_id,
+                    duplicate_row["profile_id"] or keep_row["profile_id"] or 1,
+                )
+                conn.execute(
+                    "UPDATE lane_opportunities SET legacy_job_id = NULL WHERE legacy_job_id = ?",
+                    (duplicate_id,),
+                )
+            placeholders = ",".join("?" for _ in duplicate_to_keep)
+            conn.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(duplicate_to_keep.keys()))
 
         # Normalize URLs and backfill any missing fingerprints. In steady state
         # both columns are already correct, so this touches nothing — and it only
