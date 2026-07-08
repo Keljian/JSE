@@ -818,7 +818,10 @@ def command_lanes_update(payload):
 
 
 def command_profiles_delete(payload):
-    db.delete_profile(payload.get("lane_id") or payload["profile_id"])
+    profile_id = payload.get("lane_id") or payload["profile_id"]
+    if len(db.get_all_lanes()) <= 1:
+        raise ValueError("Cannot delete the last remaining lane.")
+    db.delete_profile(profile_id)
     return command_profiles_list(payload)
 
 

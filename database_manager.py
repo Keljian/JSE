@@ -2642,11 +2642,18 @@ def save_resume_triage_cache(profile_id, resume_hash, summary):
         )
 
 def delete_profile(profile_id):
-    """Deletes a profile and its associated jobs and terms."""
-    # Delete jobs for this profile
+    """Deletes a lane and everything scoped to it.
+
+    Lane-scoped tables (profile_terms, lane_terms, lane_opportunities,
+    application_kits, hidden_market_*, etc.) declare ON DELETE CASCADE (or
+    SET NULL for run-history tables) against profiles(id), but SQLite only
+    enforces that when foreign_keys is turned on for the connection. The
+    legacy `jobs` table predates that constraint - its columns were added via
+    ALTER over time - so it has no FK at all and is cleared explicitly.
+    """
     with get_db_connection() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("DELETE FROM jobs WHERE profile_id = ?", (profile_id,))
-        conn.execute("DELETE FROM profile_terms WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
         conn.commit()
 

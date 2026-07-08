@@ -2739,7 +2739,7 @@ function ModelSelect({ value, options, loading, placeholder, onChange, onRefresh
   );
 }
 
-function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onApplyFilters, onCompactDatabase, onRecoverDatabase, onResetRejected, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onBuildScraper, onTestScraper, onDiagnoseScraper, onRepairScraper, onRollbackScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
+function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onDeleteLane, onApplyFilters, onCompactDatabase, onRecoverDatabase, onResetRejected, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onBuildScraper, onTestScraper, onDiagnoseScraper, onRepairScraper, onRollbackScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
   const [form, setForm] = useState(settings || {});
   const [globalForm, setGlobalForm] = useState(globalSettings || {});
   const [profileForm, setProfileForm] = useState({ name: "", resume_path: "" });
@@ -2757,6 +2757,7 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
   const [modelOptions, setModelOptions] = useState({});
   const [scraperActionId, setScraperActionId] = useState("");
   const [scraperActionMessage, setScraperActionMessage] = useState("");
+  const [deletingLane, setDeletingLane] = useState(false);
 
   useEffect(() => setForm(settings || {}), [settings]);
   useEffect(() => setGlobalForm(globalSettings || {}), [globalSettings]);
@@ -2864,6 +2865,22 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
       setResetRejectedResult(result.count);
     } finally {
       setResettingRejected(false);
+    }
+  };
+  const deleteLane = async () => {
+    if (!profile) return;
+    const confirmed = await appConfirm({
+      title: `Delete lane "${profile.name}"?`,
+      message: "This permanently deletes the lane and everything scoped to it — jobs, pipeline history, search terms, application kits, and hidden-market records. This cannot be undone.",
+      confirmLabel: "Delete lane",
+      danger: true,
+    });
+    if (!confirmed) return;
+    setDeletingLane(true);
+    try {
+      await onDeleteLane(profile.id);
+    } finally {
+      setDeletingLane(false);
     }
   };
   const pluginConfigValue = (plugin, key) => {
@@ -3278,6 +3295,12 @@ function SettingsPanel({ profile, settings, globalSettings, scrapers, scraperErr
             <button className="secondary" onClick={chooseResume}><FolderOpen size={16} /> Choose resume</button>
             <button disabled={!profile || !profileForm.name.trim() || !profileForm.resume_path.trim()} onClick={() => onSaveProfile(profileForm)}><Check size={16} /> Save lane</button>
             <button onClick={() => onSave(form)}><Check size={16} /> Save lane strategy</button>
+            <button
+              className="ghost danger"
+              disabled={!profile || deletingLane || laneCount <= 1}
+              data-tooltip={laneCount <= 1 ? "At least one lane must remain" : "Permanently delete this lane and its data"}
+              onClick={deleteLane}
+            >{deletingLane ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />} Delete lane</button>
           </div>
         </section>
         ) : null}
@@ -4568,6 +4591,21 @@ function App() {
     await refresh();
   };
 
+  const deleteLane = async (laneId) => {
+    const deleted = profiles.find((profile) => profile.id === laneId);
+    const data = await invoke("profiles:delete", { profile_id: laneId });
+    const nextProfiles = data.profiles || [];
+    setProfiles(nextProfiles);
+    appendLog(`Deleted lane: ${deleted?.name || laneId}.`);
+    if (laneId === activeProfileId) {
+      const fallback = nextProfiles[0];
+      if (fallback) setActiveProfileId(fallback.id);
+      await refresh(fallback?.id);
+    } else {
+      await refresh();
+    }
+  };
+
   const compactDatabase = async () => {
     appendLog("Compacting database...");
     const result = await invoke("database:compact");
@@ -4986,6 +5024,8 @@ function App() {
             onSave={saveSettings}
             onSaveGlobal={saveGlobalSettings}
             onSaveProfile={saveProfile}
+            onDeleteLane={deleteLane}
+            laneCount={profiles.length}
             onApplyFilters={applySettingsToFilters}
             onCompactDatabase={compactDatabase}
             onRecoverDatabase={recoverDatabase}

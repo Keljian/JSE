@@ -6,6 +6,9 @@ All notable changes to JSE are documented here.
 
 ### Added
 
+- Added a **Delete lane** control to Settings so a lane (job-search profile)
+  can be removed from the GUI. Guarded behind a confirmation dialog and
+  disabled when only one lane remains, since at least one lane must exist.
 - Added PDF conversion actions for `.doc` and `.docx` application documents
   directly in the Application workspace.
 - Improved scraper plugin generation success rate with layered prompt intelligence:
@@ -112,6 +115,15 @@ All notable changes to JSE are documented here.
 
 ### Fixed
 
+- Fixed lane deletion leaving orphaned rows across a dozen lane-scoped tables
+  (`lane_opportunities`, `application_kits`, `search_hits`, `local_llm_tasks`,
+  the `hidden_market_*` tables, and more). The schema declares `ON DELETE
+  CASCADE`/`SET NULL` against `profiles(id)` for these, but SQLite only
+  enforces that with `PRAGMA foreign_keys` turned on, which the app's
+  connections never set. The legacy `jobs` table predates the constraint
+  entirely (columns were added via `ALTER TABLE` over time) and is now
+  cleared explicitly. Deleting a lane also now refuses to remove the last
+  remaining one.
 - Readonly SQLite failures during document generation now identify the active
   database path and restart the persistent Python bridge worker so a stale
   worker state does not keep blocking retries.
