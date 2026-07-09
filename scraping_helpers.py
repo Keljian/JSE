@@ -1,6 +1,7 @@
 """Common Selenium, HTTP, and PDF helpers shared by scraper implementations."""
 import functools
 import io
+import os
 import requests
 import pdfplumber
 import time
@@ -22,6 +23,41 @@ JOB_DETAIL_TIMEOUT_SECONDS = 120
 DESCRIPTION_PROBE_TIMEOUT_SECONDS = 3
 
 # --- Helper Functions ---
+def _build_chrome_options():
+    """Create a background-only Chrome session for Selenium scrapers."""
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-popup-blocking")
+    options.add_argument("--hide-scrollbars")
+    options.add_argument("--mute-audio")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument("--remote-debugging-pipe")
+    options.add_argument("--window-size=1365,900")
+    if os.name == "nt":
+        options.add_argument("--start-minimized")
+        options.add_argument("--window-position=-32000,-32000")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+    options.add_experimental_option("useAutomationExtension", False)
+    return options
+
+
+def open_background_tab(driver):
+    """Open a new tab without relying on page JavaScript popups."""
+    if hasattr(driver.switch_to, "new_window"):
+        driver.switch_to.new_window("tab")
+        return
+    driver.execute_script("window.open('about:blank', '_blank');")
+    driver.switch_to.window(driver.window_handles[-1])
+
+
 def _get_pdf_text_from_url(pdf_url, base_url, log_callback):
     """Downloads a PDF from a URL and extracts its text."""
     log_callback = log_callback or print
@@ -64,12 +100,7 @@ def scraper_resource_manager(wait_timeout=10):
     def decorator(scraper_func):
         @functools.wraps(scraper_func)
         def wrapper(keyword, status_callback=None, log_callback=None, location=None, max_pages=30, **kwargs):
-            options = Options()
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            options.add_argument("--headless=new")
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
+            options = _build_chrome_options()
             
             driver = None
             log = log_callback or print
@@ -119,8 +150,7 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1, job_t
         job_deadline = time.monotonic() + max(15, float(job_timeout_seconds))
         timed_out = False
         
-        driver.execute_script("window.open('');")
-        driver.switch_to.window(driver.window_handles[1])
+        open_background_tab(driver)
         
         description, pdf_text_content = "Description not found.", ""
         retry_count = 0

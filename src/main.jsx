@@ -497,20 +497,22 @@ function AddJobModal({ busy, onSave, onClose }) {
   );
 }
 
-function RunSearchModal({ sources, activeProfileId, busy, onRun, onClose }) {
-  const [selectedSources, setSelectedSources] = useState(sources);
+function RunSearchModal({ sources = [], activeProfileId, busy, onRun, onClose }) {
+  const safeSources = Array.isArray(sources) ? sources : [];
+  const [selectedSources, setSelectedSources] = useState(safeSources);
   const [includeAllProfiles, setIncludeAllProfiles] = useState(false);
   const [autoRunAnalysis, setAutoRunAnalysis] = useState(false);
   const [optimism, setOptimism] = useState(3);
-  const hasSources = sources.length > 0;
+  const hasSources = safeSources.length > 0;
+  const hasLaneScope = includeAllProfiles || Boolean(activeProfileId);
 
   useEffect(() => {
     setSelectedSources((current) => {
-      const valid = current.filter((source) => sources.includes(source));
+      const valid = current.filter((source) => safeSources.includes(source));
       if (valid.length) return valid;
-      return sources;
+      return safeSources;
     });
-  }, [sources]);
+  }, [safeSources]);
 
   return (
     <Modal title="Run Search" onClose={onClose}>
@@ -519,7 +521,7 @@ function RunSearchModal({ sources, activeProfileId, busy, onRun, onClose }) {
       <label className="check-row"><input type="checkbox" checked={autoRunAnalysis} onChange={(event) => setAutoRunAnalysis(event.target.checked)} /> Auto-run analysis after search</label>
       <label className="field"><span>Optimism for generated terms</span><input type="range" min="1" max="5" value={optimism} onChange={(event) => setOptimism(Number(event.target.value))} /></label>
       <div className="source-grid">
-        {hasSources ? sources.map((source) => (
+        {hasSources ? safeSources.map((source) => (
           <label key={source} className="check-row">
             <input
               type="checkbox"
@@ -532,7 +534,7 @@ function RunSearchModal({ sources, activeProfileId, busy, onRun, onClose }) {
       </div>
       <footer className="modal-actions">
         <button className="secondary" onClick={onClose}>Cancel</button>
-        <button disabled={busy || !hasSources || selectedSources.length === 0} onClick={() => onRun({ profile_id: activeProfileId, include_all_profiles: includeAllProfiles, sources: selectedSources, optimism, auto_run_analysis: autoRunAnalysis })}><Play size={16} /> Run search</button>
+        <button disabled={busy || !hasLaneScope || !hasSources || selectedSources.length === 0} onClick={() => onRun({ profile_id: activeProfileId, include_all_profiles: includeAllProfiles, sources: selectedSources, optimism, auto_run_analysis: autoRunAnalysis })}><Play size={16} /> Run search</button>
       </footer>
     </Modal>
   );
@@ -3624,6 +3626,7 @@ function App() {
   }, []);
 
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
+  const hasActiveProfile = profiles.some((profile) => Number(profile.id) === Number(activeProfileId));
   const runningTaskKeys = Object.keys(activeTasks);
   const busy = runningTaskKeys.length > 0;
   const searchBusy = Boolean(activeTasks.search);
@@ -3638,6 +3641,19 @@ function App() {
   }, []);
 
   const invoke = useCallback((command, payload = {}) => window.jobAssistant.invoke(command, payload), []);
+  const normalizeActiveProfile = useCallback((nextProfiles, preferredId = 0) => {
+    const lanes = Array.isArray(nextProfiles) ? nextProfiles : [];
+    if (!lanes.length) {
+      setActiveProfileId(0);
+      setRunSearchOpen(false);
+      setAnalysisOpen(false);
+      return 0;
+    }
+    const preferred = lanes.find((profile) => Number(profile.id) === Number(preferredId));
+    const nextId = preferred?.id || lanes[0].id;
+    setActiveProfileId((currentId) => Number(nextId) === Number(currentId) ? currentId : nextId);
+    return nextId;
+  }, []);
 
   const checkForAppUpdates = async () => {
     try {
@@ -3682,7 +3698,9 @@ function App() {
       campaign_min_score: 65
     });
     if (requestId !== refreshRequestId.current) return;
-    setProfiles(data.profiles);
+    const nextProfiles = data.profiles || [];
+    setProfiles(nextProfiles);
+    normalizeActiveProfile(nextProfiles, profileIdOverride || activeProfileId);
     setSources(Array.from(new Set(data.sources || [])));
     setSearchSources(Array.from(new Set(data.search_sources || data.sources || [])));
     setJobs(data.jobs || []);
@@ -3690,13 +3708,13 @@ function App() {
     setCalendar(data.calendar || []);
     setMemoryStatus(data.memory);
     setMemoryFragments(data.fragments || []);
-  }, [activeProfileId, includeAllProfiles, invoke, requestPayload]);
+  }, [activeProfileId, includeAllProfiles, invoke, normalizeActiveProfile, requestPayload]);
 
   useEffect(() => {
     Promise.all([invoke("app:init"), window.jobAssistant.getPrerequisites?.() || Promise.resolve(null)])
       .then(([data, prerequisiteData]) => {
         setProfiles(data.profiles);
-        setActiveProfileId(data.active_profile_id);
+        normalizeActiveProfile(data.profiles, data.active_profile_id);
         setSources(Array.from(new Set(data.sources || [])));
         setSearchSources(Array.from(new Set(data.search_sources || data.sources || [])));
         setGlobalSettings(data.app_settings || {});
@@ -3705,7 +3723,7 @@ function App() {
       })
       .catch((error) => appendLog(`Startup failed: ${toErrorMessage(error)}`))
       .finally(() => setBooting(false));
-  }, [appendLog, invoke]);
+  }, [appendLog, invoke, normalizeActiveProfile]);
 
   useEffect(() => {
     if (booting) return undefined;
@@ -4597,12 +4615,17 @@ function App() {
     const nextProfiles = data.profiles || [];
     setProfiles(nextProfiles);
     appendLog(`Deleted lane: ${deleted?.name || laneId}.`);
-    if (laneId === activeProfileId) {
-      const fallback = nextProfiles[0];
-      if (fallback) setActiveProfileId(fallback.id);
-      await refresh(fallback?.id);
+    const nextActiveId = normalizeActiveProfile(
+      nextProfiles,
+      Number(laneId) === Number(activeProfileId) ? 0 : activeProfileId
+    );
+    if (nextActiveId) {
+      await refresh(nextActiveId);
     } else {
-      await refresh();
+      setJobs([]);
+      setDashboard(null);
+      setCalendar([]);
+      setSearchSources([]);
     }
   };
 
@@ -4839,7 +4862,18 @@ function App() {
             <p>{view === "about" ? `JSE ${prerequisites?.app_version || ""}` : `${includeAllProfiles ? "All lanes" : activeProfile?.name || "Lane"} · ${status}`}</p>
           </div>
           {view !== "about" ? <div className="toolbar-actions">
-            <button data-tooltip="Search enabled sources for new roles" aria-description="Search enabled sources for new roles" onClick={() => setRunSearchOpen(true)}><Play size={16} /> Run Search</button>
+            <button
+              disabled={!hasActiveProfile}
+              data-tooltip={hasActiveProfile ? "Search enabled sources for new roles" : "Add a lane before running search"}
+              aria-description={hasActiveProfile ? "Search enabled sources for new roles" : "Add a lane before running search"}
+              onClick={() => {
+                if (!hasActiveProfile) {
+                  appendLog("Add a lane before running search.");
+                  return;
+                }
+                setRunSearchOpen(true);
+              }}
+            ><Play size={16} /> Run Search</button>
             <button className="secondary" data-tooltip="Add a job listing manually" aria-description="Add a job listing manually" onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add Job</button>
             <button className="secondary" data-tooltip="Analyse unreviewed jobs for fit" aria-description="Analyse unreviewed jobs for fit" onClick={() => setAnalysisOpen(true)}><Sparkles size={16} /> Run Analysis</button>
             <button className="secondary" data-tooltip="Reload jobs and dashboard data" aria-description="Reload jobs and dashboard data" onClick={() => refresh()}><RefreshCw size={16} /> Refresh</button>
@@ -4849,7 +4883,7 @@ function App() {
 
         {view !== "about" ? <section className={view === "settings" ? "filter-bar settings-filter-bar" : "filter-bar"}>
           <div className="filter-search-row">
-            <label className="profile-filter"><span>Lane</span><select value={activeProfileId} onChange={(event) => setActiveProfileId(Number(event.target.value))}>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
+            <label className="profile-filter"><span>Lane</span><select value={activeProfileId} disabled={!profiles.length} onChange={(event) => setActiveProfileId(Number(event.target.value))}>{profiles.length ? profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>) : <option value={0}>No lanes</option>}</select></label>
             {view !== "settings" ? (
               <>
                 <label className="search-field"><span>Search</span><input value={filters.query} placeholder="Title, company, notes, analysis, lane..." onChange={(event) => updateFilter("query", event.target.value)} /></label>

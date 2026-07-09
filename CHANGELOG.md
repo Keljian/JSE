@@ -115,6 +115,13 @@ All notable changes to JSE are documented here.
 
 ### Fixed
 
+- Fixed Run Search opening a blank, immovable window after lane deletion by
+  normalising the active lane whenever the lane list changes, disabling search
+  when no valid lane exists, and rejecting backend search requests with no
+  active lane.
+- Hardened Selenium search browser startup so scraper Chrome sessions are
+  explicitly background/headless and scraper detail tabs are opened through
+  WebDriver rather than page JavaScript.
 - Fixed lane deletion leaving orphaned rows across a dozen lane-scoped tables
   (`lane_opportunities`, `application_kits`, `search_hits`, `local_llm_tasks`,
   the `hidden_market_*` tables, and more). The schema declares `ON DELETE
