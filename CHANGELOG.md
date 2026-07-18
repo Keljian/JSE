@@ -6,6 +6,38 @@ All notable changes to JSE are documented here.
 
 ### Added
 
+- Added **Funnel Insights**, an outcome-driven feedback loop that learns which
+  applications actually convert to interviews:
+  - New immutable `application_outcomes` snapshots capture the dimensional state
+    of every application at the moment it reaches **Applied** (title, company,
+    advertiser, employer type, source, salary band, match/fragment/composite
+    scores, seniority band, lane, document method). Snapshots survive job
+    deletion, so lane cleanup and duplicate removal can never erase interview
+    history. Existing history is backfilled once on migration, including orphan
+    interview rows whose job was hard-deleted by the old cascade.
+  - **Role-entity linking**: a role re-advertised under two titles (same
+    advertiser + high description-fingerprint similarity, or an identical
+    normalized title within 90 days) collapses to one `role_key`, so conversion
+    statistics no longer double-count.
+  - A **Funnel Insights** dashboard card shows the baseline interview rate and
+    the best- and worst-converting segments (with sample sizes) across source,
+    advertiser, employer type, match-score band, salary band, seniority band,
+    and lane. Segments below three applications are suppressed as noise.
+    Recompute on demand; results are cached.
+  - **Log external application**: a Pipeline action to record applications made
+    outside JSE (the previously invisible off-platform interviews), created at
+    the Applied stage with their own outcome snapshot.
+  - **Interview-validated fragments**: when a job reaches an interview, JSE mines
+    its job description and submitted documents and weights the resulting
+    candidate-memory fragments above merely-submitted evidence in lane affinity
+    and keyword generation.
+  - **Conversion prior in scoring**: composite scores receive a bounded (±10)
+    nudge from observed per-dimension conversion rates. The prior needs at least
+    five outcomes in a bucket to take effect and can never, on its own, push a
+    job across the auto-reject threshold.
+  - **Outcome hygiene nudges**: a dismissible dashboard prompt asks how a past
+    interview went, writing the result back to the interview and the outcome
+    snapshot.
 - Added a **Delete lane** control to Settings so a lane (job-search profile)
   can be removed from the GUI. Guarded behind a confirmation dialog and
   disabled when only one lane remains, since at least one lane must exist.

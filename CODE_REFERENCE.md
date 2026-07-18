@@ -41,6 +41,16 @@ caffeinated and the commits coming: https://ko-fi.com/keljian
 - `database_manager.py` owns SQLite access, settings, jobs, pipeline stages,
   profiles/lanes, scraper metadata, application kits, candidate memory, campaign
   planning, and dashboard/activity queries.
+- The **Funnel feedback loop** lives in `database_manager.py`:
+  `ensure_application_outcome` / `set_application_outcome` capture and advance the
+  immutable `application_outcomes` snapshots on stage transitions;
+  `backfill_application_outcomes` reconstructs history once on migration;
+  `_compute_role_key` collapses re-advertised roles; `compute_funnel_insights`
+  produces the conversion analytics and the `funnel_conversion_priors` used by
+  `composite_score_with_prior`; `mine_interview_validated_fragments` mines
+  interview-validated candidate fragments. Bridge commands: `funnel:insights`,
+  `funnel:mineInterviewFragments`, and `jobs:logExternal` (external-application
+  capture). `get_interview_hygiene_nudges` powers the dashboard outcome nudges.
 
 ## LLM And Document Generation
 

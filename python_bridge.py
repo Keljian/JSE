@@ -1780,6 +1780,7 @@ def command_dashboard_get(payload):
         "awaiting_feedback": awaiting_feedback,
         "cleanup_due": cleanup_due,
         "last_scrape": row_to_dict(data["last_scrape"]),
+        "interview_nudges": rows_to_dicts(data.get("interview_nudges") or []),
     }
 
 
@@ -2720,6 +2721,34 @@ def command_corpus_set_type(payload):
     return {"updated": 1}
 
 
+def command_funnel_insights(payload):
+    """Outcome-driven conversion analytics (item 4). Cached in app_settings;
+    recompute on demand. Also refreshes the composite-scoring conversion priors."""
+    recompute = bool(payload.get("recompute"))
+    insights = db.get_funnel_insights(recompute=recompute)
+    return {"insights": insights}
+
+
+def command_jobs_log_external(payload):
+    """Log an application made outside the pipeline (item 2) — the Carlisle-BA
+    blind spot. Reuses the manual-add pipeline, forced to the applied stage so
+    its outcome snapshot is captured, and records the document used if supplied."""
+    result = command_jobs_add_manual({**payload, "stage": "applied"})
+    job_id = result.get("job_id")
+    if job_id and _clean_text(payload.get("doc_used")):
+        db.update_job_application(job_id, {"resume_used": _clean_text(payload.get("doc_used"))})
+    return {**result, "external": True}
+
+
+def command_funnel_mine_interview_fragments(payload):
+    """Mine interview-validated fragments for a job (item 5). Long-running LLM
+    work, so it runs as a cancellable task."""
+    job_id = payload["job_id"]
+    emit("status", message="Mining interview-validated fragments…")
+    stored = db.mine_interview_validated_fragments(job_id, log=lambda m: emit("log", message=m))
+    return {"job_id": job_id, "stored": stored}
+
+
 COMMANDS = {
     "app:init": command_app_init,
     "app:refresh": command_app_refresh,
@@ -2770,6 +2799,7 @@ COMMANDS = {
     "jobs:list": command_jobs_list,
     "jobs:counts": command_jobs_counts,
     "jobs:addManual": command_jobs_add_manual,
+    "jobs:logExternal": command_jobs_log_external,
     "jobs:updateStatus": command_jobs_update_status,
     "jobs:update": command_jobs_update,
     "jobs:cleanupArchive": command_jobs_cleanup_archive,
@@ -2784,6 +2814,8 @@ COMMANDS = {
     "interviews:update": command_interviews_update,
     "events:add": command_events_add,
     "dashboard:get": command_dashboard_get,
+    "funnel:insights": command_funnel_insights,
+    "funnel:mineInterviewFragments": command_funnel_mine_interview_fragments,
     "calendar:get": command_calendar_get,
     "campaign:summary": command_campaign_summary,
     "campaign:plan": command_campaign_plan,

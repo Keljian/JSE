@@ -182,6 +182,36 @@ Tracked state includes next actions, due dates, priority, application date,
 notes, feedback, interviews, rejection reasons, generated documents, and timeline
 events.
 
+### 4a. Funnel Feedback Loop
+
+Outcomes drive learning. When a job reaches `applied`, an immutable
+`application_outcomes` snapshot records its dimensional state; the outcome then
+advances monotonically (`pending` → `interview` → `offer`, or `declined` /
+`ghosted` / `withdrawn`). The snapshot has no foreign key to `jobs`, so it (and
+the underlying interview rows) survive lane deletion and duplicate cleanup —
+jobs carrying real history are reassigned to a fallback lane rather than
+hard-deleted.
+
+```mermaid
+flowchart TD
+    Applied["Stage -> applied"] --> Snapshot["application_outcomes snapshot\n(dimensions + role_key)"]
+    Interview["Interview recorded"] --> OutcomeInterview["outcome = interview"]
+    Interview --> Mine["Mine interview-validated fragments\n(JD + submitted docs)"]
+    Mine --> Affinity["Weighted above submitted evidence\nin lane affinity + keywords"]
+    Snapshot --> RoleKey["Role-entity linking\n(re-advertised roles share role_key)"]
+    RoleKey --> Insights["compute_funnel_insights()\nconversion by dimension, by role_key"]
+    Insights --> Card["Dashboard: Funnel Insights card"]
+    Insights --> Priors["funnel_conversion_priors\n(app_settings)"]
+    Priors --> Composite["Bounded (+-10) prior on composite_score\n(never crosses auto-reject alone)"]
+    Ghost["50-day silent no-response"] --> OutcomeGhost["outcome = ghosted"]
+    Nudge["Past interview, no result"] --> Prompt["Dismissible dashboard nudge"]
+```
+
+All conversion statistics aggregate by `role_key`, never by job id. Insights and
+priors are pure SQL/Python (no LLM); only interview-validated fragment mining
+uses a model. See `database_manager.compute_funnel_insights`,
+`backfill_application_outcomes`, and `composite_score_with_prior`.
+
 ### 5. Company Research
 
 ```mermaid
@@ -300,6 +330,7 @@ families include:
 - scraper plugins and lane scraper overrides
 - jobs and job metadata
 - application events and interviews
+- application outcome snapshots (`application_outcomes`, the funnel feedback loop)
 - company intelligence/profile cache
 - candidate fragments and profile memory fragments
 - context documents and resume triage cache

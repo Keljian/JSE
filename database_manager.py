@@ -11,6 +11,7 @@ import re
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 from collections import Counter
 from contextlib import contextmanager
@@ -1887,14 +1888,19 @@ def _candidate_fragment_fingerprint(fragment):
     return _memory_fragment_fingerprint(fragment)
 
 
-def upsert_candidate_fragments(person_id, fragments, replace=False):
+def upsert_candidate_fragments(person_id, fragments, replace=False, interview_validated=False):
     """Persist typed fragments to the cross-lane `candidate_fragments` bank.
 
     Mirrors the field handling in `upsert_profile_memory_fragments` so the
     activation metadata the LLM produces (keywords, anti_keywords, status,
     etc.) survives the round-trip. See that function for the rationale.
+
+    `interview_validated` marks fragments mined from a job that reached an
+    interview; the flag is sticky (once validated, always validated) so a
+    later resume-corpus re-mine of the same fragment can't downgrade it.
     """
     now = datetime.now().isoformat(timespec="seconds")
+    validated_flag = 1 if interview_validated else 0
     count = 0
     with get_db_connection() as conn:
         if replace:
@@ -1933,9 +1939,9 @@ def upsert_candidate_fragments(person_id, fragments, replace=False):
                     source_doc_paths_json, reuse_guidance, confidence, fingerprint,
                     keywords_json, anti_keywords_json, job_families_json,
                     status, confidence_reasoning, reinforces_themes_json,
-                    support_count, last_seen_at, updated_at
+                    support_count, interview_validated, last_seen_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(person_id, fingerprint) DO UPDATE SET
                     supporting_detail = excluded.supporting_detail,
                     skills_json = excluded.skills_json,
@@ -1959,6 +1965,10 @@ def upsert_candidate_fragments(person_id, fragments, replace=False):
                     END,
                     reinforces_themes_json = excluded.reinforces_themes_json,
                     support_count = candidate_fragments.support_count + 1,
+                    interview_validated = MAX(
+                        COALESCE(candidate_fragments.interview_validated, 0),
+                        excluded.interview_validated
+                    ),
                     last_seen_at = excluded.last_seen_at,
                     updated_at = excluded.updated_at
                 """,
@@ -1969,7 +1979,7 @@ def upsert_candidate_fragments(person_id, fragments, replace=False):
                     clean["reuse_guidance"], clean["confidence"], fingerprint,
                     clean["keywords_json"], clean["anti_keywords_json"], clean["job_families_json"],
                     clean["status"], clean["confidence_reasoning"], clean["reinforces_themes_json"],
-                    clean["support_count"], now, now,
+                    clean["support_count"], validated_flag, now, now,
                 ),
             )
             count += 1
@@ -2455,9 +2465,21 @@ def due_memory_remines(now=None):
 
 
 def update_job_fragment_alignment(job_id, fragment_score, composite_score, alignment_json):
-    """Persist the fragment-bank alignment score and composite UI score on a job."""
+    """Persist the fragment-bank alignment score and composite UI score on a job.
+
+    The composite is re-derived here with the bounded conversion prior (item 6)
+    from the job's own dimensions, so the outcome feedback loop reaches the score
+    the UI sorts by. The caller-supplied composite is used only as a fallback
+    when the job row can't be read.
+    """
     now = datetime.now().isoformat(timespec="seconds")
     with get_db_connection() as conn:
+        job = conn.execute(
+            "SELECT match_score, title, company, advertiser_company, employer_type, source FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if job is not None and job["match_score"] is not None:
+            composite_score = composite_score_with_prior(job["match_score"], fragment_score, dict(job))
         conn.execute(
             """
             UPDATE jobs
@@ -2483,15 +2505,25 @@ def calculate_composite_score(match_score, fragment_score):
 
 
 def recalculate_composite_scores():
-    """Repair stale composites left by older analysis/gatekeeper write ordering."""
+    """Repair stale composites left by older analysis/gatekeeper write ordering.
+
+    Prior-aware: recomputes with the same bounded conversion prior the analysis
+    path applies (item 6), so this repair pass does not strip the prior nudge.
+    Priors are loaded once, not per row.
+    """
     changed = 0
+    priors = get_kv_setting(FUNNEL_CONVERSION_PRIORS_KEY)
     with get_db_connection() as conn:
         rows = conn.execute(
-            "SELECT id, match_score, fragment_score, composite_score FROM jobs WHERE match_score IS NOT NULL"
+            """
+            SELECT id, match_score, fragment_score, composite_score,
+                   title, company, advertiser_company, employer_type, source
+            FROM jobs WHERE match_score IS NOT NULL
+            """
         ).fetchall()
         updates = []
         for row in rows:
-            expected = calculate_composite_score(row["match_score"], row["fragment_score"])
+            expected = composite_score_with_prior(row["match_score"], row["fragment_score"], dict(row), priors)
             if row["composite_score"] != expected:
                 updates.append((expected, row["id"]))
         if updates:
@@ -2499,6 +2531,839 @@ def recalculate_composite_scores():
             conn.commit()
             changed = len(updates)
     return changed
+
+
+# ---------------------------------------------------------------------------
+# Application outcome snapshots — the funnel feedback loop
+# ---------------------------------------------------------------------------
+# An `application_outcomes` row is an immutable dimensional copy taken when a
+# job enters `applied`. It intentionally has no foreign key to jobs, so it
+# survives job deletion (lane-deletion cascade, duplicate cleanup). Every
+# conversion statistic aggregates by `role_key` so a role re-advertised under
+# two titles counts once. See ARCHITECTURE.md "Funnel feedback loop".
+
+_OUTCOME_BACKFILL_FLAG = "application_outcomes_backfilled_v1"
+
+# Terminal-vs-open outcomes. `pending` = applied, no signal yet; `interview`
+# once any interview happens; `offer`/`declined` on explicit stage moves; the
+# 50-day silent auto-decline writes `ghosted` (distinct from an employer's
+# explicit no); `withdrawn` when the candidate pulls out.
+OUTCOME_PENDING = "pending"
+OUTCOME_INTERVIEW = "interview"
+OUTCOME_OFFER = "offer"
+OUTCOME_DECLINED = "declined"
+OUTCOME_GHOSTED = "ghosted"
+OUTCOME_WITHDRAWN = "withdrawn"
+APPLICATION_OUTCOMES = (
+    OUTCOME_PENDING, OUTCOME_INTERVIEW, OUTCOME_OFFER,
+    OUTCOME_DECLINED, OUTCOME_GHOSTED, OUTCOME_WITHDRAWN,
+)
+# How far an outcome can advance but not regress. interview never reverts to
+# pending; a real offer/decline is not overwritten by a later ghosted sweep.
+_OUTCOME_RANK = {
+    OUTCOME_PENDING: 0, OUTCOME_GHOSTED: 1, OUTCOME_WITHDRAWN: 1,
+    OUTCOME_DECLINED: 2, OUTCOME_INTERVIEW: 3, OUTCOME_OFFER: 4,
+}
+# Stage → outcome for manual pipeline transitions (update_job_application).
+_STAGE_OUTCOME = {
+    "interviewing": OUTCOME_INTERVIEW,
+    "offer": OUTCOME_OFFER,
+    "rejected_by_company": OUTCOME_DECLINED,
+}
+
+# Title-keyword → seniority band. "bridging" = broad-technologist roles that
+# convert (technical manager/lead, platforms, system engineer, BA, vendor
+# manager, team leader). Order matters: bridging is tested before exec so a
+# "Technical Lead" is bridging, not manager-lead. Pure exec and deep single-
+# specialty IC roles are the segments that did NOT convert.
+_SENIORITY_BRIDGING = (
+    "technical lead", "technical manager", "tech lead", "solution ", "solutions",
+    "system engineer", "systems engineer", "platform", "business analyst",
+    "vendor manager", "team leader", "team lead", "bridging",
+)
+_SENIORITY_EXEC = (
+    "head of", "chief", " cio", " cto", "director", "general manager", "vice president",
+    "executive", " vp ",
+)
+_SENIORITY_MANAGER = ("manager", "lead", "leader", "principal", "head")
+
+
+def _seniority_band(title):
+    text = f" {str(title or '').strip().lower()} "
+    if text.strip() == "":
+        return "unknown"
+    if any(term in text for term in _SENIORITY_BRIDGING):
+        return "bridging"
+    if any(term in text for term in _SENIORITY_EXEC):
+        return "exec"
+    if any(term in text for term in _SENIORITY_MANAGER):
+        return "manager-lead"
+    return "ic"
+
+
+def _match_score_band(score):
+    try:
+        value = int(score)
+    except (TypeError, ValueError):
+        return "unscored"
+    if value < 0:
+        return "unscored"
+    decade = max(0, min(90, (value // 10) * 10))
+    return f"{decade}-{decade + 9}"
+
+
+def _normalized_title_key(title):
+    text = re.sub(r"[^a-z0-9 ]+", " ", str(title or "").lower())
+    tokens = sorted({t for t in text.split() if t and t not in ROLE_STOPWORDS})
+    return " ".join(tokens)
+
+
+def _advertiser_key(job):
+    return _company_key(job.get("advertiser_company") or job.get("company") or "")
+
+
+# Role-linking similarity threshold: a re-advertised role rarely has a
+# byte-identical description (that would already have been deduped into one
+# job), so exact-fingerprint match is not enough. A compact significant-token
+# signature + Jaccard overlap catches the "same role, reworded ad" case that
+# left 6353/22508 as two separate rows.
+_ROLE_SIG_JACCARD = 0.6
+_ROLE_SIG_TOKEN_CAP = 400
+
+
+def _desc_signature(description):
+    text = re.sub(r"https?://\S+", " ", str(description or "").lower())
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    tokens = {
+        t for t in text.split()
+        if len(t) >= 4 and t not in ROLE_STOPWORDS and t not in COMPANY_CANDIDATE_STOPWORDS
+    }
+    return sorted(tokens)[:_ROLE_SIG_TOKEN_CAP]
+
+
+def _signature_similarity(a, b):
+    sa, sb = set(a or []), set(b or [])
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def _iso_day(value):
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "").split(".")[0][:19])
+    except (TypeError, ValueError):
+        try:
+            return datetime.fromisoformat(str(value)[:10])
+        except (TypeError, ValueError):
+            return None
+
+
+def _within_days(a, b, days):
+    da, db_ = _iso_day(a), _iso_day(b)
+    if da is None or db_ is None:
+        return True  # missing dates never block a match
+    return abs((da - db_).days) <= days
+
+
+def _build_outcome_snapshot(job, doc_method=None):
+    """Immutable dimensional copy captured at the applied transition."""
+    salary = job.get("salary")
+    return {
+        "title": job.get("title"),
+        "company": job.get("company"),
+        "advertiser_company": job.get("advertiser_company"),
+        "actual_company": job.get("actual_company"),
+        "employer_type": job.get("employer_type"),
+        "source": job.get("source"),
+        "location": job.get("location"),
+        "salary": salary,
+        "salary_band": campaign_salary_band(salary),
+        "match_score": job.get("match_score"),
+        "match_score_band": _match_score_band(job.get("match_score")),
+        "fragment_score": job.get("fragment_score"),
+        "composite_score": job.get("composite_score"),
+        "profile_id": job.get("profile_id"),
+        "lane_id": job.get("profile_id"),
+        "seniority_band": _seniority_band(job.get("title")),
+        "description_fingerprint": job.get("description_fingerprint"),
+        "desc_sig": _desc_signature(job.get("description")),
+        "doc_generation_method": doc_method,
+    }
+
+
+def _latest_doc_method(conn, job_id):
+    if not job_id:
+        return None
+    row = conn.execute(
+        """
+        SELECT title FROM application_events
+        WHERE job_id = ? AND event_type = 'documents'
+        ORDER BY COALESCE(event_date, created_at) DESC, id DESC
+        LIMIT 1
+        """,
+        (job_id,),
+    ).fetchone()
+    if not row:
+        return None
+    title = str(row["title"] or "")
+    marker = "generated with "
+    return title.split(marker, 1)[1].strip() if marker in title else title or None
+
+
+def _compute_role_key(conn, job, applied_at=None):
+    """Link re-advertised roles: same advertiser + (identical description
+    fingerprint OR identical normalized title) inside a 90-day window collapse
+    to one role_key. Reuses description_fingerprint / normalized-title
+    machinery already used for dedupe."""
+    adv_key = _advertiser_key(job)
+    fingerprint = job.get("description_fingerprint")
+    title_key = _normalized_title_key(job.get("title"))
+    job_sig = _desc_signature(job.get("description"))
+    job_id = job.get("id")
+    if adv_key:
+        rows = conn.execute(
+            """
+            SELECT job_id, role_key, snapshot_json, applied_at
+            FROM application_outcomes
+            WHERE role_key IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 4000
+            """
+        ).fetchall()
+        for row in rows:
+            if job_id and row["job_id"] == job_id:
+                continue
+            try:
+                snap = json.loads(row["snapshot_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            other_adv = _company_key(snap.get("advertiser_company") or snap.get("company") or "")
+            if other_adv != adv_key:
+                continue
+            if not _within_days(applied_at, row["applied_at"], 90):
+                continue
+            other_fp = snap.get("description_fingerprint")
+            same_desc = bool(fingerprint and other_fp and fingerprint == other_fp)
+            similar_desc = _signature_similarity(job_sig, snap.get("desc_sig")) >= _ROLE_SIG_JACCARD
+            same_title = bool(title_key and title_key == _normalized_title_key(snap.get("title")))
+            if same_desc or similar_desc or same_title:
+                return row["role_key"]
+    if job_id:
+        return f"rk-{job_id}"
+    import uuid
+    return f"rk-{uuid.uuid4().hex[:12]}"
+
+
+def _apply_outcome_rank(existing, candidate):
+    """Never regress a stored outcome (interview stays interview under a later
+    ghosted sweep); advance monotonically otherwise."""
+    if not existing:
+        return candidate
+    if _OUTCOME_RANK.get(candidate, 0) >= _OUTCOME_RANK.get(existing, 0):
+        return candidate
+    return existing
+
+
+def ensure_application_outcome(conn, job_id, applied_at=None, outcome=None):
+    """Create the immutable snapshot row for a job entering `applied` (idempotent
+    per job_id). Runs inside the caller's transaction. Returns the outcome id."""
+    existing = conn.execute(
+        "SELECT id FROM application_outcomes WHERE job_id = ? ORDER BY id ASC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    if existing:
+        if outcome:
+            set_application_outcome(conn, job_id, outcome)
+        return existing["id"]
+    job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if not job:
+        return None
+    job = dict(job)
+    applied_at = applied_at or job.get("application_date") or datetime.now().isoformat(timespec="seconds")
+    snapshot = _build_outcome_snapshot(job, _latest_doc_method(conn, job_id))
+    role_key = _compute_role_key(conn, job, applied_at)
+    rounds = conn.execute(
+        "SELECT COUNT(*) FROM interviews WHERE job_id = ?", (job_id,)
+    ).fetchone()[0]
+    resolved_outcome = outcome or (OUTCOME_INTERVIEW if rounds else OUTCOME_PENDING)
+    now = datetime.now().isoformat(timespec="seconds")
+    cursor = conn.execute(
+        """
+        INSERT INTO application_outcomes
+            (job_id, role_key, snapshot_json, applied_at, outcome, outcome_at,
+             interview_rounds, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            job_id, role_key, json.dumps(snapshot, ensure_ascii=False),
+            applied_at, resolved_outcome,
+            now if resolved_outcome != OUTCOME_PENDING else None,
+            rounds, now, now,
+        ),
+    )
+    return cursor.lastrowid
+
+
+def set_application_outcome(conn, job_id, outcome, outcome_at=None, interview_rounds=None):
+    """Advance a job's outcome (monotonic — see _apply_outcome_rank). Creates the
+    snapshot first if the applied transition was somehow missed. Runs inside the
+    caller's transaction."""
+    if outcome not in APPLICATION_OUTCOMES:
+        return
+    row = conn.execute(
+        "SELECT id, outcome, interview_rounds FROM application_outcomes WHERE job_id = ? ORDER BY id ASC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    if not row:
+        ensure_application_outcome(conn, job_id, outcome=outcome)
+        row = conn.execute(
+            "SELECT id, outcome, interview_rounds FROM application_outcomes WHERE job_id = ? ORDER BY id ASC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            return
+    resolved = _apply_outcome_rank(row["outcome"], outcome)
+    now = datetime.now().isoformat(timespec="seconds")
+    rounds = interview_rounds
+    if rounds is None:
+        rounds = conn.execute(
+            "SELECT COUNT(*) FROM interviews WHERE job_id = ?", (job_id,)
+        ).fetchone()[0]
+    conn.execute(
+        """
+        UPDATE application_outcomes
+        SET outcome = ?,
+            outcome_at = COALESCE(?, outcome_at),
+            interview_rounds = MAX(COALESCE(interview_rounds, 0), ?),
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            resolved,
+            outcome_at or (now if resolved != OUTCOME_PENDING else None),
+            rounds or 0,
+            now,
+            row["id"],
+        ),
+    )
+
+
+def _sync_outcome_for_stage(conn, job_id, stage, applied_at=None):
+    """Bridge a pipeline stage transition to the outcome snapshot."""
+    if stage == "applied":
+        ensure_application_outcome(conn, job_id, applied_at=applied_at)
+    elif stage in _STAGE_OUTCOME:
+        set_application_outcome(conn, job_id, _STAGE_OUTCOME[stage])
+
+
+def backfill_application_outcomes(conn=None):
+    """One-time reconstruction of outcome snapshots from application history.
+
+    Gated by an app_settings flag so it scans once. Candidate jobs are anything
+    that ever reached `applied`: current post-applied stage, an application_date,
+    a "Moved to Applied" stage event, or an interview row. Orphan events whose
+    jobs row is gone (hard-deleted by the old lane cascade) still yield a row
+    with whatever the events preserved. New applications get their snapshot from
+    the applied-stage hook, not here.
+    """
+    owns_conn = conn is None
+    cm = get_db_connection() if owns_conn else None
+    conn = cm.__enter__() if owns_conn else conn
+    try:
+        done = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?", (_OUTCOME_BACKFILL_FLAG,)
+        ).fetchone()
+        if done and str(done["value_json"]).strip() in ("true", '"true"', "1"):
+            return 0
+
+        # 1. Jobs still present that ever reached applied.
+        job_rows = conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE pipeline_stage IN ('applied','interviewing','offer','rejected_by_company')
+               OR status IN ('applied','interviewing','offer','rejected_by_company')
+               OR application_date IS NOT NULL
+               OR id IN (SELECT DISTINCT job_id FROM interviews)
+               OR id IN (
+                    SELECT DISTINCT job_id FROM application_events
+                    WHERE event_type = 'stage' AND title LIKE 'Moved to Applied%'
+               )
+            """
+        ).fetchall()
+        created = 0
+        seen_job_ids = set()
+        for row in job_rows:
+            job = dict(row)
+            job_id = job["id"]
+            seen_job_ids.add(job_id)
+            already = conn.execute(
+                "SELECT id FROM application_outcomes WHERE job_id = ? LIMIT 1", (job_id,)
+            ).fetchone()
+            if already:
+                continue
+            applied_at = (
+                job.get("application_date")
+                or _first_applied_event_date(conn, job_id)
+                or job.get("date_scraped")
+                or job.get("updated_at")
+            )
+            stage = normalize_stage(job.get("pipeline_stage") or job.get("status") or "applied")
+            rounds = conn.execute(
+                "SELECT COUNT(*) FROM interviews WHERE job_id = ?", (job_id,)
+            ).fetchone()[0]
+            outcome = _backfill_outcome_for(stage, rounds, job)
+            snapshot = _build_outcome_snapshot(job, _latest_doc_method(conn, job_id))
+            role_key = _compute_role_key(conn, job, applied_at)
+            now = datetime.now().isoformat(timespec="seconds")
+            conn.execute(
+                """
+                INSERT INTO application_outcomes
+                    (job_id, role_key, snapshot_json, applied_at, outcome, outcome_at,
+                     interview_rounds, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id, role_key, json.dumps(snapshot, ensure_ascii=False),
+                    applied_at, outcome,
+                    now if outcome != OUTCOME_PENDING else None,
+                    rounds, now, now,
+                ),
+            )
+            created += 1
+
+        # 2. Orphan interviews/events whose jobs row is gone. These preserve the
+        # fact of an interview even though every dimensional field is lost.
+        orphan_ids = conn.execute(
+            """
+            SELECT DISTINCT job_id FROM (
+                SELECT job_id FROM interviews
+                UNION
+                SELECT job_id FROM application_events
+                WHERE event_type = 'stage' AND title LIKE 'Moved to Applied%'
+            )
+            WHERE job_id NOT IN (SELECT id FROM jobs)
+              AND job_id NOT IN (SELECT job_id FROM application_outcomes WHERE job_id IS NOT NULL)
+            """
+        ).fetchall()
+        for orphan in orphan_ids:
+            job_id = orphan["job_id"]
+            rounds = conn.execute(
+                "SELECT COUNT(*) FROM interviews WHERE job_id = ?", (job_id,)
+            ).fetchone()[0]
+            applied_at = _first_applied_event_date(conn, job_id)
+            outcome = OUTCOME_INTERVIEW if rounds else OUTCOME_PENDING
+            now = datetime.now().isoformat(timespec="seconds")
+            snapshot = {"orphaned": True, "title": None, "seniority_band": "unknown"}
+            conn.execute(
+                """
+                INSERT INTO application_outcomes
+                    (job_id, role_key, snapshot_json, applied_at, outcome, outcome_at,
+                     interview_rounds, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id, f"rk-{job_id}", json.dumps(snapshot, ensure_ascii=False),
+                    applied_at, outcome, now if outcome != OUTCOME_PENDING else None,
+                    rounds, now, now,
+                ),
+            )
+            created += 1
+
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+            """,
+            (_OUTCOME_BACKFILL_FLAG, json.dumps(True)),
+        )
+        conn.commit()
+        return created
+    finally:
+        if owns_conn:
+            cm.__exit__(None, None, None)
+
+
+def _first_applied_event_date(conn, job_id):
+    row = conn.execute(
+        """
+        SELECT COALESCE(event_date, created_at) AS at
+        FROM application_events
+        WHERE job_id = ? AND event_type = 'stage' AND title LIKE 'Moved to Applied%'
+        ORDER BY COALESCE(event_date, created_at) ASC, id ASC
+        LIMIT 1
+        """,
+        (job_id,),
+    ).fetchone()
+    return row["at"] if row else None
+
+
+def _backfill_outcome_for(stage, rounds, job):
+    if stage == "offer":
+        return OUTCOME_OFFER
+    if rounds or stage == "interviewing":
+        return OUTCOME_INTERVIEW
+    if stage == "rejected_by_company":
+        # A silent 50-day auto-decline reads as ghosted; an explicit reason is a
+        # real employer decline.
+        reason = str(job.get("retired_reason") or "").lower()
+        return OUTCOME_GHOSTED if "no interview recorded" in reason else OUTCOME_DECLINED
+    return OUTCOME_PENDING
+
+
+def get_kv_setting(key, default=None):
+    """Read an internal JSON blob from app_settings (bypasses the user-facing
+    update_app_settings allow-list). Used for the funnel insights cache and
+    conversion priors."""
+    try:
+        with get_db_connection() as conn:
+            row = conn.execute(
+                "SELECT value_json FROM app_settings WHERE key = ?", (key,)
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return default
+    if not row:
+        return default
+    try:
+        return json.loads(row["value_json"])
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+def set_kv_setting(key, value):
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(value)),
+        )
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Funnel insights — outcome-driven conversion analytics
+# ---------------------------------------------------------------------------
+# Pure SQL/Python, no LLM. Every statistic aggregates by role_key so a role
+# re-advertised under two titles counts once. Dimension buckets with fewer than
+# MIN_SEGMENT_APPLICATIONS role_keys are suppressed as noise.
+
+FUNNEL_INSIGHTS_CACHE_KEY = "funnel_insights_cache"
+FUNNEL_CONVERSION_PRIORS_KEY = "funnel_conversion_priors"
+MIN_SEGMENT_APPLICATIONS = 3
+# A dimension bucket needs at least this many outcomes before its conversion
+# prior is allowed to nudge composite_score (item 6). Buckets below this
+# contribute 0 so a single lucky/unlucky application can't move scoring.
+MIN_PRIOR_OUTCOMES = 5
+# Outcomes that count as "reached an interview" for conversion.
+_POSITIVE_OUTCOMES = {OUTCOME_INTERVIEW, OUTCOME_OFFER}
+# Dimensions that feed the composite-score conversion prior.
+_PRIOR_DIMENSIONS = ("advertiser", "employer_type", "seniority_band", "source")
+
+
+def _role_records():
+    """Collapse application_outcomes into one record per role_key."""
+    lane_names = {lane["id"]: lane["name"] for lane in get_all_lanes()}
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT job_id, role_key, snapshot_json, outcome, interview_rounds, applied_at FROM application_outcomes"
+        ).fetchall()
+    by_role = {}
+    for row in rows:
+        role_key = row["role_key"] or f"job-{row['job_id']}"
+        try:
+            snap = json.loads(row["snapshot_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            snap = {}
+        record = by_role.setdefault(role_key, {
+            "role_key": role_key, "reached_interview": False,
+            "best_rank": 0, "outcome": OUTCOME_PENDING, "snap": {}, "rounds": 0,
+        })
+        if row["outcome"] in _POSITIVE_OUTCOMES:
+            record["reached_interview"] = True
+        rank = _OUTCOME_RANK.get(row["outcome"], 0)
+        if rank >= record["best_rank"]:
+            record["best_rank"] = rank
+            record["outcome"] = row["outcome"]
+        record["rounds"] = max(record["rounds"], row["interview_rounds"] or 0)
+        # Prefer the most complete (non-orphaned, titled) snapshot as canonical.
+        if not record["snap"].get("title") and snap.get("title"):
+            record["snap"] = snap
+        elif not record["snap"]:
+            record["snap"] = snap
+    for record in by_role.values():
+        snap = record["snap"]
+        lane_id = snap.get("lane_id") or snap.get("profile_id")
+        record["dimensions"] = {
+            "source": snap.get("source") or "unknown",
+            "advertiser": snap.get("advertiser_company") or snap.get("company") or "unknown",
+            "employer_type": snap.get("employer_type") or "unknown",
+            "match_score_band": snap.get("match_score_band") or "unscored",
+            "salary_band": snap.get("salary_band") or "unknown",
+            "seniority_band": snap.get("seniority_band") or "unknown",
+            "lane": lane_names.get(lane_id, "unknown"),
+        }
+    return list(by_role.values())
+
+
+def compute_funnel_insights(store=True):
+    """Conversion-to-interview by dimension, aggregated by role_key.
+
+    Also derives the bounded per-dimension conversion priors used by composite
+    scoring (item 6) and caches both in app_settings so the dashboard card and
+    scoring path read without recomputing.
+    """
+    records = _role_records()
+    total = len(records)
+    interviews = sum(1 for r in records if r["reached_interview"])
+    baseline = (interviews / total) if total else 0.0
+
+    dimension_labels = {
+        "source": "Source", "advertiser": "Advertiser / recruiter",
+        "employer_type": "Employer type", "match_score_band": "Match-score band",
+        "salary_band": "Salary band", "seniority_band": "Seniority band", "lane": "Lane",
+    }
+    dimensions = {}
+    for dim in dimension_labels:
+        buckets = {}
+        for record in records:
+            value = record["dimensions"].get(dim) or "unknown"
+            bucket = buckets.setdefault(value, {"value": value, "applications": 0, "interviews": 0})
+            bucket["applications"] += 1
+            if record["reached_interview"]:
+                bucket["interviews"] += 1
+        segments = []
+        for bucket in buckets.values():
+            if bucket["applications"] < MIN_SEGMENT_APPLICATIONS:
+                continue
+            rate = bucket["interviews"] / bucket["applications"]
+            bucket["rate"] = round(rate, 4)
+            bucket["lift"] = round(rate - baseline, 4)
+            segments.append(bucket)
+        segments.sort(key=lambda b: (b["rate"], b["applications"]), reverse=True)
+        dimensions[dim] = {"label": dimension_labels[dim], "segments": segments}
+
+    ranked = [
+        {**seg, "dimension": dim, "dimension_label": dimension_labels[dim]}
+        for dim, data in dimensions.items()
+        for seg in data["segments"]
+    ]
+    ranked.sort(key=lambda b: (b["rate"], b["applications"]), reverse=True)
+    top_segments = [s for s in ranked if s["rate"] > baseline][:6]
+    worst_segments = [s for s in reversed(ranked) if s["rate"] < baseline][:6]
+
+    insights = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "total_applications": total,
+        "total_interviews": interviews,
+        "baseline_rate": round(baseline, 4),
+        "min_segment_applications": MIN_SEGMENT_APPLICATIONS,
+        "dimensions": dimensions,
+        "top_segments": top_segments,
+        "worst_segments": worst_segments,
+    }
+
+    priors = _derive_conversion_priors(records, baseline)
+    if store:
+        set_kv_setting(FUNNEL_INSIGHTS_CACHE_KEY, insights)
+        set_kv_setting(FUNNEL_CONVERSION_PRIORS_KEY, priors)
+    return insights
+
+
+def _derive_conversion_priors(records, baseline):
+    """Per-dimension conversion priors for composite scoring. delta is a bounded
+    (±10) nudge derived from a bucket's lift over baseline; support < 5 buckets
+    are recorded with delta 0 so they never move a score (item 6)."""
+    priors = {"baseline_rate": round(baseline, 4), "dimensions": {}}
+    for dim in _PRIOR_DIMENSIONS:
+        buckets = {}
+        for record in records:
+            value = record["dimensions"].get(dim) or "unknown"
+            bucket = buckets.setdefault(value, {"applications": 0, "interviews": 0})
+            bucket["applications"] += 1
+            if record["reached_interview"]:
+                bucket["interviews"] += 1
+        dim_priors = {}
+        for value, bucket in buckets.items():
+            support = bucket["applications"]
+            rate = bucket["interviews"] / support if support else 0.0
+            if support >= MIN_PRIOR_OUTCOMES:
+                delta = max(-10, min(10, int(round((rate - baseline) * 40))))
+            else:
+                delta = 0
+            dim_priors[value] = {
+                "support": support, "rate": round(rate, 4), "delta": delta,
+            }
+        priors["dimensions"][dim] = dim_priors
+    return priors
+
+
+def get_funnel_insights(recompute=False):
+    if recompute:
+        return compute_funnel_insights(store=True)
+    cached = get_kv_setting(FUNNEL_INSIGHTS_CACHE_KEY)
+    if cached:
+        return cached
+    return compute_funnel_insights(store=True)
+
+
+def _job_prior_dimensions(job):
+    """Extract the prior-dimension bucket values for a job row/dict."""
+    return {
+        "advertiser": (job.get("advertiser_company") or job.get("company") or "unknown"),
+        "employer_type": job.get("employer_type") or "unknown",
+        "seniority_band": _seniority_band(job.get("title")),
+        "source": job.get("source") or "unknown",
+    }
+
+
+def conversion_prior_delta(job, priors=None):
+    """Bounded (±10) composite-score adjustment from cached conversion priors.
+    Averages the qualifying per-dimension deltas so no single dimension
+    dominates; buckets below MIN_PRIOR_OUTCOMES already carry delta 0."""
+    priors = priors if priors is not None else get_kv_setting(FUNNEL_CONVERSION_PRIORS_KEY)
+    if not priors or not priors.get("dimensions"):
+        return 0
+    dims = _job_prior_dimensions(job)
+    deltas = []
+    for dim, value in dims.items():
+        bucket = (priors["dimensions"].get(dim) or {}).get(value)
+        if bucket and bucket.get("support", 0) >= MIN_PRIOR_OUTCOMES and bucket.get("delta"):
+            deltas.append(bucket["delta"])
+    if not deltas:
+        return 0
+    return max(-10, min(10, int(round(sum(deltas) / len(deltas)))))
+
+
+def composite_score_with_prior(match_score, fragment_score, job, priors=None):
+    """calculate_composite_score + a bounded conversion-prior nudge that can
+    never, on its own, push a job across the auto-reject threshold (respects the
+    2026-06-23 fix: scoring alone must not condemn or rescue a job)."""
+    base = calculate_composite_score(match_score, fragment_score)
+    if base is None:
+        return None
+    delta = conversion_prior_delta(job, priors)
+    if not delta:
+        return base
+    adjusted = base + delta
+    if base >= AUTO_REJECT_THRESHOLD:
+        adjusted = max(adjusted, AUTO_REJECT_THRESHOLD)
+    else:
+        adjusted = min(adjusted, AUTO_REJECT_THRESHOLD - 1)
+    return max(0, min(100, adjusted))
+
+
+# ---------------------------------------------------------------------------
+# Interview-validated fragment mining
+# ---------------------------------------------------------------------------
+# When a job reaches an interview it is the strongest positive signal we have.
+# We mine its JD + the application documents actually submitted, tag the
+# resulting fragments interview_validated=1, then weight them above merely-
+# submitted evidence in lane affinity and keyword generation.
+
+_interview_mining_lock = threading.Lock()
+_interview_mining_inflight = set()
+
+
+def _gather_interview_mining_documents(job_id):
+    job = get_job_details(job_id)
+    if not job:
+        return None, None, []
+    job = dict(job)
+    documents = []
+    jd_parts = [job.get("title"), job.get("description"),
+                job.get("position_description_text") or job.get("pdf_text")]
+    jd_text = "\n\n".join(str(p) for p in jd_parts if p)
+    if jd_text.strip():
+        documents.append({"filename": f"job-{job_id}-description", "text": jd_text})
+    for label, value in (("resume", job.get("resume_text")), ("cover-letter", job.get("cover_letter_text"))):
+        if value and str(value).strip():
+            documents.append({"filename": f"job-{job_id}-{label}", "text": str(value)})
+    for kit in get_application_kits(job_id=job_id, limit=5) or []:
+        kit = dict(kit)
+        for label, value in (("kit-resume", kit.get("resume_text")), ("kit-cover", kit.get("cover_letter_text"))):
+            if value and str(value).strip():
+                documents.append({"filename": f"job-{job_id}-{label}-{kit.get('id')}", "text": str(value)})
+    return job, get_lane_settings(job.get("profile_id") or 1), documents
+
+
+def boost_interview_validated_affinity(lane_id, person_id):
+    """Raise lane affinity for every interview-validated fragment so it sorts
+    above ordinary evidence in get_lane_fragments / document generation."""
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT id FROM candidate_fragments WHERE person_id = ? AND COALESCE(interview_validated, 0) = 1",
+            (person_id,),
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                """
+                INSERT INTO lane_fragment_affinity (lane_id, fragment_id, weight, reason, source, updated_at)
+                VALUES (?, ?, 0.97, 'Mined from a job that reached an interview.', 'interview_validated', datetime('now'))
+                ON CONFLICT(lane_id, fragment_id) DO UPDATE SET
+                    weight = MAX(lane_fragment_affinity.weight, 0.97),
+                    reason = 'Mined from a job that reached an interview.',
+                    source = 'interview_validated',
+                    updated_at = datetime('now')
+                """,
+                (lane_id, row["id"]),
+            )
+        conn.commit()
+        return len(rows)
+
+
+def mine_interview_validated_fragments(job_id, log=print):
+    """Mine interview-validated fragments from a job's JD + submitted documents.
+    Best-effort: returns 0 (and logs) if no provider is available or no docs."""
+    job, settings, documents = _gather_interview_mining_documents(job_id)
+    if not job or not documents:
+        log(f"No documents available to mine for interview-validated fragments (job {job_id}).")
+        return 0
+    lane_id = job.get("profile_id") or 1
+    person_id = 1
+    lane = get_lane_by_id(lane_id)
+    if lane and "person_id" in lane.keys() and lane["person_id"]:
+        person_id = lane["person_id"]
+    import corpus_miner
+    fragments, label = corpus_miner.mine_documents(documents, settings, log=log)
+    for fragment in fragments:
+        if isinstance(fragment, dict):
+            fragment.setdefault("source_job_ids", [job_id])
+    stored = upsert_candidate_fragments(person_id, fragments, interview_validated=True)
+    boosted = boost_interview_validated_affinity(lane_id, person_id)
+    keywords = []
+    for fragment in fragments:
+        keywords.extend(fragment.get("keywords") or [])
+    if keywords:
+        try:
+            merge_lane_terms(lane_id, keywords, source="interview_validated", confidence=0.92)
+        except Exception as exc:
+            log(f"Interview-validated keyword merge failed: {exc}")
+    log(f"Interview-validated mining ({label}): stored {stored} fragments, boosted {boosted} affinities for job {job_id}.")
+    return stored
+
+
+def _schedule_interview_fragment_mining(job_id):
+    """Kick interview-validated mining onto a daemon thread so interview
+    creation never blocks on the LLM. De-duped per job; failures are swallowed
+    (recompute paths reconcile fragments anyway)."""
+    with _interview_mining_lock:
+        if job_id in _interview_mining_inflight:
+            return
+        _interview_mining_inflight.add(job_id)
+
+    def _run():
+        try:
+            mine_interview_validated_fragments(job_id, log=lambda m: print(f"[interview-mining] {m}"))
+        except Exception as exc:
+            print(f"Interview-validated mining failed for job {job_id}: {exc}")
+        finally:
+            with _interview_mining_lock:
+                _interview_mining_inflight.discard(job_id)
+
+    threading.Thread(target=_run, name=f"interview-mine-{job_id}", daemon=True).start()
 
 
 def merge_lane_terms(lane_id, keywords, source="memory_evolution", confidence=0.78, protected_sources=("manual", "interview_validated")):
@@ -2650,12 +3515,60 @@ def delete_profile(profile_id):
     enforces that when foreign_keys is turned on for the connection. The
     legacy `jobs` table predates that constraint - its columns were added via
     ALTER over time - so it has no FK at all and is cleared explicitly.
+
+    Jobs that carry real application history (an interview, a stage/interview
+    event, or a post-applied status) are NOT deleted — that is how we lost
+    jobs 12344/22508 to the old cascade. They are reassigned to a surviving
+    fallback lane so their interviews and outcome snapshots stay reachable.
+    `application_outcomes` has no FK to jobs, so those rows survive regardless.
     """
     with get_db_connection() as conn:
         conn.execute("PRAGMA foreign_keys = ON")
+        fallback = conn.execute(
+            "SELECT id FROM profiles WHERE id != ? ORDER BY id ASC LIMIT 1",
+            (profile_id,),
+        ).fetchone()
+        fallback_id = fallback["id"] if fallback else None
+        reassigned = []
+        if fallback_id:
+            history_rows = conn.execute(
+                """
+                SELECT id FROM jobs
+                WHERE profile_id = ?
+                  AND (
+                        pipeline_stage IN ('applied','interviewing','offer','rejected_by_company')
+                     OR status IN ('applied','interviewing','offer','rejected_by_company')
+                     OR EXISTS (SELECT 1 FROM interviews WHERE interviews.job_id = jobs.id)
+                     OR EXISTS (
+                            SELECT 1 FROM application_events
+                            WHERE application_events.job_id = jobs.id
+                              AND application_events.event_type IN ('stage','interview')
+                        )
+                  )
+                """,
+                (profile_id,),
+            ).fetchall()
+            reassigned = [row["id"] for row in history_rows]
+            if reassigned:
+                placeholders = ",".join("?" for _ in reassigned)
+                conn.execute(
+                    f"""
+                    UPDATE jobs
+                    SET profile_id = ?, updated_at = datetime('now')
+                    WHERE id IN ({placeholders})
+                    """,
+                    [fallback_id, *reassigned],
+                )
         conn.execute("DELETE FROM jobs WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
         conn.commit()
+    # Re-home the lane-model rows for reassigned jobs so they show under the
+    # fallback lane's pipeline (the deleted lane's lane_opportunities cascaded).
+    for job_id in reassigned:
+        try:
+            sync_legacy_job_to_lane_model(job_id, fallback_id)
+        except Exception as exc:
+            print(f"Lane re-home sync failed for job {job_id}: {exc}")
 
 def get_profile_terms(profile_id):
     """Returns search terms for a specific profile."""
@@ -3316,10 +4229,19 @@ def update_job_analysis(job_id, analysis_text, score, analysis_signature=None):
     """Updates a job record with the AI analysis results."""
     with get_db_connection() as conn:
         row = conn.execute(
-            "SELECT pipeline_stage, status, fragment_score FROM jobs WHERE id = ?",
+            """
+            SELECT pipeline_stage, status, fragment_score, title, company,
+                   advertiser_company, employer_type, source
+            FROM jobs WHERE id = ?
+            """,
             (job_id,),
         ).fetchone()
-        composite_score = calculate_composite_score(score, row["fragment_score"] if row else None)
+        # Bounded conversion prior (item 6): the score the UI sorts by reflects
+        # observed outcomes, but never crosses the auto-reject line on its own.
+        composite_score = (
+            composite_score_with_prior(score, row["fragment_score"], dict(row))
+            if row else calculate_composite_score(score, None)
+        )
         normalized_stage = normalize_stage(row["pipeline_stage"] or row["status"]) if row else "new"
         if score is not None and int(score) < AUTO_REJECT_THRESHOLD and normalized_stage not in {"applied", "interviewing", "offer", "rejected", "rejected_by_company", "archived"}:
             conn.execute(
@@ -3916,6 +4838,12 @@ def retire_expired_pipeline_jobs(log_callback=None, profile_id=None):
                 """,
                 (row["id"], reason),
             )
+            # A silent no-response after 50 days is a ghost, not an explicit
+            # employer decline — the outcome funnel distinguishes the two.
+            try:
+                set_application_outcome(conn, row["id"], OUTCOME_GHOSTED)
+            except Exception as exc:
+                print(f"Outcome snapshot sync failed for ghosted job {row['id']}: {exc}")
             employer_declined.append(row["id"])
         conn.commit()
     if log_callback and retired:
@@ -4180,7 +5108,39 @@ def get_dashboard(profile_id=None, include_all_profiles=False):
         "awaiting_feedback": feedback_rows,
         "cleanup_due": cleanup_rows,
         "last_scrape": last_scrape,
+        "interview_nudges": get_interview_hygiene_nudges(profile_id, include_all_profiles),
     }
+
+
+def get_interview_hygiene_nudges(profile_id=None, include_all_profiles=False, limit=10):
+    """Interviews whose date has passed but whose outcome is still blank (item 7).
+
+    Surfaces a non-blocking "how did it go?" prompt so the funnel keeps learning.
+    Dismissal is client-side; resolution writes back via interviews:update and/or
+    a stage move (which advances the outcome snapshot)."""
+    profile_clause, params = _profile_filter_clause(profile_id, include_all_profiles)
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT interviews.id AS interview_id, interviews.job_id, interviews.round_number,
+                   interviews.title AS interview_title, interviews.interview_date,
+                   interviews.interview_type,
+                   jobs.title AS job_title, jobs.company, jobs.pipeline_stage,
+                   profiles.name AS profile_name
+            FROM interviews
+            JOIN jobs ON jobs.id = interviews.job_id
+            LEFT JOIN profiles ON profiles.id = jobs.profile_id
+            WHERE (interviews.outcome IS NULL OR TRIM(interviews.outcome) = '')
+              AND interviews.interview_date IS NOT NULL
+              AND date(interviews.interview_date) < date('now')
+              AND jobs.pipeline_stage NOT IN ('rejected', 'archived')
+              {profile_clause}
+            ORDER BY interviews.interview_date DESC, interviews.id DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+    return rows
 
 
 CAMPAIGN_CORE_TERMS = [
@@ -6305,6 +7265,13 @@ def update_job_application(job_id, updates):
                     updates.get("next_action_date"),
                 ),
             )
+            # Mirror the transition into the immutable outcome snapshot. Kept in
+            # the stage transaction so the snapshot and the stage move commit
+            # atomically. Withdrawal is expressed by moving to 'archived'.
+            try:
+                _sync_outcome_for_stage(conn, job_id, values["pipeline_stage"], values.get("application_date"))
+            except Exception as exc:
+                print(f"Outcome snapshot sync failed for job {job_id} -> {values['pipeline_stage']}: {exc}")
         elif updates.get("notes") or updates.get("feedback"):
             conn.execute(
                 "INSERT INTO application_events (job_id, event_type, title, details, due_date) VALUES (?, ?, ?, ?, ?)",
@@ -6401,8 +7368,18 @@ def add_interview(job_id, data):
                 data.get("interview_date") or data.get("next_action_date"),
             ),
         )
+        rounds = conn.execute(
+            "SELECT COUNT(*) FROM interviews WHERE job_id = ?", (job_id,)
+        ).fetchone()[0]
+        try:
+            set_application_outcome(conn, job_id, OUTCOME_INTERVIEW, interview_rounds=rounds)
+        except Exception as exc:
+            print(f"Outcome snapshot sync failed for interview on job {job_id}: {exc}")
         conn.commit()
-        return cursor.lastrowid
+    # An interview is our strongest positive signal: mine interview-validated
+    # fragments from this job's JD + application docs (best-effort, off-thread).
+    _schedule_interview_fragment_mining(job_id)
+    return cursor.lastrowid
 
 
 def update_interview(interview_id, data):
@@ -6462,6 +7439,13 @@ def update_interview(interview_id, data):
                 updated["interview_date"] or updated["next_action_date"],
             ),
         )
+        rounds = conn.execute(
+            "SELECT COUNT(*) FROM interviews WHERE job_id = ?", (updated["job_id"],)
+        ).fetchone()[0]
+        try:
+            set_application_outcome(conn, updated["job_id"], OUTCOME_INTERVIEW, interview_rounds=rounds)
+        except Exception as exc:
+            print(f"Outcome snapshot sync failed for interview update on job {updated['job_id']}: {exc}")
         conn.commit()
         return updated
 

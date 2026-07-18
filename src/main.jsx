@@ -16,6 +16,8 @@ import {
   AlertTriangle,
   ArrowRightLeft,
   CalendarClock,
+  ClipboardCheck,
+  Gauge,
   KanbanSquare,
   Lightbulb,
   ListTodo,
@@ -492,6 +494,41 @@ function AddJobModal({ busy, onSave, onClose }) {
       <footer className="modal-actions">
         <button className="secondary" onClick={onClose}>Cancel</button>
         <button disabled={busy || !form.title.trim()} onClick={() => onSave(form)}><Plus size={16} /> Add job</button>
+      </footer>
+    </Modal>
+  );
+}
+
+function LogExternalModal({ busy, onSave, onClose }) {
+  const [form, setForm] = useState({
+    title: "",
+    company: "",
+    url: "",
+    location: "",
+    salary: "",
+    application_date: new Date().toISOString().slice(0, 10),
+    doc_used: "",
+    description: "",
+  });
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  return (
+    <Modal title="Log external application" onClose={onClose}>
+      <div className="modal-copy">
+        Record an application you made outside JSE — a careers-page submission, referral, or one a recruiter put you forward for. It enters the pipeline at <strong>Applied</strong> and its outcome feeds Funnel Insights, so interviews that happen off-platform stop being a blind spot.
+      </div>
+      <div className="form-grid">
+        <label className="full"><span>Role title (required)</span><input autoFocus value={form.title} placeholder="Business Analyst" onChange={(event) => update("title", event.target.value)} /></label>
+        <label><span>Company</span><input value={form.company} placeholder="Employer or agency" onChange={(event) => update("company", event.target.value)} /></label>
+        <label><span>Job URL (optional)</span><input value={form.url} placeholder="https://..." onChange={(event) => update("url", event.target.value)} /></label>
+        <label><span>Location</span><input value={form.location} placeholder="Melbourne VIC" onChange={(event) => update("location", event.target.value)} /></label>
+        <label><span>Salary / rate</span><input value={form.salary} onChange={(event) => update("salary", event.target.value)} /></label>
+        <label><span>Date applied</span><input type="date" value={form.application_date} onChange={(event) => update("application_date", event.target.value)} /></label>
+        <label><span>Document used (optional)</span><input value={form.doc_used} placeholder="Resume / cover letter name" onChange={(event) => update("doc_used", event.target.value)} /></label>
+        <label className="full"><span>Notes / ad text (optional)</span><textarea value={form.description} placeholder="Anything you know about the role..." onChange={(event) => update("description", event.target.value)} /></label>
+      </div>
+      <footer className="modal-actions">
+        <button className="secondary" onClick={onClose}>Cancel</button>
+        <button disabled={busy || !form.title.trim()} onClick={() => onSave(form)}><ClipboardCheck size={16} /> Log application</button>
       </footer>
     </Modal>
   );
@@ -1584,9 +1621,10 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
   );
 }
 
-function Dashboard({ dashboard, calendar, onOpenJob, onOpenCleanup }) {
+function Dashboard({ dashboard, calendar, invoke, onOpenJob, onOpenCleanup, dismissedNudges, onResolveNudge }) {
   const stageCounts = dashboard?.stage_counts || {};
   const cleanupCount = (dashboard?.cleanup_due || []).length;
+  const nudges = (dashboard?.interview_nudges || []).filter((nudge) => !dismissedNudges?.has(nudge.interview_id));
   return (
     <section className="dashboard">
       <div className="metric-grid">
@@ -1597,6 +1635,21 @@ function Dashboard({ dashboard, calendar, onOpenJob, onOpenCleanup }) {
           </article>
         ))}
       </div>
+
+      {nudges.map((nudge) => (
+        <div key={nudge.interview_id} className="interview-nudge">
+          <div className="interview-nudge-copy">
+            <strong>How did the {nudge.job_title} interview go?</strong>
+            <span>{[nudge.company, nudge.interview_title || `Round ${nudge.round_number}`, formatDate(nudge.interview_date)].filter(Boolean).join(" · ")}</span>
+          </div>
+          <div className="interview-nudge-actions">
+            <button onClick={() => onResolveNudge(nudge, "offer")}>Progressed / offer</button>
+            <button onClick={() => onResolveNudge(nudge, "declined")}>Unsuccessful</button>
+            <button className="secondary" onClick={() => onOpenJob(nudge.job_id)}>Open</button>
+            <button className="link-button" onClick={() => onResolveNudge(nudge, "waiting")} aria-label="Dismiss"><X size={15} /></button>
+          </div>
+        </div>
+      ))}
 
       {cleanupCount ? (
         <button className="cleanup-banner" onClick={onOpenCleanup}>
@@ -1640,6 +1693,8 @@ function Dashboard({ dashboard, calendar, onOpenJob, onOpenCleanup }) {
           ))}
         </section>
 
+        <FunnelInsightsCard invoke={invoke} />
+
         <section className="dash-section">
           <h2><RefreshCw size={18} /> Scraper Status</h2>
           {dashboard?.last_scrape ? (
@@ -1651,6 +1706,79 @@ function Dashboard({ dashboard, calendar, onOpenJob, onOpenCleanup }) {
           ) : <p className="empty-inline">No scraper run recorded yet.</p>}
         </section>
       </div>
+    </section>
+  );
+}
+
+function FunnelInsightsCard({ invoke }) {
+  const [insights, setInsights] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(async (recompute = false) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await invoke("funnel:insights", recompute ? { recompute: true } : {});
+      setInsights(data.insights);
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [invoke]);
+
+  useEffect(() => { load(false); }, [load]);
+
+  const pct = (rate) => `${Math.round((rate || 0) * 100)}%`;
+  const segLabel = (seg) => `${seg.dimension_label}: ${seg.value}`;
+  const total = insights?.total_applications || 0;
+
+  return (
+    <section className="dash-section funnel-insights">
+      <h2><Gauge size={18} /> Funnel Insights</h2>
+      {error ? <p className="empty-inline">Could not load insights: {error}</p> : null}
+      {!insights && !error ? <p className="empty-inline">{busy ? "Computing…" : "No data yet."}</p> : null}
+      {insights ? (
+        <>
+          <div className="funnel-baseline">
+            <strong>{pct(insights.baseline_rate)}</strong>
+            <span>interview rate · {insights.total_interviews}/{total} role{total === 1 ? "" : "s"}</span>
+          </div>
+          {total < insights.min_segment_applications ? (
+            <p className="empty-inline">Log more applications to unlock segment breakdowns (min {insights.min_segment_applications} per segment).</p>
+          ) : (
+            <>
+              {(insights.top_segments || []).length ? (
+                <div className="funnel-segments">
+                  <h3>Converting best</h3>
+                  {insights.top_segments.slice(0, 4).map((seg) => (
+                    <div key={`top-${seg.dimension}-${seg.value}`} className="funnel-segment good">
+                      <span title={segLabel(seg)}>{seg.value}</span>
+                      <small>{pct(seg.rate)} · n={seg.applications}</small>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {(insights.worst_segments || []).length ? (
+                <div className="funnel-segments">
+                  <h3>Converting worst</h3>
+                  {insights.worst_segments.slice(0, 4).map((seg) => (
+                    <div key={`bad-${seg.dimension}-${seg.value}`} className="funnel-segment bad">
+                      <span title={segLabel(seg)}>{seg.value}</span>
+                      <small>{pct(seg.rate)} · n={seg.applications}</small>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          )}
+          <div className="funnel-footer">
+            <small>Updated {formatDate(insights.generated_at)}</small>
+            <button className="link-button" disabled={busy} onClick={() => load(true)}><RefreshCw size={13} /> Recompute</button>
+          </div>
+        </>
+      ) : null}
     </section>
   );
 }
@@ -3574,7 +3702,9 @@ function App() {
   const [addLaneOpen, setAddLaneOpen] = useState(false);
   const [addLaneBusy, setAddLaneBusy] = useState(false);
   const [addJobOpen, setAddJobOpen] = useState(false);
+  const [addExternalOpen, setAddExternalOpen] = useState(false);
   const [addJobBusy, setAddJobBusy] = useState(false);
+  const [dismissedNudges, setDismissedNudges] = useState(() => new Set());
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [quickMove, setQuickMove] = useState(null);
   const [rejectJob, setRejectJob] = useState(null);
@@ -4027,6 +4157,39 @@ function App() {
       appendLog(`Add job failed: ${toErrorMessage(error)}`);
     } finally {
       setAddJobBusy(false);
+    }
+  };
+
+  const logExternalJob = async (form) => {
+    setAddJobBusy(true);
+    try {
+      const data = await invoke("jobs:logExternal", { profile_id: activeProfileId, ...form, stage: "applied" });
+      setAddExternalOpen(false);
+      appendLog(data.added ? `Logged external application: ${form.title}` : `Not logged — ${data.message}`);
+      await refresh();
+      if (data.job_id) await openJob(data.job_id);
+    } catch (error) {
+      appendLog(`Log external application failed: ${toErrorMessage(error)}`);
+    } finally {
+      setAddJobBusy(false);
+    }
+  };
+
+  // Non-blocking outcome hygiene nudge resolution (item 7): record how a past
+  // interview went. "waiting" just dismisses locally; offer/declined advance the
+  // pipeline stage (and thus the outcome snapshot) and record the interview's
+  // own outcome text.
+  const resolveInterviewNudge = async (nudge, resolution) => {
+    try {
+      if (resolution === "offer" || resolution === "declined") {
+        await invoke("interviews:update", { interview_id: nudge.interview_id, interview: { outcome: resolution === "offer" ? "Progressed / offer" : "Unsuccessful" } });
+        await invoke("jobs:updateStatus", { job_id: nudge.job_id, status: resolution === "offer" ? "offer" : "rejected_by_company" });
+        appendLog(`Recorded ${resolution === "offer" ? "offer" : "unsuccessful"} outcome for ${nudge.job_title}.`);
+        await refresh();
+      }
+      setDismissedNudges((current) => new Set(current).add(nudge.interview_id));
+    } catch (error) {
+      appendLog(`Could not record interview outcome: ${toErrorMessage(error)}`);
     }
   };
 
@@ -4875,6 +5038,7 @@ function App() {
               }}
             ><Play size={16} /> Run Search</button>
             <button className="secondary" data-tooltip="Add a job listing manually" aria-description="Add a job listing manually" onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add Job</button>
+            {view === "pipeline" ? <button className="secondary" data-tooltip="Log an application you made outside JSE" aria-description="Log an application you made outside JSE" onClick={() => setAddExternalOpen(true)}><ClipboardCheck size={16} /> Log External</button> : null}
             <button className="secondary" data-tooltip="Analyse unreviewed jobs for fit" aria-description="Analyse unreviewed jobs for fit" onClick={() => setAnalysisOpen(true)}><Sparkles size={16} /> Run Analysis</button>
             <button className="secondary" data-tooltip="Reload jobs and dashboard data" aria-description="Reload jobs and dashboard data" onClick={() => refresh()}><RefreshCw size={16} /> Refresh</button>
             <button className="danger" data-tooltip="Stop all running searches and tasks" aria-description="Stop all running searches and tasks" onClick={stopAllTasks}><CircleStop size={16} /> Stop</button>
@@ -4922,7 +5086,7 @@ function App() {
 
         {view === "about" ? <AboutPanel version={prerequisites?.app_version} update={appUpdate} onCheckForUpdates={checkForAppUpdates} /> : null}
 
-        {view === "dashboard" ? <Dashboard dashboard={dashboard} calendar={calendar} onOpenJob={openJob} onOpenCleanup={() => setCleanupOpen(true)} /> : null}
+        {view === "dashboard" ? <Dashboard dashboard={dashboard} calendar={calendar} invoke={invoke} onOpenJob={openJob} onOpenCleanup={() => setCleanupOpen(true)} dismissedNudges={dismissedNudges} onResolveNudge={resolveInterviewNudge} /> : null}
 
         {view === "campaign" ? (
           <CampaignPanel
@@ -5083,6 +5247,7 @@ function App() {
       {runSearchOpen ? <RunSearchModal sources={searchSources} activeProfileId={activeProfileId} busy={searchBusy} onClose={() => setRunSearchOpen(false)} onRun={(payload) => { setRunSearchOpen(false); runTask("scrape:run", payload, "Search complete.", null, payload.auto_run_analysis ? () => runTask("analysis:run", { profile_id: payload.profile_id, include_all_profiles: payload.include_all_profiles, stage: "new" }, "Analysis complete.") : null); }} /> : null}
       {addLaneOpen ? <CreateLaneModal busy={addLaneBusy} onClose={() => setAddLaneOpen(false)} onCreate={createLane} /> : null}
       {addJobOpen ? <AddJobModal busy={addJobBusy} onClose={() => setAddJobOpen(false)} onSave={addManualJob} /> : null}
+      {addExternalOpen ? <LogExternalModal busy={addJobBusy} onClose={() => setAddExternalOpen(false)} onSave={logExternalJob} /> : null}
       {analysisOpen ? <AnalysisModal activeProfileId={activeProfileId} busy={analysisBusy} onClose={() => setAnalysisOpen(false)} onRun={(payload) => { setAnalysisOpen(false); runTask("analysis:run", payload, "Analysis complete."); }} /> : null}
       {quickMove ? <QuickStageForm job={quickMove.job} stage={quickMove.stage} onClose={() => setQuickMove(null)} onSave={saveQuickMove} /> : null}
       {rejectJob ? <RejectJobModal job={rejectJob} onClose={() => setRejectJob(null)} onSave={rejectSelectedJob} /> : null}

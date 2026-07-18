@@ -4849,3 +4849,64 @@ button.update-toast-close:hover:not(:disabled) {
 .ad-signals-grid dd { margin: 0; font-size: 13px; font-weight: 600; }
 .ad-signals-friction { margin: 8px 0 0; font-size: 12px; color: #73510f; }
 .ad-signals-ats { margin: 6px 0 0; font-size: 12px; color: var(--text-muted); }
+
+/* Funnel Insights + outcome hygiene (Funnel feedback loop) */
+.interview-nudge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 10px;
+}
+.interview-nudge-copy { display: grid; gap: 3px; }
+.interview-nudge-copy strong { font-size: 14px; color: var(--accent-strong); }
+.interview-nudge-copy span { font-size: 12px; color: var(--text-muted); }
+.interview-nudge-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.interview-nudge-actions button { min-height: 30px; padding: 4px 10px; font-size: 12px; }
+
+.funnel-insights .funnel-baseline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.funnel-insights .funnel-baseline strong { font-size: 26px; color: var(--accent-strong); }
+.funnel-insights .funnel-baseline span { font-size: 12px; color: var(--text-muted); }
+.funnel-segments { margin-bottom: 8px; }
+.funnel-segments h3 {
+  margin: 6px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.funnel-segment {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  border-left: 3px solid var(--border-strong);
+  margin-bottom: 3px;
+  background: var(--surface-alt);
+}
+.funnel-segment span { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.funnel-segment small { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.funnel-segment.good { border-left-color: #2f8f6b; }
+.funnel-segment.bad { border-left-color: #b0632f; }
+.funnel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.funnel-footer small { font-size: 11px; color: var(--text-muted); }
+.funnel-footer .link-button { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }

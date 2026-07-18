@@ -2,7 +2,12 @@
 import sqlite3
 import sys
 
-from database_manager import DB_FILE, DEFAULT_PROFILE_SETTINGS, extract_job_metadata
+from database_manager import (
+    DB_FILE,
+    DEFAULT_PROFILE_SETTINGS,
+    extract_job_metadata,
+    backfill_application_outcomes,
+)
 
 PIPELINE_STAGES = (
     "new",
@@ -420,6 +425,26 @@ def setup_database():
             WHERE interviews.job_id = jobs.id
         )
     """)
+
+    # Immutable outcome snapshots for every application. This is the funnel
+    # feedback loop's source of truth: it deliberately survives job deletion
+    # (job_id is a nullable non-FK reference) so lane-deletion cascades and
+    # duplicate-role cleanup can never erase interview history. All conversion
+    # statistics aggregate by role_key (re-advertised roles collapse to one).
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS application_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER,
+            role_key TEXT,
+            snapshot_json TEXT,
+            applied_at TEXT,
+            outcome TEXT DEFAULT 'pending',
+            outcome_at TEXT,
+            interview_rounds INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    ''')
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS scraper_runs (
@@ -894,6 +919,10 @@ def setup_database():
         _add_column(cursor, _table, "outcome_score", "REAL DEFAULT 0")
         _add_column(cursor, _table, "last_outcome_at", "TEXT")
         _add_column(cursor, _table, "reinforces_themes_json", "TEXT")
+        # Fragments mined from a job that actually reached an interview are the
+        # strongest signal we have: they get weighted above merely-submitted
+        # evidence in lane affinity and keyword generation.
+        _add_column(cursor, _table, "interview_validated", "INTEGER DEFAULT 0")
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_pipeline_stage ON jobs(pipeline_stage)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_next_action_date ON jobs(next_action_date)")
@@ -904,6 +933,9 @@ def setup_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_application_events_job ON application_events(job_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_interviews_job ON interviews(job_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_interviews_date ON interviews(interview_date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_application_outcomes_job ON application_outcomes(job_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_application_outcomes_role ON application_outcomes(role_key)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_application_outcomes_outcome ON application_outcomes(outcome)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_profile_memory_profile ON profile_memory_fragments(profile_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_profile_memory_theme ON profile_memory_fragments(profile_id, theme)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_profile_memory_scans_profile ON profile_memory_scans(profile_id, scanned_at)")
@@ -1052,6 +1084,16 @@ def setup_database():
 
     conn.commit()
     conn.close()
+
+    # Backfill outcome snapshots from application history. Runs on its own
+    # connection after the schema commit (so it sees application_outcomes) and
+    # is gated internally by an app_settings flag, so it scans once, not every
+    # launch. New applications get their snapshot from the applied-stage hook.
+    try:
+        backfill_application_outcomes()
+    except Exception as exc:  # never let a backfill hiccup block startup
+        print(f"application_outcomes backfill skipped: {exc}", file=sys.stderr)
+
     print("Database 'job_applications.db' is ready.", file=sys.stderr)
 
 if __name__ == '__main__':
