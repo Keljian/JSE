@@ -1931,6 +1931,23 @@ def upsert_candidate_fragments(person_id, fragments, replace=False, interview_va
                 "support_count": int(fragment.get("support_count") or 1),
             }
             fingerprint = fragment.get("fingerprint") or _candidate_fragment_fingerprint(clean)
+            # Merge source-job attribution across mining runs. Fragments dedupe by
+            # fingerprint, so a piece of evidence shared by several interviewed
+            # roles would otherwise be re-attributed to only the last job mined —
+            # making the other roles' "mined" state flip back and the funnel
+            # under-count. Union old + new provenance instead.
+            existing_sources = conn.execute(
+                "SELECT source_job_ids_json FROM candidate_fragments WHERE person_id = ? AND fingerprint = ?",
+                (person_id, fingerprint),
+            ).fetchone()
+            merged_sources = []
+            seen_sources = set()
+            for source in (_json_loads_maybe(existing_sources["source_job_ids_json"], []) if existing_sources else []) + (fragment.get("source_job_ids") or []):
+                key = str(source)
+                if key not in seen_sources:
+                    seen_sources.add(key)
+                    merged_sources.append(source)
+            clean["source_job_ids_json"] = _json_dumps_compact(merged_sources)
             conn.execute(
                 """
                 INSERT INTO candidate_fragments (
@@ -3278,15 +3295,52 @@ def _gather_interview_mining_documents(job_id):
     jd_text = "\n\n".join(str(p) for p in jd_parts if p)
     if jd_text.strip():
         documents.append({"filename": f"job-{job_id}-description", "text": jd_text})
+    have_candidate_docs = False
     for label, value in (("resume", job.get("resume_text")), ("cover-letter", job.get("cover_letter_text"))):
         if value and str(value).strip():
             documents.append({"filename": f"job-{job_id}-{label}", "text": str(value)})
+            have_candidate_docs = True
     for kit in get_application_kits(job_id=job_id, limit=5) or []:
         kit = dict(kit)
         for label, value in (("kit-resume", kit.get("resume_text")), ("kit-cover", kit.get("cover_letter_text"))):
             if value and str(value).strip():
                 documents.append({"filename": f"job-{job_id}-{label}-{kit.get('id')}", "text": str(value)})
+                have_candidate_docs = True
+    # Fallback for interviews logged without in-app document generation (the
+    # common case for historical roles): there is no submitted resume/cover to
+    # mine, only the job ad — which is not candidate evidence. Pull the most
+    # JD-relevant documents from the candidate's evidence corpus so the miner
+    # has real, role-relevant candidate material to extract interview-validated
+    # fragments from. Best-effort: if the corpus is empty this is a no-op.
+    if not have_candidate_docs and jd_text.strip():
+        documents.extend(_corpus_evidence_for_jd(jd_text, job_id))
     return job, get_lane_settings(job.get("profile_id") or 1), documents
+
+
+def _corpus_evidence_for_jd(jd_text, job_id, limit=6):
+    """Retrieve the candidate's most JD-relevant corpus evidence (resumes, cover
+    letters, KSC responses) as mining documents. Uses the same DB the rest of the
+    process reads, so it works under test isolation and the packaged data dir."""
+    try:
+        import context_library as clib
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        try:
+            picked, _family = clib.retrieve(conn, jd_text)
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"Corpus evidence fallback failed for job {job_id}: {exc}")
+        return []
+    documents = []
+    for _doc_type, items in (picked or {}).items():
+        for _score, doc in items:
+            text = str(doc.get("text") or "").strip()
+            if text:
+                documents.append({"filename": f"corpus-{doc.get('filename') or 'evidence'}", "text": text})
+            if len(documents) >= limit:
+                return documents
+    return documents
 
 
 def boost_interview_validated_affinity(lane_id, person_id):
@@ -5110,6 +5164,47 @@ def get_dashboard(profile_id=None, include_all_profiles=False):
         "last_scrape": last_scrape,
         "interview_nudges": get_interview_hygiene_nudges(profile_id, include_all_profiles),
     }
+
+
+def get_interview_validated_fragments(person_id=1, limit=300):
+    """Candidate fragments mined from jobs that reached an interview (item 5).
+
+    Ordered strongest-first (outcome-weighted, then repeatedly-reinforced) so the
+    Learnings tab leads with the evidence most correlated with getting interviews.
+    """
+    with get_db_connection() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM candidate_fragments
+            WHERE person_id = ? AND COALESCE(interview_validated, 0) = 1
+            ORDER BY outcome_score DESC, support_count DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (person_id, limit),
+        ).fetchall()
+
+
+def get_interviewed_jobs(profile_id=None, include_all_profiles=False, limit=100):
+    """Jobs that reached an interview, with round count and latest date — the
+    candidates for interview-validated mining."""
+    profile_clause, params = _profile_filter_clause(profile_id, include_all_profiles)
+    with get_db_connection() as conn:
+        return conn.execute(
+            f"""
+            SELECT jobs.id, jobs.title, jobs.company, jobs.pipeline_stage, jobs.profile_id,
+                   profiles.name AS profile_name,
+                   COUNT(interviews.id) AS interview_rounds,
+                   MAX(interviews.interview_date) AS latest_interview_date
+            FROM jobs
+            JOIN interviews ON interviews.job_id = jobs.id
+            LEFT JOIN profiles ON profiles.id = jobs.profile_id
+            WHERE 1 = 1 {profile_clause}
+            GROUP BY jobs.id
+            ORDER BY latest_interview_date DESC, jobs.id DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
 
 
 def get_interview_hygiene_nudges(profile_id=None, include_all_profiles=False, limit=10):

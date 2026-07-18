@@ -38,6 +38,14 @@ All notable changes to JSE are documented here.
   - **Outcome hygiene nudges**: a dismissible dashboard prompt asks how a past
     interview went, writing the result back to the interview and the outcome
     snapshot.
+  - **Interview Learnings tab**: a dedicated view listing every interviewed role
+    with a one-click Mine / Re-mine action, and cards for the resulting
+    interview-validated fragments (claim, keywords, reuse guidance, source
+    roles). For roles interviewed without an in-app-generated resume/cover, the
+    miner falls back to the candidate's most job-description-relevant evidence
+    from the context library, so historical interviews can still be mined.
+    Fragment provenance now merges across roles, so evidence shared by several
+    interviews stays attributed to all of them.
 - Added a **Delete lane** control to Settings so a lane (job-search profile)
   can be removed from the GUI. Guarded behind a confirmation dialog and
   disabled when only one lane remains, since at least one lane must exist.

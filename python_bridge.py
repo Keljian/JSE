@@ -2749,6 +2749,54 @@ def command_funnel_mine_interview_fragments(payload):
     return {"job_id": job_id, "stored": stored}
 
 
+def command_funnel_interview_learnings(payload):
+    """Learnings tab payload: interview-validated fragments plus the interviewed
+    jobs they were (or can be) mined from."""
+    profile_id = payload.get("profile_id")
+    include_all = bool(payload.get("include_all_profiles"))
+    person_id = _person_id_for(profile_id or 1)
+
+    fragments = []
+    mined_job_ids = set()
+    for row in db.get_interview_validated_fragments(person_id):
+        data = row_to_dict(row)
+        source_job_ids = _json_loads_maybe(data.get("source_job_ids_json"), [])
+        for raw in source_job_ids:
+            try:
+                mined_job_ids.add(int(raw))
+            except (TypeError, ValueError):
+                pass
+        fragments.append({
+            "id": data["id"],
+            "theme": data.get("theme"),
+            "claim": data.get("claim"),
+            "supporting_detail": data.get("supporting_detail"),
+            "fragment_type": data.get("fragment_type"),
+            "confidence": data.get("confidence"),
+            "status": data.get("status"),
+            "seniority": data.get("seniority"),
+            "support_count": data.get("support_count"),
+            "outcome_score": data.get("outcome_score"),
+            "reuse_guidance": data.get("reuse_guidance"),
+            "keywords": _json_loads_maybe(data.get("keywords_json"), []),
+            "skills": _json_loads_maybe(data.get("skills_json"), []),
+            "source_job_ids": source_job_ids,
+            "updated_at": data.get("updated_at"),
+        })
+
+    interviewed_jobs = []
+    for row in db.get_interviewed_jobs(profile_id, include_all):
+        job = row_to_dict(row)
+        job["mined"] = job["id"] in mined_job_ids
+        interviewed_jobs.append(job)
+
+    return {
+        "fragments": fragments,
+        "interviewed_jobs": interviewed_jobs,
+        "person_id": person_id,
+    }
+
+
 COMMANDS = {
     "app:init": command_app_init,
     "app:refresh": command_app_refresh,
@@ -2815,6 +2863,7 @@ COMMANDS = {
     "events:add": command_events_add,
     "dashboard:get": command_dashboard_get,
     "funnel:insights": command_funnel_insights,
+    "funnel:interviewLearnings": command_funnel_interview_learnings,
     "funnel:mineInterviewFragments": command_funnel_mine_interview_fragments,
     "calendar:get": command_calendar_get,
     "campaign:summary": command_campaign_summary,

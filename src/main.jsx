@@ -18,6 +18,7 @@ import {
   CalendarClock,
   ClipboardCheck,
   Gauge,
+  GraduationCap,
   KanbanSquare,
   Lightbulb,
   ListTodo,
@@ -1779,6 +1780,133 @@ function FunnelInsightsCard({ invoke }) {
           </div>
         </>
       ) : null}
+    </section>
+  );
+}
+
+function InterviewLearningsPanel({ invoke, runTask, activeTasks, profileId, includeAllProfiles, onOpenJob }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const mining = Boolean(activeTasks["funnel:mineInterviewFragments"]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await invoke("funnel:interviewLearnings", {
+        profile_id: profileId,
+        include_all_profiles: includeAllProfiles,
+      });
+      setData(result);
+    } catch (err) {
+      setData({ interviewed_jobs: [], fragments: [], error: toErrorMessage(err) });
+    } finally {
+      setLoading(false);
+    }
+  }, [invoke, profileId, includeAllProfiles]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const jobs = data?.interviewed_jobs || [];
+  const fragments = data?.fragments || [];
+  const unmined = jobs.filter((job) => !job.mined);
+
+  const mine = (jobId) => runTask("funnel:mineInterviewFragments", { job_id: jobId }, "Interview-validated mining complete.", null, load);
+
+  const mineAll = () => {
+    const pending = unmined.map((job) => job.id);
+    const step = (index) => {
+      if (index >= pending.length) { load(); return; }
+      runTask("funnel:mineInterviewFragments", { job_id: pending[index] }, "Interview-validated mining complete.", null, () => step(index + 1));
+    };
+    if (pending.length) step(0);
+  };
+
+  const outcomeTone = (score) => {
+    const value = Number(score || 0);
+    if (value > 0) return "good";
+    if (value < 0) return "bad";
+    return "";
+  };
+
+  return (
+    <section className="learnings-view">
+      <div className="section-head">
+        <div>
+          <h2><GraduationCap size={18} /> Interview Learnings</h2>
+          <p className="settings-hint">Evidence mined from jobs that actually reached an interview — your strongest signal. These fragments are weighted above ordinary resume material in scoring and document generation. Mining runs automatically when a job first reaches an interview; you can also (re)run it here.</p>
+        </div>
+        <div className="learnings-actions">
+          <button className="secondary" disabled={loading || mining} onClick={load}>
+            {loading ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />} Refresh
+          </button>
+          {unmined.length ? (
+            <button disabled={mining} onClick={mineAll}>
+              {mining ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />} Mine {unmined.length} un-mined
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {data?.error ? <p className="empty-inline">Could not load learnings: {data.error}</p> : null}
+
+      <div className="learnings-metrics">
+        <article><span>Interviewed roles</span><strong>{jobs.length}</strong><small>{unmined.length} not yet mined</small></article>
+        <article><span>Validated fragments</span><strong>{fragments.length}</strong><small>Weighted above submitted evidence</small></article>
+        <article><span>Interview rounds</span><strong>{jobs.reduce((sum, job) => sum + Number(job.interview_rounds || 0), 0)}</strong><small>Across all interviewed roles</small></article>
+      </div>
+
+      <section className="learnings-section">
+        <h3>Interviewed roles</h3>
+        {jobs.length ? (
+          <div className="learnings-jobs">
+            {jobs.map((job) => (
+              <article key={job.id} className={`learnings-job ${job.mined ? "mined" : ""}`}>
+                <div className="learnings-job-main">
+                  <button className="link-button" onClick={() => onOpenJob(job.id)}>{job.title || "Untitled role"}</button>
+                  <span>{[job.company, job.profile_name, `${job.interview_rounds} round${job.interview_rounds === 1 ? "" : "s"}`, formatDate(job.latest_interview_date)].filter(Boolean).join(" · ")}</span>
+                </div>
+                <div className="learnings-job-actions">
+                  {job.mined ? <span className="learnings-badge mined"><Check size={13} /> Mined</span> : <span className="learnings-badge">Not mined</span>}
+                  <button className="secondary" disabled={mining} onClick={() => mine(job.id)}>
+                    {mining ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />} {job.mined ? "Re-mine" : "Mine"}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-inline">No interviews recorded yet. Once a job reaches an interview, it appears here for mining.</p>
+        )}
+      </section>
+
+      <section className="learnings-section">
+        <h3>Interview-validated fragments</h3>
+        {fragments.length ? (
+          <div className="learnings-fragments">
+            {fragments.map((fragment) => (
+              <article key={fragment.id} className="learnings-fragment">
+                <header>
+                  <strong>{fragment.theme || "Untitled fragment"}</strong>
+                  <div className="learnings-fragment-tags">
+                    <span>{fragment.fragment_type || "evidence"}</span>
+                    <span>{fragment.confidence || "medium"} confidence</span>
+                    {Number(fragment.support_count || 0) > 1 ? <span>seen ×{fragment.support_count}</span> : null}
+                    {Number(fragment.outcome_score) ? <span className={`learnings-outcome ${outcomeTone(fragment.outcome_score)}`}>outcome {Number(fragment.outcome_score) > 0 ? "+" : ""}{Number(fragment.outcome_score).toFixed(1)}</span> : null}
+                  </div>
+                </header>
+                <p>{fragment.claim || fragment.supporting_detail || "No claim captured."}</p>
+                {fragment.reuse_guidance ? <p className="learnings-guidance"><Lightbulb size={13} /> {fragment.reuse_guidance}</p> : null}
+                {(fragment.keywords || []).length ? <small>Activates on: {fragment.keywords.slice(0, 6).join(", ")}</small> : null}
+                {(fragment.source_job_ids || []).length ? <small className="learnings-source">From interviewed job{fragment.source_job_ids.length === 1 ? "" : "s"}: {fragment.source_job_ids.slice(0, 4).map((id) => (
+                  <button key={id} className="link-button" onClick={() => onOpenJob(id)}>#{id}</button>
+                ))}</small> : null}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-inline">No interview-validated fragments yet. Mine an interviewed role above to extract the evidence that helped it convert.</p>
+        )}
+      </section>
     </section>
   );
 }
@@ -4987,10 +5115,16 @@ function App() {
     hiddenMarket: "Intelligence",
     pipeline: "Pipeline",
     stats: "Stats",
+    learnings: "Interview Learnings",
     activity: "Activity",
     settings: "Settings",
     about: "About",
   }[view] || "Dashboard";
+
+  // Views that use the pipeline query filters (search, stage, source, score,
+  // work mode). Analytics-style views (learnings, stats, activity) only need the
+  // lane scope, so the heavy filter row is hidden there.
+  const showPipelineFilters = ["dashboard", "campaign", "hiddenMarket", "pipeline"].includes(view);
 
   return (
     <main className="ats-shell">
@@ -5005,6 +5139,7 @@ function App() {
         <button className={view === "hiddenMarket" ? "active nav-btn" : "nav-btn"} onClick={() => setView("hiddenMarket")}><Radar size={18} /> Intelligence</button>
         <button className={view === "pipeline" ? "active nav-btn" : "nav-btn"} onClick={() => setView("pipeline")}><KanbanSquare size={18} /> Pipeline</button>
         <button className={view === "stats" ? "active nav-btn" : "nav-btn"} onClick={() => setView("stats")}><TrendingUp size={18} /> Stats</button>
+        <button className={view === "learnings" ? "active nav-btn" : "nav-btn"} onClick={() => setView("learnings")}><GraduationCap size={18} /> Learnings</button>
         <button className={view === "activity" ? "active nav-btn" : "nav-btn"} onClick={() => setView("activity")}><NotebookTabs size={18} /> Activity</button>
         <button className={view === "settings" ? "active nav-btn" : "nav-btn"} onClick={() => setView("settings")}><Settings size={18} /> Settings</button>
         <div className="nav-spacer" />
@@ -5048,14 +5183,14 @@ function App() {
         {view !== "about" ? <section className={view === "settings" ? "filter-bar settings-filter-bar" : "filter-bar"}>
           <div className="filter-search-row">
             <label className="profile-filter"><span>Lane</span><select value={activeProfileId} disabled={!profiles.length} onChange={(event) => setActiveProfileId(Number(event.target.value))}>{profiles.length ? profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>) : <option value={0}>No lanes</option>}</select></label>
+            {showPipelineFilters ? (
+              <label className="search-field"><span>Search</span><input value={filters.query} placeholder="Title, company, notes, analysis, lane..." onChange={(event) => updateFilter("query", event.target.value)} /></label>
+            ) : null}
             {view !== "settings" ? (
-              <>
-                <label className="search-field"><span>Search</span><input value={filters.query} placeholder="Title, company, notes, analysis, lane..." onChange={(event) => updateFilter("query", event.target.value)} /></label>
-                <label className="filter-chip all-profiles"><input type="checkbox" checked={includeAllProfiles} onChange={(event) => setIncludeAllProfiles(event.target.checked)} /> All lanes</label>
-              </>
+              <label className="filter-chip all-profiles"><input type="checkbox" checked={includeAllProfiles} onChange={(event) => setIncludeAllProfiles(event.target.checked)} /> All lanes</label>
             ) : null}
           </div>
-          {view !== "settings" ? (
+          {showPipelineFilters ? (
             <div className="filter-options-row">
               <label className="stage-filter"><span>Stage</span><select value={filters.stage} onChange={(event) => updateFilter("stage", event.target.value)}><option value="">All stages</option>{PIPELINE.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
               <label className="source-filter"><span>Source</span><select value={filters.source} onChange={(event) => updateFilter("source", event.target.value)}><option value="">All sources</option>{sources.map((source) => <option key={source} value={source}>{source}</option>)}</select></label>
@@ -5198,6 +5333,17 @@ function App() {
 
         {view === "stats" ? (
           <StatsPanel stats={stats} period={statsPeriod} onPeriodChange={setStatsPeriod} busy={statsBusy} />
+        ) : null}
+
+        {view === "learnings" ? (
+          <InterviewLearningsPanel
+            invoke={invoke}
+            runTask={runTask}
+            activeTasks={activeTasks}
+            profileId={activeProfileId}
+            includeAllProfiles={includeAllProfiles}
+            onOpenJob={openJob}
+          />
         ) : null}
 
         {view === "activity" ? (
