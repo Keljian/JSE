@@ -3865,7 +3865,7 @@ h3 {
   height: 34px;
   padding: 0 14px;
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   border-top: 1px solid #cfd9d2;
@@ -3877,6 +3877,9 @@ h3 {
 
 .status-strip strong {
   color: #174a3f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-strip span {

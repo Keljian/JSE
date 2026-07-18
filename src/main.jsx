@@ -1787,7 +1787,7 @@ function FunnelInsightsCard({ invoke }) {
 function InterviewLearningsPanel({ invoke, runTask, activeTasks, profileId, includeAllProfiles, onOpenJob }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const mining = Boolean(activeTasks["funnel:mineInterviewFragments"]);
+  const mining = Boolean(activeTasks["learnings"]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -4060,17 +4060,31 @@ function App() {
     if (command.startsWith("memory:")) return "memory";
     if (command.startsWith("campaign:")) return "campaign";
     if (command.startsWith("lanes:")) return "laneSetup";
+    if (command.startsWith("funnel:")) return "learnings";
     return command;
   };
+
+  // Human-friendly names for the status strip and activity log, so a running
+  // task reads "Mining interview fragments" rather than "funnel:mineInterviewFragments".
+  const taskLabel = (kind) => ({
+    search: "Searching sources",
+    analysis: "Analysing jobs",
+    docs: "Generating documents",
+    company: "Researching employers",
+    memory: "Mining application memory",
+    campaign: "Updating campaign",
+    laneSetup: "Setting up lane",
+    learnings: "Mining interview fragments",
+  }[kind] || kind);
 
   const runTask = useCallback((command, payload, doneMessage, refreshProfileId = null, onComplete = null) => {
     const taskKind = taskKindForCommand(command);
     if (activeTasks[taskKind]) {
-      appendLog(`${taskKind} is already running.`);
+      appendLog(`${taskLabel(taskKind)} is already running.`);
       return;
     }
     setStatus("Running");
-    appendLog(`Started ${command}`);
+    appendLog(`Started: ${taskLabel(taskKind)}`);
     const task = window.jobAssistant.startTask(command, payload, (event) => {
       if (event.type === "log") appendLog(event.message);
       if (event.type === "status") setStatus(event.message || "Running");
@@ -5444,7 +5458,7 @@ function App() {
       {dialog ? <DialogModal dialog={dialog} onClose={closeDialog} /> : null}
       {updateToastVisible ? <UpdateToast update={appUpdate} onDismiss={() => setUpdateToastVisible(false)} /> : null}
       <footer className="status-strip">
-        <strong>{busy ? runningTaskKeys.join(" + ") : "Idle"}</strong>
+        <strong>{busy ? runningTaskKeys.map(taskLabel).join(" + ") : "Idle"}</strong>
         <span>{latestLog || "Ready"}</span>
         <a href={SUPPORT_URL} onClick={openSupportLink} title={SUPPORT_MESSAGE}>☕ ko-fi.com/keljian</a>
       </footer>
