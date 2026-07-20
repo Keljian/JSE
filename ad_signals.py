@@ -154,16 +154,68 @@ def _ats_keywords(job, text_lower):
     return keywords[:12]
 
 
-def derive(job, recurrence_count=0):
+def _text_fingerprint(job, text):
+    """Cheap change-detection key for the regex-derived signals of one job.
+
+    Covers every field _text_signals reads. hash(text) is O(n) but orders of
+    magnitude cheaper than the ~20 regex passes it lets us skip.
+    """
+    return (
+        len(text),
+        hash(text),
+        str(job.get("title") or ""),
+        str(job.get("salary") or ""),
+        str(job.get("employer_type") or ""),
+        str(job.get("application_url") or ""),
+        str(job.get("url") or ""),
+        str(job.get("contact_email") or ""),
+    )
+
+
+def _text_signals(job, text, text_lower):
+    """The regex-heavy signals that depend only on stored job fields (no clock)."""
+    return {
+        "friction": _friction(text_lower),
+        "apply_channel": _apply_channel(job, text_lower),
+        "salary_disclosed": _salary_disclosed(job, text),
+        "hiring_trigger": _hiring_trigger(text_lower),
+        "reporting_line": _reporting_line(text),
+        "team_size": _team_size(text),
+        "ats_keywords": _ats_keywords(job, text_lower),
+    }
+
+
+def derive(job, recurrence_count=0, cache=None):
     """Return a compact deterministic-signals dict for one job row/dict.
 
     ``recurrence_count`` is the number of rows sharing this job's normalised
     company+title (1 = only this posting). Everything else is read from ``job``.
+
+    ``cache`` (optional) is a dict of job_id -> (fingerprint, text_signals)
+    owned by the caller. The regex passes dominate list assembly (~1.5s for a
+    ~5000-job board), so a persistent process should pass a long-lived dict;
+    only jobs whose text/fields changed are re-scanned. Date-relative fields
+    (age, closing window, urgency) are always computed fresh.
     """
     text = _text(job)
-    text_lower = text.lower()
-    now = datetime.now()
 
+    signals = None
+    if cache is not None:
+        job_id = job.get("id")
+        fingerprint = _text_fingerprint(job, text)
+        cached = cache.get(job_id) if job_id is not None else None
+        if cached is not None and cached[0] == fingerprint:
+            signals = cached[1]
+        else:
+            signals = _text_signals(job, text, text.lower())
+            if job_id is not None:
+                if len(cache) > 20000:
+                    cache.clear()  # unbounded growth guard; repopulates naturally
+                cache[job_id] = (fingerprint, signals)
+    else:
+        signals = _text_signals(job, text, text.lower())
+
+    now = datetime.now()
     scraped = _parse_date(job.get("date_scraped") or job.get("updated_at"))
     age_days = (now - scraped).days if scraped else None
     closing = _parse_date(job.get("closing_date"))
@@ -179,22 +231,15 @@ def derive(job, recurrence_count=0):
         urgency = None
 
     count = int(recurrence_count or 0)
-    reporting = _reporting_line(text)
-    team = _team_size(text)
 
     return {
         # Tier 1
         "recurrence_count": count,
         "is_recurring": count >= 2,
-        "friction": _friction(text_lower),
-        "apply_channel": _apply_channel(job, text_lower),
-        "salary_disclosed": _salary_disclosed(job, text),
         "age_days": age_days,
         "closes_in_days": closes_in_days,
         "urgency": urgency,
-        # Tier 2 (deterministic shadow; LLM extraction enriches the same fields)
-        "hiring_trigger": _hiring_trigger(text_lower),
-        "reporting_line": reporting,
-        "team_size": team,
-        "ats_keywords": _ats_keywords(job, text_lower),
+        # Regex-derived Tier 1 + Tier 2 (deterministic shadow; LLM extraction
+        # enriches the same fields)
+        **signals,
     }

@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 import database_manager as db
@@ -20,10 +21,30 @@ def _json(data):
     return json.dumps(data or {}, separators=(",", ":"), sort_keys=True)
 
 
-def ensure_registered():
-    discover_user_plugins()
-    db.disable_removed_builtin_scraper_plugins([])
-    migrate_legacy_lane_configs()
+_registration_lock = threading.Lock()
+_registered = False
+
+
+def ensure_registered(force=False):
+    """Discover plugins and sync the registry once per process.
+
+    Discovery re-reads every manifest from disk and upserts rows, which cost
+    several hundred ms on every jobs refresh when it ran unconditionally.
+    Plugin mutations go through the bridge's scrapers:* commands, and the UI
+    refetches scrapers:list afterwards — that path passes force=True, so a
+    manually dropped plugin folder is picked up whenever the Searchers
+    settings view loads (and always at the next app start).
+    """
+    global _registered
+    if _registered and not force:
+        return
+    with _registration_lock:
+        if _registered and not force:
+            return
+        discover_user_plugins()
+        db.disable_removed_builtin_scraper_plugins([])
+        migrate_legacy_lane_configs()
+        _registered = True
 
 
 def discover_user_plugins():

@@ -140,6 +140,18 @@ All notable changes to JSE are documented here.
   effect immediately, and cancelling drops all queued jobs. Failed-search
   keyword retries also generalize and re-run concurrently, so one slow LLM
   call no longer serializes the whole retry pass.
+- Board loading is roughly 10x faster after the first refresh (~2.6s down to
+  ~0.25s on a ~5,000-job database). Every `app:refresh` — app boot, each
+  pipeline action, each filter change — previously re-ran ~20 regex passes
+  over every stored ad description to derive ad signals, re-scanned all
+  scraper plugin manifests from disk, and fetched its seven data sets one
+  after another. Ad-signal regex results are now cached in the persistent
+  bridge worker and recomputed only for ads whose text changed (date-relative
+  fields like urgency stay live), plugin registration runs once per session
+  (the Searchers settings view still forces a fresh disk scan), and the
+  refresh sub-queries run in parallel. Startup database maintenance (dedupe,
+  backfills, auto-reject, retirement sweeps) moved to a background thread so
+  it no longer blocks the first paint.
 - The canonical database and settings location is now always the software's
   `settings` folder, so development and packaged launches cannot silently show
   different job histories.

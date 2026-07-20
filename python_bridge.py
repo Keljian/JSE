@@ -4,6 +4,7 @@ One-shot UI calls can run in persistent worker mode via newline-delimited JSON
 frames. Long-running cancellable tasks are still launched as fresh processes by
 Electron so cancellation can terminate the whole task safely.
 """
+import concurrent.futures
 import contextlib
 import json
 import os
@@ -657,22 +658,47 @@ def command_resumes_list(payload):
     return {"resumes": sorted_resumes[:50]}
 
 
+_startup_maintenance_lock = threading.Lock()
+_startup_maintenance_started = False
+
+
+def _run_startup_maintenance():
+    """Idempotent database housekeeping that used to run inline in app:init.
+
+    It blocked the first UI paint for seconds on a large database, so it now
+    runs once per worker session on a background thread. WAL keeps the UI's
+    concurrent reads safe; anything a sweep changes (dedupe, auto-reject,
+    retirement) is picked up by the next app:refresh. Emits from this thread
+    carry no request id and are dropped by the invoke path — same visibility
+    as before, where these logs had no consumer either.
+    """
+    log = lambda message: emit("log", message=message)
+    steps = (
+        ("composite score recalculation", db.recalculate_composite_scores),
+        ("dedupe", lambda: db.dedupe_database(log)),
+        ("company intelligence backfill", db.backfill_missing_company_intelligence),
+        ("closing-date refresh", lambda: db.refresh_closing_date_metadata(log_callback=log)),
+        ("low-match auto-reject", lambda: db.reject_low_match_jobs(50, log_callback=log)),
+        ("expired pipeline retirement", lambda: db.retire_expired_pipeline_jobs(log)),
+    )
+    for name, step in steps:
+        try:
+            step()
+        except Exception as exc:
+            log(f"Startup maintenance step '{name}' failed: {bridge_error_message(exc)}")
+
+
 def command_app_init(_payload):
+    global _startup_maintenance_started
     with contextlib.redirect_stdout(sys.stderr):
         setup_database()
         db.migrate_profile_credentials_to_app_settings()
         scraper_plugins.ensure_registered()
     app_settings = db.get_app_settings()
-    repaired_composites = db.recalculate_composite_scores()
-    if repaired_composites:
-        emit("log", message=f"Recalculated {repaired_composites} stale composite score(s).")
-    db.dedupe_database(lambda message: emit("log", message=message))
-    updated_company = db.backfill_missing_company_intelligence()
-    if updated_company:
-        emit("log", message=f"Company intelligence backfilled for {updated_company} jobs.")
-    db.refresh_closing_date_metadata(log_callback=lambda message: emit("log", message=message))
-    db.reject_low_match_jobs(50, log_callback=lambda message: emit("log", message=message))
-    db.retire_expired_pipeline_jobs(lambda message: emit("log", message=message))
+    with _startup_maintenance_lock:
+        if not _startup_maintenance_started:
+            _startup_maintenance_started = True
+            threading.Thread(target=_run_startup_maintenance, name="startup-maintenance", daemon=True).start()
     profiles = [row_to_dict(row) for row in db.get_all_profiles()]
     has_existing_setup = any(str(profile.get("resume_path") or "").strip() for profile in profiles)
     active_profile_id = profiles[0]["id"] if profiles else 1
@@ -691,35 +717,35 @@ def command_app_refresh(payload):
     profile_id = payload.get("profile_id", 1)
     include_all_profiles = bool(payload.get("include_all_profiles"))
     fragment_limit = payload.get("fragment_limit") or 12
+    scoped = {"profile_id": profile_id, "include_all_profiles": include_all_profiles}
 
-    try:
-        fragments = command_lanes_fragments_list({"profile_id": profile_id, "limit": fragment_limit})["fragments"]
-    except Exception:
-        fragments = []
+    def _fragments():
+        try:
+            return command_lanes_fragments_list({"profile_id": profile_id, "limit": fragment_limit})["fragments"]
+        except Exception:
+            return []
 
     # The campaign plan/summary is intentionally NOT part of the refresh
     # payload: it regex-scores hundreds of jobs and is only relevant when the
     # Campaign view is open, which loads campaign:plan on demand.
-    return {
-        "profiles": command_profiles_list(payload)["profiles"],
-        "sources": command_sources_list({
-            "profile_id": profile_id,
-            "include_all_profiles": include_all_profiles,
-        })["sources"],
-        "search_sources": scraper_plugins.source_names(profile_id=profile_id, include_disabled=False),
-        "jobs": command_jobs_list({**payload, "compact": True})["jobs"],
-        "dashboard": command_dashboard_get({
-            "profile_id": profile_id,
-            "include_all_profiles": include_all_profiles,
-            "compact": True,
-        }),
-        "calendar": command_calendar_get({
-            "profile_id": profile_id,
-            "include_all_profiles": include_all_profiles,
-        })["items"],
-        "memory": command_memory_status({"profile_id": profile_id}),
-        "fragments": fragments,
+    #
+    # The sub-fetches are independent reads (SQLite WAL supports concurrent
+    # readers; each database_manager call opens its own connection), so run
+    # them in parallel — the sources/scraper-plugin scans and the jobs query
+    # were previously serialized on top of each other.
+    fetches = {
+        "profiles": lambda: command_profiles_list(payload)["profiles"],
+        "sources": lambda: command_sources_list(scoped)["sources"],
+        "search_sources": lambda: scraper_plugins.source_names(profile_id=profile_id, include_disabled=False),
+        "jobs": lambda: command_jobs_list({**payload, "compact": True})["jobs"],
+        "dashboard": lambda: command_dashboard_get({**scoped, "compact": True}),
+        "calendar": lambda: command_calendar_get(scoped)["items"],
+        "memory": lambda: command_memory_status({"profile_id": profile_id}),
+        "fragments": _fragments,
     }
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(fetches), thread_name_prefix="app-refresh") as executor:
+        futures = {name: executor.submit(fn) for name, fn in fetches.items()}
+        return {name: future.result() for name, future in futures.items()}
 
 
 def command_profiles_list(_payload):
@@ -1356,7 +1382,10 @@ def command_sources_list(payload):
 
 
 def command_scrapers_list(payload):
-    scraper_plugins.ensure_registered()
+    # Force a full disk re-scan: this backs the Searchers settings view and is
+    # refetched after every plugin mutation, so it is the freshness point for
+    # the once-per-session registration cache.
+    scraper_plugins.ensure_registered(force=True)
     profile_id = payload.get("profile_id")
     return {"scrapers": scraper_plugins.all_plugins(include_disabled=True, profile_id=profile_id)}
 
@@ -1473,6 +1502,13 @@ def command_scrapers_rollback(payload):
     return result
 
 
+# job_id -> (fingerprint, text_signals) for ad_signals.derive. Lives for the
+# whole persistent-worker session: the regex passes over every ad description
+# dominated jobs-list assembly (~1.5s per refresh on a ~5000-job board), and
+# only jobs whose text actually changed need re-scanning.
+_ad_signals_cache = {}
+
+
 def command_jobs_list(payload):
     import ad_signals
     rows = db.get_pipeline_jobs(payload)
@@ -1482,7 +1518,7 @@ def command_jobs_list(payload):
     for row in rows:
         data = compact_job_dict(row, extra_fields=("ad_text",)) if compact else row_to_dict(row)
         key = db.recurrence_key(data.get("company"), data.get("title"))
-        data["ad_signals"] = ad_signals.derive(data, recurrence.get(key, 1))
+        data["ad_signals"] = ad_signals.derive(data, recurrence.get(key, 1), cache=_ad_signals_cache)
         data.pop("ad_text", None)
         jobs.append(data)
     return {"jobs": jobs}
