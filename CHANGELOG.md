@@ -132,6 +132,14 @@ All notable changes to JSE are documented here.
 
 ### Changed
 
+- Job analysis now scores multiple jobs in parallel instead of one at a time.
+  A new **Parallel analysis** control (Settings → AI, Job matching card) sets
+  how many jobs run at once (default 2, up to 8) — local endpoints need
+  server-side parallel slots to benefit, while hosted scoring providers can
+  comfortably run 4–8 for a near-linear speedup. Pause and cancel still take
+  effect immediately, and cancelling drops all queued jobs. Failed-search
+  keyword retries also generalize and re-run concurrently, so one slow LLM
+  call no longer serializes the whole retry pass.
 - The canonical database and settings location is now always the software's
   `settings` folder, so development and packaged launches cannot silently show
   different job histories.

@@ -111,6 +111,9 @@ DEFAULT_APP_SETTINGS.update({
     "compat_base_url": "",
     "compat_api_key": "",
     "compat_model": "",
+    # How many jobs the analysis pipeline scores in parallel (clamped 1-8 in
+    # llm_handler). Stored as text like every other app setting.
+    "analysis_workers": "2",
 })
 SOURCE_ALIASES = {
     "seek": "Seek",
@@ -1173,6 +1176,7 @@ GLOBAL_AI_SETTING_FIELDS = (
     "compat_base_url",
     "compat_api_key",
     "compat_model",
+    "analysis_workers",
 )
 LOCAL_LLM_SETTING_FIELDS = ("local_base_url", "local_api_key", "local_model")
 

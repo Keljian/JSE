@@ -3403,6 +3403,21 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
                     />
                   </label>
                 ) : null}
+                <label className="ai-route-model"><span>Parallel analysis</span>
+                  <select
+                    aria-label="Parallel analysis workers"
+                    value={String(globalForm.analysis_workers || "2")}
+                    onChange={(event) => updateGlobal("analysis_workers", event.target.value)}
+                  >
+                    <option value="1">1 job at a time</option>
+                    <option value="2">2 jobs in parallel</option>
+                    <option value="3">3 jobs in parallel</option>
+                    <option value="4">4 jobs in parallel</option>
+                    <option value="6">6 jobs in parallel</option>
+                    <option value="8">8 jobs in parallel</option>
+                  </select>
+                  <small className="field-hint">Local endpoints need server-side parallel slots to benefit; hosted providers can run 4-8.</small>
+                </label>
               </div>
             </article>
           </div>

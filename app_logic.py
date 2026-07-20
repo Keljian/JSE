@@ -6,6 +6,7 @@ updates, and cancellation-aware progress logging.
 """
 import json
 import re
+import threading
 from datetime import datetime
 import llm_handler
 import scraper_dispatcher
@@ -156,37 +157,40 @@ def execute_scraping_and_analysis(keywords, sources, resume_text, status_callbac
             except Exception as e:
                 log_callback(f"A scraper thread generated an exception: {e}")
 
-    # --- Sequentially handle failures to avoid race conditions with LLM and UI updates ---
+    # --- Handle failures concurrently: each worker generalizes its own keyword
+    # with the LLM, then re-runs the scraper, so one slow LLM call cannot
+    # serialize the whole retry pass. The shared keyword list is lock-guarded.
     if failed_tasks and not cancel_event.is_set() and resume_text:
         log_callback(f"\n--- Retrying {len(failed_tasks)} failed searches with new keywords... ---")
-        
-        # Use a new executor for the retries
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as retry_executor:
-            retry_futures = []
-            
-            current_keywords = list(keywords)
-            for task in failed_tasks:
-                if cancel_event.is_set(): break
-                log_callback(f"'{task['keyword']}' on {task['source']} yielded no results. Asking LLM for a better term...")
-                
-                new_keyword = llm_handler.generalize_search_term(task['keyword'], resume_text)
-                if new_keyword and new_keyword.lower() != task['keyword'].lower():
-                    log_callback(f"LLM suggested '{new_keyword}'. Retrying on {task['source']}.")
-                    
-                    # Update keywords list
-                    if update_keywords_callback:
-                        try:
-                            idx = current_keywords.index(task['keyword'])
-                            current_keywords[idx] = new_keyword
-                            update_keywords_callback(current_keywords)
-                            db.save_profile_terms(profile_id, current_keywords)
-                        except ValueError:
-                            pass # Original keyword might have already been replaced
 
-                    # Submit the retry task
-                    future = retry_executor.submit(_run_scraper_task, task['source'], new_keyword, resume_text, status_callback, log_callback, profile_id, search_settings)
-                    retry_futures.append(future)
-            
+        current_keywords = list(keywords)
+        keywords_lock = threading.Lock()
+
+        def _retry_failed_task(task):
+            if cancel_event.is_set():
+                return None
+            log_callback(f"'{task['keyword']}' on {task['source']} yielded no results. Asking LLM for a better term...")
+            new_keyword = llm_handler.generalize_search_term(task['keyword'], resume_text)
+            if not new_keyword or new_keyword.lower() == task['keyword'].lower():
+                return None
+            log_callback(f"LLM suggested '{new_keyword}'. Retrying on {task['source']}.")
+
+            # Update keywords list
+            if update_keywords_callback:
+                with keywords_lock:
+                    try:
+                        idx = current_keywords.index(task['keyword'])
+                        current_keywords[idx] = new_keyword
+                        update_keywords_callback(list(current_keywords))
+                        db.save_profile_terms(profile_id, current_keywords)
+                    except ValueError:
+                        pass # Original keyword might have already been replaced
+
+            return _run_scraper_task(task['source'], new_keyword, resume_text, status_callback, log_callback, profile_id, search_settings)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as retry_executor:
+            retry_futures = [retry_executor.submit(_retry_failed_task, task) for task in failed_tasks]
+
             # Wait for retries to complete
             for future in concurrent.futures.as_completed(retry_futures):
                  if cancel_event.is_set(): break

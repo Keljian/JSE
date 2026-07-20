@@ -2595,6 +2595,12 @@ h3 {
   padding: 4px 7px;
 }
 
+.ai-route-model .field-hint {
+  font-size: 10px;
+  color: #7d877f;
+  line-height: 1.35;
+}
+
 .model-select {
   display: grid;
   gap: 4px;

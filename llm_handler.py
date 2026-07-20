@@ -35,6 +35,7 @@ markdown-first application kit.
 import json
 import re
 import hashlib
+import concurrent.futures
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from config import MY_INFO
@@ -1694,110 +1695,117 @@ def _maybe_align_fragments(job_id, score, full_description_for_analysis, profile
     return fragment_score, alignment_json, alignment
 
 
-def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_callback, profile_id=1, fragments=None):
-    """A shared helper function to run the core analysis loop.
+def _analysis_worker_count():
+    """How many jobs to analyse in parallel (analysis_workers app setting).
 
-    When `fragments` is supplied (a list of fragment dicts from the memory
-    bank), the analysis prompt includes them as additional evidence so the
-    model can lean on validated reusable claims, not just the raw resume.
-    If not supplied, composite scoring falls back to match_score. Fragment
-    alignment is normally read from the full-analysis JSON to avoid a second
-    LLM call per job.
+    Default 2, clamped to 1-8. A local server with a single inference slot
+    should stay at 1-2 (extra requests queue server-side and the 429/503
+    retry logic absorbs pushback); hosted scoring providers (Gemini or a
+    free OpenAI-compatible endpoint) comfortably run 4-8.
     """
-    log = log_callback or print
-    resume_summary = _get_resume_triage_summary(resume_text, profile_id, log)
-    preference_context = _analysis_preferences(profile_id)
-    lane_settings = db.get_lane_settings(profile_id)
-    lane_target_text = " ".join([
-        lane_settings.get("target_titles") or "",
-        lane_settings.get("lane_intent") or "",
-    ])
-    if fragments is None:
-        try:
-            fragments = [dict(row) for row in db.get_lane_fragments(profile_id, limit=40)]
-        except Exception:
-            fragments = []
-    fragment_context = _format_fragment_context(fragments)
+    try:
+        value = int(str(db.get_app_setting("analysis_workers", "") or "").strip() or 2)
+    except (TypeError, ValueError):
+        value = 2
+    return max(1, min(8, value))
 
-    for job in jobs_to_analyze:
-        job_id, description, pdf_text = job['id'], job['description'], job['pdf_text']
-        position_description_text = job["position_description_text"] if "position_description_text" in job.keys() else ""
-        if concurrency.cancel_event.is_set():
-            log("Analysis cancelled by user.")
-            raise concurrency.OperationCancelledError("Analysis cancelled by user.")
-        concurrency.paused.wait()
 
-        full_description_for_analysis = _strip_image_references(description or "")
-        if position_description_text:
-            full_description_for_analysis = (
-                f"--- UPLOADED POSITION DESCRIPTION ---\n{_strip_image_references(position_description_text)}\n\n"
-                f"--- SCRAPED JOB ADVERTISEMENT ---\n{full_description_for_analysis}"
-            )
-        if pdf_text:
-            full_description_for_analysis += f"\n\n--- ADDITIONAL TEXT FROM PDF ---\n{_strip_image_references(pdf_text)}"
-        analysis_signature = db.make_analysis_signature(resume_text, description, pdf_text, position_description_text)
+def _analyze_single_job(job, ctx):
+    """Triage + full analysis for one job. Runs on analysis worker threads.
 
-        try:
-            triage_score, triage_reason, keep = _triage_job(
-                f"{resume_summary}\n\n{preference_context}",
-                full_description_for_analysis,
-                log,
-            )
-            triage_score, boost_hits, penalty_hits = _apply_preference_weight(triage_score, full_description_for_analysis, profile_id)
-            if boost_hits or penalty_hits:
-                triage_reason += f" Preference flags: +{', '.join(boost_hits) or 'none'}; -{', '.join(penalty_hits) or 'none'}."
-            if not keep:
-                if triage_score >= TRIAGE_KEEP_THRESHOLD:
-                    # Model returned keep=false for a score at or above the keep floor —
-                    # inconsistent with the KEEP RULE (keep=true when score >= 45 and no
-                    # knockout). Don't force the score below the auto-reject threshold;
-                    # store it as-is so the job stays for manual review.
-                    log(f"Triage keep=false inconsistency for job ID {job_id}: score {triage_score}% is above keep floor; storing uncapped.")
-                    triage_reason += " Triage keep=false (model inconsistency; score stored uncapped)."
-                else:
-                    triage_score = min(triage_score, TRIAGE_KEEP_THRESHOLD - 1)
-                    triage_reason += " Triage keep=false; treating as below keep threshold."
-            log(f"Triage for job ID {job_id}: {triage_score}% - {triage_reason}")
-            rescued = False
-            if triage_score < FULL_ANALYSIS_TRIAGE_THRESHOLD:
-                # Borderline rescue: one noisy triage number must not kill a
-                # role whose title plainly matches the lane's stated targets.
-                # Those get the evidence-anchored full analysis instead — the
-                # only stage equipped to promote as well as demote.
-                job_title = job["title"] if "title" in job.keys() else ""
-                rescued = (
-                    keep
-                    and triage_score >= TRIAGE_KEEP_THRESHOLD
-                    and _lane_title_overlap(job_title, lane_target_text) >= 2
-                )
-                if rescued:
-                    log(
-                        f"Borderline rescue for job ID {job_id}: triage {triage_score}% but title "
-                        f"'{job_title}' matches lane targets. Escalating to full analysis."
-                    )
-            if triage_score < FULL_ANALYSIS_TRIAGE_THRESHOLD and not rescued:
-                analysis_text = (
-                    f"Triage Match Score: {triage_score}%\n\n"
-                    f"Triage Result:\n{triage_reason}\n\n"
-                    f"Full analysis skipped because the first-pass score was below {FULL_ANALYSIS_TRIAGE_THRESHOLD}%."
-                )
-                db.update_job_analysis(job_id, analysis_text, triage_score, analysis_signature)
-                try:
-                    db.update_job_fragment_alignment(job_id, None, _compose_score(triage_score, None), None)
-                except Exception as exc:
-                    log(f"Composite score persist skipped for job {job_id}: {exc}")
-                continue
-        except Exception as e:
-            if concurrency.cancel_event.is_set():
-                raise
-            log(f"Triage failed for job ID {job_id}; falling back to full analysis: {e}")
+    Thread safety: every database_manager call opens its own SQLite
+    connection (WAL + busy_timeout) and the bridge log emitter is
+    lock-protected, so concurrent workers are safe. Raises
+    OperationCancelledError when the user cancels.
+    """
+    log = ctx["log"]
+    resume_text = ctx["resume_text"]
+    resume_summary = ctx["resume_summary"]
+    preference_context = ctx["preference_context"]
+    lane_target_text = ctx["lane_target_text"]
+    fragment_context = ctx["fragment_context"]
+    system_prompt = ctx["system_prompt"]
+    profile_id = ctx["profile_id"]
 
-        fragment_block = (
-            f"\n\nVALIDATED MEMORY FRAGMENTS (reusable claims with prior evidence — lean on these where the job activates them):\n"
-            f"---\n{fragment_context}\n---"
-            if fragment_context else ""
+    job_id, description, pdf_text = job['id'], job['description'], job['pdf_text']
+    position_description_text = job["position_description_text"] if "position_description_text" in job.keys() else ""
+    if concurrency.cancel_event.is_set():
+        raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+    concurrency.paused.wait()
+
+    full_description_for_analysis = _strip_image_references(description or "")
+    if position_description_text:
+        full_description_for_analysis = (
+            f"--- UPLOADED POSITION DESCRIPTION ---\n{_strip_image_references(position_description_text)}\n\n"
+            f"--- SCRAPED JOB ADVERTISEMENT ---\n{full_description_for_analysis}"
         )
-        user_prompt = f"""Analyse this Australian job advertisement against the candidate's resume. Return the required JSON only.
+    if pdf_text:
+        full_description_for_analysis += f"\n\n--- ADDITIONAL TEXT FROM PDF ---\n{_strip_image_references(pdf_text)}"
+    analysis_signature = db.make_analysis_signature(resume_text, description, pdf_text, position_description_text)
+
+    try:
+        triage_score, triage_reason, keep = _triage_job(
+            f"{resume_summary}\n\n{preference_context}",
+            full_description_for_analysis,
+            log,
+        )
+        triage_score, boost_hits, penalty_hits = _apply_preference_weight(triage_score, full_description_for_analysis, profile_id)
+        if boost_hits or penalty_hits:
+            triage_reason += f" Preference flags: +{', '.join(boost_hits) or 'none'}; -{', '.join(penalty_hits) or 'none'}."
+        if not keep:
+            if triage_score >= TRIAGE_KEEP_THRESHOLD:
+                # Model returned keep=false for a score at or above the keep floor —
+                # inconsistent with the KEEP RULE (keep=true when score >= 45 and no
+                # knockout). Don't force the score below the auto-reject threshold;
+                # store it as-is so the job stays for manual review.
+                log(f"Triage keep=false inconsistency for job ID {job_id}: score {triage_score}% is above keep floor; storing uncapped.")
+                triage_reason += " Triage keep=false (model inconsistency; score stored uncapped)."
+            else:
+                triage_score = min(triage_score, TRIAGE_KEEP_THRESHOLD - 1)
+                triage_reason += " Triage keep=false; treating as below keep threshold."
+        log(f"Triage for job ID {job_id}: {triage_score}% - {triage_reason}")
+        rescued = False
+        if triage_score < FULL_ANALYSIS_TRIAGE_THRESHOLD:
+            # Borderline rescue: one noisy triage number must not kill a
+            # role whose title plainly matches the lane's stated targets.
+            # Those get the evidence-anchored full analysis instead — the
+            # only stage equipped to promote as well as demote.
+            job_title = job["title"] if "title" in job.keys() else ""
+            rescued = (
+                keep
+                and triage_score >= TRIAGE_KEEP_THRESHOLD
+                and _lane_title_overlap(job_title, lane_target_text) >= 2
+            )
+            if rescued:
+                log(
+                    f"Borderline rescue for job ID {job_id}: triage {triage_score}% but title "
+                    f"'{job_title}' matches lane targets. Escalating to full analysis."
+                )
+        if triage_score < FULL_ANALYSIS_TRIAGE_THRESHOLD and not rescued:
+            analysis_text = (
+                f"Triage Match Score: {triage_score}%\n\n"
+                f"Triage Result:\n{triage_reason}\n\n"
+                f"Full analysis skipped because the first-pass score was below {FULL_ANALYSIS_TRIAGE_THRESHOLD}%."
+            )
+            db.update_job_analysis(job_id, analysis_text, triage_score, analysis_signature)
+            try:
+                db.update_job_fragment_alignment(job_id, None, _compose_score(triage_score, None), None)
+            except Exception as exc:
+                log(f"Composite score persist skipped for job {job_id}: {exc}")
+            return
+    except concurrency.OperationCancelledError:
+        raise
+    except Exception as e:
+        if concurrency.cancel_event.is_set():
+            raise
+        log(f"Triage failed for job ID {job_id}; falling back to full analysis: {e}")
+
+    fragment_block = (
+        f"\n\nVALIDATED MEMORY FRAGMENTS (reusable claims with prior evidence — lean on these where the job activates them):\n"
+        f"---\n{fragment_context}\n---"
+        if fragment_context else ""
+    )
+    user_prompt = f"""Analyse this Australian job advertisement against the candidate's resume. Return the required JSON only.
 
 CANDIDATE RESUME:
 ---
@@ -1813,84 +1821,162 @@ JOB ADVERTISEMENT:
 ---
 {full_description_for_analysis[:9000]}
 ---"""
-        json_string = ""
-        llm_response_text = ""
+    json_string = ""
+    llm_response_text = ""
 
-        try:
-            log(f"Analyzing job ID {job_id}...")
-            llm_response_text = _call_scoring_ai(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.15,
-                max_tokens=6000,
-                json_mode=True,
-            )
+    try:
+        log(f"Analyzing job ID {job_id}...")
+        llm_response_text = _call_scoring_ai(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.15,
+            max_tokens=6000,
+            json_mode=True,
+        )
 
-            data = _extract_json(llm_response_text)
-            if data:
-                json_string = llm_response_text
-                analysis_text, score = _format_analysis_text(data)
-                if score >= 78:
-                    log(f"Running deep gatekeeper for job ID {job_id} ({score}%).")
-                    gatekeeper_text, gated_score = _run_deep_gatekeeper(
-                        resume_summary,
-                        resume_text,
-                        full_description_for_analysis,
-                        data,
-                        score,
-                        profile_id,
-                        log,
+        data = _extract_json(llm_response_text)
+        if data:
+            json_string = llm_response_text
+            analysis_text, score = _format_analysis_text(data)
+            if score >= 78:
+                log(f"Running deep gatekeeper for job ID {job_id} ({score}%).")
+                gatekeeper_text, gated_score = _run_deep_gatekeeper(
+                    resume_summary,
+                    resume_text,
+                    full_description_for_analysis,
+                    data,
+                    score,
+                    profile_id,
+                    log,
+                )
+                if gatekeeper_text:
+                    analysis_text = f"{analysis_text}\n\n{gatekeeper_text}"
+                    score = gated_score
+                    analysis_text = re.sub(
+                        r"^Match Score:\s*\d+%",
+                        f"Match Score: {score}%",
+                        analysis_text,
+                        count=1,
                     )
-                    if gatekeeper_text:
-                        analysis_text = f"{analysis_text}\n\n{gatekeeper_text}"
-                        score = gated_score
-                        analysis_text = re.sub(
-                            r"^Match Score:\s*\d+%",
-                            f"Match Score: {score}%",
-                            analysis_text,
-                            count=1,
-                        )
-            else:
-                # LLM returned an unparseable response. Skip this job rather than
-                # auto-rejecting it — a transient failure (empty response, server
-                # overload, model issue) must not permanently kill a good fit.
-                # analysis_signature is left as-is so the job is re-analysed next run.
-                log(f"Could not find JSON for job ID {job_id}; skipping (will retry). Response: {llm_response_text[:200]!r}")
-                continue
+        else:
+            # LLM returned an unparseable response. Skip this job rather than
+            # auto-rejecting it — a transient failure (empty response, server
+            # overload, model issue) must not permanently kill a good fit.
+            # analysis_signature is left as-is so the job is re-analysed next run.
+            log(f"Could not find JSON for job ID {job_id}; skipping (will retry). Response: {llm_response_text[:200]!r}")
+            return
 
-            fragment_score, alignment_json = (
-                _analysis_fragment_alignment(data, bool(fragment_context))
-                if data and score >= 65 else (None, None)
-            )
-            db.update_job_analysis(job_id, analysis_text, score, analysis_signature)
-            # Fragment-aware composite scoring now uses the full-analysis JSON
-            # instead of a separate alignment LLM call. composite_score falls
-            # back to match_score when no fragment score is available.
-            composite_score = _compose_score(score, fragment_score)
-            try:
-                db.update_job_fragment_alignment(job_id, fragment_score, composite_score, alignment_json)
-            except Exception as exc:
-                log(f"Composite score persist skipped for job {job_id}: {exc}")
-            if fragment_score is not None:
-                log(f"Analyzed job ID {job_id}. Match score: {score}%; Fragment score: {fragment_score}%; Composite: {composite_score}%")
-            else:
-                reason = "no fragment bank" if not fragment_context else "no fragment score returned"
-                log(f"Analyzed job ID {job_id}. Match score: {score}% ({reason}; composite = match)")
+        fragment_score, alignment_json = (
+            _analysis_fragment_alignment(data, bool(fragment_context))
+            if data and score >= 65 else (None, None)
+        )
+        db.update_job_analysis(job_id, analysis_text, score, analysis_signature)
+        # Fragment-aware composite scoring now uses the full-analysis JSON
+        # instead of a separate alignment LLM call. composite_score falls
+        # back to match_score when no fragment score is available.
+        composite_score = _compose_score(score, fragment_score)
+        try:
+            db.update_job_fragment_alignment(job_id, fragment_score, composite_score, alignment_json)
+        except Exception as exc:
+            log(f"Composite score persist skipped for job {job_id}: {exc}")
+        if fragment_score is not None:
+            log(f"Analyzed job ID {job_id}. Match score: {score}%; Fragment score: {fragment_score}%; Composite: {composite_score}%")
+        else:
+            reason = "no fragment bank" if not fragment_context else "no fragment score returned"
+            log(f"Analyzed job ID {job_id}. Match score: {score}% ({reason}; composite = match)")
 
-        except json.JSONDecodeError as e:
-            # Malformed JSON in an unexpected code path. Same safe-skip policy.
-            log(f"JSON decode error for job ID {job_id}: {e} — skipping (will retry).")
-            log(f"Failing string: {json_string[:300]}")
-        except concurrency.OperationCancelledError:
-            raise
-        except Exception as e:
+    except json.JSONDecodeError as e:
+        # Malformed JSON in an unexpected code path. Same safe-skip policy.
+        log(f"JSON decode error for job ID {job_id}: {e} — skipping (will retry).")
+        log(f"Failing string: {json_string[:300]}")
+    except concurrency.OperationCancelledError:
+        raise
+    except Exception as e:
+        if concurrency.cancel_event.is_set():
+            raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+        # Transient errors (timeout, server overload, model crash) must not
+        # permanently auto-reject jobs. Log and skip; next run will retry.
+        log(f"Error analysing job ID {job_id}: {e} — skipping (will retry).")
+
+
+def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_callback, profile_id=1, fragments=None):
+    """Run the core analysis pipeline over a batch of jobs.
+
+    Shared context (resume triage summary, lane preferences, fragment bank)
+    is built once, then jobs run through _analyze_single_job on a bounded
+    thread pool sized by the analysis_workers setting. When `fragments` is
+    supplied, the analysis prompt includes them as additional evidence so the
+    model can lean on validated reusable claims, not just the raw resume;
+    if not supplied, composite scoring falls back to match_score.
+    """
+    log = log_callback or print
+    if not jobs_to_analyze:
+        return
+    resume_summary = _get_resume_triage_summary(resume_text, profile_id, log)
+    preference_context = _analysis_preferences(profile_id)
+    lane_settings = db.get_lane_settings(profile_id)
+    lane_target_text = " ".join([
+        lane_settings.get("target_titles") or "",
+        lane_settings.get("lane_intent") or "",
+    ])
+    if fragments is None:
+        try:
+            fragments = [dict(row) for row in db.get_lane_fragments(profile_id, limit=40)]
+        except Exception:
+            fragments = []
+    fragment_context = _format_fragment_context(fragments)
+
+    ctx = {
+        "log": log,
+        "resume_text": resume_text,
+        "resume_summary": resume_summary,
+        "preference_context": preference_context,
+        "lane_target_text": lane_target_text,
+        "fragment_context": fragment_context,
+        "system_prompt": system_prompt,
+        "profile_id": profile_id,
+    }
+
+    workers = _analysis_worker_count()
+    total = len(jobs_to_analyze)
+    if workers <= 1 or total <= 1:
+        for job in jobs_to_analyze:
             if concurrency.cancel_event.is_set():
+                log("Analysis cancelled by user.")
                 raise concurrency.OperationCancelledError("Analysis cancelled by user.")
-            # Transient errors (timeout, server overload, model crash) must not
-            # permanently auto-reject jobs. Log and skip; next run will retry.
-            log(f"Error analysing job ID {job_id}: {e} — skipping (will retry).")
+            _analyze_single_job(job, ctx)
+        return
+
+    log(f"Analyzing {total} job(s) with {workers} parallel workers...")
+    done = 0
+    cancelled = False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job-analysis") as executor:
+        futures = [executor.submit(_analyze_single_job, job, ctx) for job in jobs_to_analyze]
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except concurrency.OperationCancelledError:
+                    cancelled = True
+                    break
+                except Exception as exc:
+                    # Per-job failures are already handled inside the worker;
+                    # anything surfacing here is unexpected. Log and continue.
+                    log(f"Analysis worker raised unexpectedly: {exc}")
+                done += 1
+                if done % 5 == 0 or done == total:
+                    log(f"Analysis progress: {done}/{total} job(s) processed.")
+        finally:
+            if cancelled or concurrency.cancel_event.is_set():
+                # Drop everything still queued; running workers notice the
+                # cancel event at their next checkpoint and exit quickly.
+                for future in futures:
+                    future.cancel()
+    if cancelled:
+        log("Analysis cancelled by user.")
+        raise concurrency.OperationCancelledError("Analysis cancelled by user.")
 
 
 def analyze_jobs(log_callback=None, resume_text: str = "", re_analyze: bool = False, status_filter: str = 'new', profile_id=1):
