@@ -15,6 +15,7 @@ linkedin_debug_page_*.png
 __pycache__/
 *.pyc
 unsloth_compiled_cache/
+prompts/
 settings/
 applications/
 older_applications/
