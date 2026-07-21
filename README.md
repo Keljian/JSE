@@ -37,6 +37,8 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 - [Local LLM Setup](#local-llm-setup)
 - [Cloud AI Setup](#cloud-ai-setup)
 - [Scraper Setup](#scraper-setup)
+- [Evidence Library](#evidence-library)
+- [Funnel Insights & Interview Learnings](#funnel-insights--interview-learnings)
 - [Intelligence Workspace](#intelligence-workspace)
 - [Data Folders](#data-folders)
 - [Privacy & Data](#privacy--data)
@@ -55,12 +57,16 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 - **Plugin-driven scraping.** Pull listings from multiple job sites via per-source scraper plugins, enabled globally or per lane with configurable location and page limits.
 - **Self-repairing searchers.** Diagnose an unhealthy scraper, have the configured local LLM produce and verify a replacement in an isolated dry run, and roll back the applied repair if needed.
 - **Multiple lanes, run in parallel.** Maintain several career pathways (lanes) and search, score, and manage them all at the same time, each against its own resume and rules.
-- **Tiered local-LLM assessment.** A local model triages jobs in stages — quick initial match first, then a deeper fragment/full match with approach notes covering candidate strengths, weaknesses, and how to position against the role — so cheap passes filter before expensive ones run.
+- **Tiered assessment.** Jobs are triaged in stages — quick initial match first, then a deeper fragment/full match with approach notes covering candidate strengths, weaknesses, and how to position against the role — so cheap passes filter before expensive ones run.
+- **Choose who does the matching.** Triage and scoring default to your local model, but the **Job matching** workflow has its own provider and model setting, so you can point high-volume scoring at a fast hosted or free OpenAI-compatible endpoint while documents keep using a heavier model. Switching matching off-device prompts a privacy warning first, because it sends every scraped ad and your resume context to that provider.
+- **Parallel analysis.** Score several jobs at once (default 2, up to 8). Hosted providers handle 4–8 comfortably; local endpoints need server-side parallel slots to benefit. Pause and cancel still take effect immediately.
 
 ### Candidate knowledge base (Fragment / RAG)
 
 - **Your applications become a corpus.** Past applications and documents are broken into fragments and indexed, so the system actually learns about you as a candidate rather than re-reading a single static resume.
 - **Better-fitting matches.** That accumulated knowledge feeds matching, surfacing roles that genuinely fit your background, not just keyword overlap.
+- **A managed Evidence Library.** **Settings → Evidence** indexes your prior resumes, cover letters, KSC responses, and position descriptions, shows what has been ingested by type, and lets you re-index, re-mine fragments, reclassify a document's type, or remove individual files.
+- **Interview-validated evidence.** When a job reaches an interview, JSE mines its description and your submitted documents into fragments and weights them above merely-submitted material in scoring and keyword generation — an interview is your strongest signal about what actually works.
 
 ### Application generation
 
@@ -73,7 +79,15 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 - **Interview & feedback tracking.** Record interviews and capture interview feedback against each application.
 - **Follow-up scheduling.** Keep a follow-up schedule so nothing goes cold by accident.
 - **Auto-archiving.** Applications with no direct follow-up from the employer over a set period are archived automatically, keeping the active board clean.
+- **Log applications made elsewhere.** Record a careers-page submission, referral, or recruiter-led application that never went through JSE, so off-platform interviews stop being a blind spot in your statistics.
 - **Database management.** Local SQLite store with backup and management tooling.
+
+### Outcome learning
+
+- **Funnel Insights.** JSE snapshots every application at the moment it reaches *Applied* and compares which segments actually convert to interviews — by source, advertiser, employer type, match-score band, salary band, seniority, and lane. Segments with fewer than three applications are suppressed rather than presented as signal.
+- **Conversion feeds scoring.** Observed conversion rates apply a bounded nudge to composite scores. The prior needs at least five outcomes in a bucket before it takes effect, and can never on its own push a job past the auto-reject threshold.
+- **Honest counting.** A role re-advertised under two titles collapses to a single role, so conversion statistics don't double-count. Outcome snapshots survive job deletion, so lane cleanup and duplicate removal can't erase interview history.
+- **Interview Learnings.** A dedicated tab lists every interviewed role with one-click mining and shows the resulting fragments — the claim, its keywords, reuse guidance, and which roles it came from.
 
 ### Market intelligence
 
@@ -171,8 +185,8 @@ npm run start
 1. Open **Settings**.
 2. In the **Lane/Profile** area, choose or import your resume.
 3. Set your preferred location, work modes, page limits, and matching rules.
-4. Seed the candidate knowledge base: copy any past applications, cover letters, or older resumes into the `older_applications/` folder. JSE indexes these into fragments so matching and generated documents draw on your real history, not just the single resume above. This is optional but recommended — it's the difference between keyword overlap and matching that understands you as a candidate. You can add to this folder at any time and re-index later.
-5. In **AI & Credentials**, choose your Document AI provider.
+4. Seed the candidate knowledge base: copy any past applications, cover letters, or older resumes into the `older_applications/` folder, then open **Settings -> Evidence** and click **Re-index**. JSE indexes these into fragments so matching and generated documents draw on your real history, not just the single resume above. This is optional but recommended — it's the difference between keyword overlap and matching that understands you as a candidate. You can add to this folder at any time and re-index later.
+5. In **AI & Credentials**, choose your Document AI provider, and optionally set a separate provider and model for **Job matching**.
 6. In **Searchers**, import scraper plugins or use **Build A Scraper Plugin** to
    generate one with your configured local LLM, then run a dry run before using
    it in searches.
@@ -184,7 +198,7 @@ npm run start
 
 ## Local LLM Setup
 
-JSE uses a local model for job assessment and matching. The Local provider expects an OpenAI-compatible chat completions endpoint:
+JSE uses a local model for job assessment and matching by default, and it stays the recommended choice for that workload — matching reads every ad you scrape, so it is both the highest-volume and the most privacy-sensitive workflow. The Local provider expects an OpenAI-compatible chat completions endpoint:
 
 ```text
 POST <base_url>/chat/completions
@@ -225,6 +239,25 @@ Cloud providers are optional, and mainly used for application-document generatio
 - **ChatGPT/OpenAI**: set the API key, optional OpenAI-compatible base URL, and model.
 - **Claude**: set the API key and model.
 - **Gemini**: set the API key and model.
+- **Free / OpenAI-compatible**: point JSE at any OpenAI-compatible endpoint, with presets for Groq, Cerebras, OpenRouter, and OpenCode Zen. Set the base URL, model, and an API key if that endpoint requires one.
+
+### Providers Are Per Workflow
+
+Workflows pick their provider independently, so you can put cheap, fast inference
+where volume lives and a stronger model where quality matters:
+
+| Workflow | Setting | Typical choice |
+| --- | --- | --- |
+| Job matching (triage, scoring, analysis) | `Job matching` provider + `Matching model` | Local, or a fast/free hosted endpoint for high volume |
+| Application documents | `Document AI` | A capable cloud model — this is the "write it in my voice" step |
+| Employer research | `Document AI` | Cloud, or local if you want no outbound calls |
+
+> [!WARNING]
+> Matching runs against **every** scraped ad in bulk. Choosing a non-local
+> provider for it sends each job advert plus your resume context off-device —
+> including to free tiers, which may log or train on that data. JSE asks you to
+> confirm this before switching, because it is the one setting that overrides the
+> local-first default.
 
 > [!TIP]
 > Document generation runs against whichever cloud model you pick. Gemini is a cost-effective choice here relative to Claude for the volume of generation JSE does.
@@ -288,6 +321,68 @@ installed as local data-directory overrides, leaving the shipped plugin source
 untouched and retaining a private local backup for rollback.
 
 For the full plugin contract and manual build instructions, see `SCRAPER_PLUGIN.md`.
+
+---
+
+## Evidence Library
+
+Everything JSE knows about you as a candidate lives here. Open **Settings ->
+Evidence**.
+
+Drop past resumes, cover letters, KSC responses, capability statements, and
+position descriptions into `older_applications/`, then click **Re-index**. JSE
+extracts the text (`.docx`, `.doc`, and `.pdf` are all supported), classifies
+each document by type, and indexes it for retrieval. The panel reports how many
+documents and mined fragments it holds, broken down by type.
+
+The controls do the following:
+
+- **Re-index** rescans the corpus for new or changed documents.
+- **Re-mine fragments** re-extracts specific, quantified evidence from the
+  indexed documents into the fragment bank.
+- **Reclassify** re-runs document-type detection across the library.
+- **Clear documents** / **Clear fragments** reset either half independently.
+- Per-document, you can correct the detected type from the dropdown or remove a
+  file from the library.
+
+This is optional, but it is the single highest-leverage thing you can do for
+output quality. Matching without it is closer to keyword overlap; generated
+documents without it are limited to your one base resume. With it, both draw on
+what you have actually done and how you have actually described it.
+
+---
+
+## Funnel Insights & Interview Learnings
+
+JSE tracks which applications convert, and feeds that back into what it shows
+you next.
+
+**Funnel Insights** appears as a Dashboard card. When an application reaches
+*Applied*, JSE stores an immutable snapshot of its dimensions — title, company,
+advertiser, employer type, source, salary band, scores, seniority, lane, and how
+the documents were produced. The card then reports your baseline interview rate
+and your best- and worst-converting segments, with sample sizes. Recompute on
+demand. Segments below three applications are hidden rather than shown as
+findings, and snapshots survive job deletion so cleaning up lanes never erases
+your interview history.
+
+Two things keep the numbers honest: a role re-advertised under two titles is
+collapsed into one role so conversions aren't double-counted, and **Log external
+application** (in Pipeline) lets you record applications made outside JSE so
+off-platform interviews still count.
+
+Observed conversion rates then apply a small bounded adjustment to composite
+scores. It requires at least five outcomes in a bucket before it does anything,
+and it cannot by itself push a job below the auto-reject threshold.
+
+**Interview Learnings** is its own tab. It lists every role that reached an
+interview and mines that role's job description and your submitted documents into
+candidate fragments — the claim, its activating keywords, guidance on where to
+reuse it, and the roles it came from. Mining runs automatically when a job first
+reaches an interview; you can re-run it, or mine every un-mined role at once,
+from this tab. Where a role was interviewed without in-app-generated documents,
+the miner falls back to the most job-relevant evidence in your Evidence Library,
+so older interviews are still usable.
 
 ---
 
@@ -367,6 +462,7 @@ A few things to keep in mind:
 
 - The folders listed above can contain resumes, application history, your fragment knowledge base, and session cookies. Do not share them unless you intend to share their contents.
 - If you enable a cloud provider for document generation, the job and resume/fragment content for those workflows is sent to that provider. Keep generation local-only if you want everything on-device.
+- Job matching is the workflow to think hardest about. It is local by default; pointing it at a hosted or free endpoint sends every scraped advert and your resume context to that provider, at volume. Free tiers in particular may log or train on what you send. JSE warns you before making this switch.
 - Keep API keys out of source control. Store them through Settings.
 
 ---
@@ -374,18 +470,19 @@ A few things to keep in mind:
 ## Typical Workflow
 
 1. Configure one or more lanes, each with its own resume.
-2. Seed `older_applications/` with past applications so the fragment knowledge base has something to learn from.
-3. Configure your local model (assessment) and, optionally, a cloud model (document generation).
+2. Seed `older_applications/` with past applications and re-index in **Settings -> Evidence**, so the fragment knowledge base has something to learn from.
+3. Configure your matching provider (local by default) and, optionally, a cloud model for document generation.
 4. Enable scrapers for each lane.
 5. Generate or edit search terms.
 6. Run search across your active lanes.
-7. Let the local LLM triage new jobs — initial match first, then deeper fragment/full match with approach notes.
+7. Let JSE triage new jobs — initial match first, then deeper fragment/full match with approach notes.
 8. Move promising jobs across the Kanban board.
 9. Research companies, including questions to ask, where needed.
-10. Generate tailored application documents in your own voice via your cloud model.
-11. Track applications, interviews, interview feedback, follow-ups, outcomes, and feedback.
+10. Generate tailored application documents in your own voice.
+11. Track applications, interviews, interview feedback, follow-ups, outcomes, and feedback. Log anything you applied to outside JSE so the numbers stay complete.
 12. Work your follow-up schedule; stale, un-actioned applications auto-archive.
 13. Review market intelligence — hidden-market and current-market analysis — to steer where you focus next.
+14. Check **Funnel Insights** and **Interview Learnings** periodically to see which segments actually convert, and let interview-validated evidence sharpen the next round of matching.
 
 ---
 
