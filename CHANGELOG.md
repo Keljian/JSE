@@ -175,6 +175,21 @@ All notable changes to JSE are documented here.
 
 ### Fixed
 
+- Fixed intermittent "attempt to write a readonly database" errors (and the
+  resulting bridge-worker restart loop) that appeared while scraping after the
+  refresh/analysis parallelization. The new concurrent connection fan-out
+  exposed two latent issues in the SQLite connection helper: the one-time
+  `journal_mode=WAL` confirmation was unsynchronised and ran before
+  `busy_timeout` was applied, so it could fail fast under a momentary lock; and
+  bursts of short-lived connections closing together could drop the process's
+  open-connection count to zero, tearing down and rebuilding the WAL index at
+  the same moment the separate scraper process held a write lock. The WAL
+  confirmation is now lock-guarded, ordered after `busy_timeout`, and never
+  fatal (the connection operates in WAL from the persisted header regardless),
+  and each process now holds one idle keep-alive connection open to pin the WAL
+  index for its lifetime. The keep-alive is safe against the file-swapping
+  paths: database restore terminates every worker before replacing the file,
+  and compaction VACUUMs in place.
 - Fixed Run Search opening a blank, immovable window after lane deletion by
   normalising the active lane whenever the lane list changes, disabling search
   when no valid lane exists, and rejecting backend search requests with no

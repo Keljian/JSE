@@ -947,31 +947,81 @@ def _update_existing_scraped_job(conn, job_id, job_data, metadata, fingerprint=N
 
 
 # journal_mode=WAL is persisted in the database header, so it only needs to be
-# set once per process rather than on every connection open.
+# confirmed once per process rather than on every connection open. The lock
+# serializes that one-time confirmation: with the parallel refresh/analysis
+# fan-out, multiple threads open connections at once, and an unguarded WAL
+# switch racing sibling connections (or the separate scraper process's write
+# lock) surfaced "attempt to write a readonly database" and cycled the worker.
 _wal_enabled = False
+_wal_lock = threading.Lock()
+
+# One idle connection held open for the whole process lifetime. The parallel
+# refresh/analysis fan-out opens and closes many short-lived connections in
+# bursts; when a burst's connections all close at once the process's open-
+# connection count can hit zero, which tears down and rebuilds the WAL index
+# (the -shm file). On Windows that rebuild intermittently raced the separate
+# scraper process's write lock and surfaced as "attempt to write a readonly
+# database", cycling the bridge worker. Pinning one connection open keeps the
+# WAL index alive for the session so the rebuild never happens mid-flight.
+#
+# Safe against the file-swapping paths: database:restore kills every bridge/
+# task process before replacing the file, and compact_database VACUUMs in
+# place. The connection is only ever held idle (never used for a query), so it
+# holds no lock and does not block checkpoints or VACUUM.
+_keepalive_conn = None
+_keepalive_lock = threading.Lock()
+
+
+def _ensure_keepalive_connection():
+    global _keepalive_conn
+    if _keepalive_conn is not None:
+        return
+    with _keepalive_lock:
+        if _keepalive_conn is not None:
+            return
+        try:
+            conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
+            conn.execute("PRAGMA busy_timeout=30000")
+            _keepalive_conn = conn
+        except sqlite3.Error:
+            _keepalive_conn = None
 
 
 @contextmanager
 def get_db_connection():
     """Context manager for SQLite connections tuned for a large local database.
 
-    WAL is enabled once per process (it persists in the DB header). The other
-    PRAGMAs are per-connection and are applied on every open:
+    WAL is confirmed once per process (it persists in the DB header, and
+    setup_database() sets it at startup, so every connection already operates
+    in WAL from the header regardless). The other PRAGMAs are per-connection
+    and applied on every open:
       - busy_timeout lets SQLite wait on locks instead of raising immediately
-        (the 6-worker scrape path hits contention).
+        (the concurrent scrape / refresh / analysis paths hit contention). It
+        is set FIRST so every later statement — including the WAL confirmation
+        — respects it instead of failing fast under a momentary lock.
       - synchronous=NORMAL is safe under WAL and is the biggest write speedup;
         only a power loss (not an app crash) risks the last commit.
       - temp_store=MEMORY keeps sorts/temp tables off disk.
       - cache_size (~64MB) and mmap_size (256MB) cut I/O against the ~200MB DB.
     """
     global _wal_enabled
+    _ensure_keepalive_connection()
     conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
-        if not _wal_enabled:
-            conn.execute("PRAGMA journal_mode=WAL")
-            _wal_enabled = True
         conn.execute("PRAGMA busy_timeout=30000")
+        if not _wal_enabled:
+            with _wal_lock:
+                if not _wal_enabled:
+                    # Redundant when the header already declares WAL (the normal
+                    # case). Kept as a safety net for a brand-new DB, but never
+                    # allowed to escalate a lost lock race into a fatal error:
+                    # attempt it once, then trust the header either way.
+                    try:
+                        conn.execute("PRAGMA journal_mode=WAL")
+                    except sqlite3.OperationalError:
+                        pass
+                    _wal_enabled = True
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA cache_size=-65536")
