@@ -26,6 +26,30 @@ from hybrid_renderer import render_markdown_to_docx, render_cover_letter_to_docx
 
 DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
+DEFAULT_LOCAL_MODEL = ""  # blank -> discovered from the endpoint's /models list
+
+
+def _strip_think(text):
+    """Drop Qwen3-style <think>…</think> reasoning some local models emit before
+    the real answer, including an unterminated trailing block."""
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
+
+
+def _discover_local_model(base_url, api_key=None):
+    """Best-effort model id from an OpenAI-compatible /models endpoint, so a
+    blank local_model still works with servers that require the field."""
+    try:
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        data = _http_json(f"{str(base_url or '').rstrip('/')}/models", method="GET",
+                          headers=headers, timeout=15, retries=1)
+        for item in (data.get("data") or []):
+            if item.get("id"):
+                return item["id"]
+    except Exception:
+        pass
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -125,6 +149,24 @@ def _call_claude(api_key, model, system, user):
     return "\n".join(p.get("text", "") for p in data.get("content", []) if p.get("type") == "text")
 
 
+def _call_local(base_url, api_key, model, system, user, max_output_tokens=6000):
+    base_url = str(base_url or "").rstrip("/")
+    model = (model or "").strip() or _discover_local_model(base_url, api_key)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"{user}\n\n/no_think"},
+        ],
+        "temperature": 0.3,
+        "max_tokens": max_output_tokens,
+    }
+    data = _http_json(f"{base_url}/chat/completions", body, headers=headers, timeout=900)
+    msg = (data.get("choices") or [{}])[0].get("message") or {}
+    return _strip_think(msg.get("content") or msg.get("reasoning_content") or "")
+
+
 def build_caller(settings):
     """Return (caller(system,user)->text, provider_label) from profile settings."""
     settings = settings or {}
@@ -132,22 +174,32 @@ def build_caller(settings):
 
     gem_key = (settings.get("gemini_api_key") or "").strip()
     cla_key = (settings.get("claude_api_key") or "").strip()
+    local_base = (settings.get("local_base_url") or "").strip()
+    local_key = (settings.get("local_api_key") or "").strip()
 
+    def _local_caller():
+        model = settings.get("local_model") or DEFAULT_LOCAL_MODEL
+        return (lambda s, u: _call_local(local_base, local_key, model, s, u)), f"Local ({model or 'auto'})"
+
+    if provider == "local" and local_base:
+        return _local_caller()
     if provider == "claude" and cla_key:
         model = settings.get("claude_model") or DEFAULT_CLAUDE_MODEL
         return (lambda s, u: _call_claude(cla_key, model, s, u)), f"Claude ({model})"
     if provider == "gemini" and gem_key:
         model = settings.get("gemini_model") or DEFAULT_GEMINI_MODEL
         return (lambda s, u: _call_gemini(gem_key, model, s, u)), f"Gemini ({model})"
-    # provider is 'local' or key missing — fall back to whichever cloud key exists
+    # Selected provider unavailable — fall back to whatever IS configured.
     if gem_key:
         model = settings.get("gemini_model") or DEFAULT_GEMINI_MODEL
         return (lambda s, u: _call_gemini(gem_key, model, s, u)), f"Gemini ({model})"
     if cla_key:
         model = settings.get("claude_model") or DEFAULT_CLAUDE_MODEL
         return (lambda s, u: _call_claude(cla_key, model, s, u)), f"Claude ({model})"
-    raise RuntimeError("Rich generation needs a Gemini or Claude API key in Settings "
-                       "(the local model is not used for authoring).")
+    if local_base:
+        return _local_caller()
+    raise RuntimeError("Rich generation needs a local endpoint (Settings > AI > Local endpoint) "
+                       "or a Gemini/Claude API key.")
 
 
 # --------------------------------------------------------------------------- #
@@ -361,20 +413,79 @@ class _ClaudeSession:
         pass
 
 
+class _LocalSession:
+    """Authoring against a local OpenAI-compatible endpoint (LM Studio, vLLM,
+    llama.cpp, Unsloth Studio, …). Nothing leaves the device.
+
+    No explicit prompt cache: the shared evidence prefix is resent inline on
+    each of the three calls. A local server has no per-token API cost, and many
+    runtimes reuse an identical prompt prefix internally anyway. Calls are
+    issued one at a time by generate_rich, and _http_json's 429 backoff absorbs
+    the pushback if a single-slot server is momentarily busy with other work."""
+
+    def __init__(self, base_url, api_key, model, system, context_text, log=None):
+        self.base_url = str(base_url or "").rstrip("/")
+        self.api_key = api_key
+        self.model = (model or "").strip() or _discover_local_model(self.base_url, api_key)
+        self.system = system
+        self.context = context_text
+        self.log = log
+        self.label = f"Local ({self.model or 'auto'})"
+        if log:
+            log(f"Authoring locally with {self.label} — no data leaves this device.")
+
+    def ask(self, task, max_output_tokens=6000, **_):
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self.system},
+                # /no_think stops a Qwen3-style reasoner spending the token budget
+                # on hidden thinking — we want the document text itself.
+                {"role": "user", "content": f"{self.context}\n\n{task}\n\n/no_think"},
+            ],
+            "temperature": 0.3,
+            "max_tokens": max_output_tokens,
+        }
+        # Local authoring is much slower than a hosted API; allow a wide budget.
+        data = _http_json(f"{self.base_url}/chat/completions", body, headers=headers, timeout=900)
+        msg = (data.get("choices") or [{}])[0].get("message") or {}
+        text = msg.get("content") or msg.get("reasoning_content") or ""
+        return _strip_think(text)
+
+    def close(self):
+        pass
+
+
 def build_session(settings, system, context_text, log=None):
     settings = settings or {}
     provider = (settings.get("document_ai_provider") or settings.get("doc_ai_provider") or "gemini").lower()
     gem = (settings.get("gemini_api_key") or "").strip()
     cla = (settings.get("claude_api_key") or "").strip()
+    local_base = (settings.get("local_base_url") or "").strip()
+
+    def _local():
+        return _LocalSession(local_base, (settings.get("local_api_key") or "").strip(),
+                             settings.get("local_model") or DEFAULT_LOCAL_MODEL, system, context_text, log)
+
+    # Honour the explicit selection first — including local, which authoring
+    # previously refused and silently diverted to a cloud key (the source of the
+    # unexpected Gemini rate-limit failures).
+    if provider == "local" and local_base:
+        return _local()
     if provider == "claude" and cla:
         return _ClaudeSession(cla, settings.get("claude_model") or DEFAULT_CLAUDE_MODEL, system, context_text, log)
     if provider == "gemini" and gem:
         return _GeminiSession(gem, settings.get("gemini_model") or DEFAULT_GEMINI_MODEL, system, context_text, log)
+    # Selected provider unavailable — fall back to whatever IS configured.
     if gem:
         return _GeminiSession(gem, settings.get("gemini_model") or DEFAULT_GEMINI_MODEL, system, context_text, log)
     if cla:
         return _ClaudeSession(cla, settings.get("claude_model") or DEFAULT_CLAUDE_MODEL, system, context_text, log)
-    raise RuntimeError("Rich generation needs a Gemini or Claude API key in Settings.")
+    if local_base:
+        return _local()
+    raise RuntimeError("Rich generation needs a local endpoint (Settings > AI > Local endpoint) "
+                       "or a Gemini/Claude API key.")
 
 
 def _parse_review(raw):

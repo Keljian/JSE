@@ -175,6 +175,14 @@ All notable changes to JSE are documented here.
 
 ### Fixed
 
+- Application document generation can now use the local endpoint. Selecting
+  "Local endpoint" for Application documents previously had no effect —
+  authoring silently diverted to whatever cloud key was configured (the real
+  cause of the unexpected Gemini rate-limit failures). It now authors the
+  resume, cover letter, and evidence review against the local OpenAI-compatible
+  server, keeps all data on the device, strips Qwen3-style `<think>` reasoning,
+  and discovers the loaded model when none is named. Cloud providers remain
+  available and are used when explicitly selected.
 - Fixed document generation failing with "HTTP Error 429: Too Many Requests"
   against Gemini on a free-tier quota. The REST retry helper ignored the
   server's own back-off hint and gave up after a short blind delay; it now
