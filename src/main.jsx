@@ -3403,20 +3403,23 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
                     />
                   </label>
                 ) : null}
-                <label className="ai-route-model"><span>Parallel analysis</span>
+                <label className="ai-route-model"><span>Simultaneous LLM requests</span>
                   <select
-                    aria-label="Parallel analysis workers"
-                    value={String(globalForm.analysis_workers || "2")}
+                    aria-label="Simultaneous LLM requests"
+                    value={scoringProvider === "local" ? "1" : String(globalForm.analysis_workers || "1")}
+                    disabled={scoringProvider === "local"}
                     onChange={(event) => updateGlobal("analysis_workers", event.target.value)}
                   >
-                    <option value="1">1 job at a time</option>
-                    <option value="2">2 jobs in parallel</option>
-                    <option value="3">3 jobs in parallel</option>
-                    <option value="4">4 jobs in parallel</option>
-                    <option value="6">6 jobs in parallel</option>
-                    <option value="8">8 jobs in parallel</option>
+                    <option value="1">1 — one at a time</option>
+                    <option value="2">2 in parallel</option>
+                    <option value="3">3 in parallel</option>
+                    <option value="4">4 in parallel</option>
+                    <option value="6">6 in parallel</option>
+                    <option value="8">8 in parallel</option>
                   </select>
-                  <small className="field-hint">Local endpoints need server-side parallel slots to benefit; hosted providers can run 4-8.</small>
+                  <small className="field-hint">{scoringProvider === "local"
+                    ? "The local endpoint runs one request at a time — it returns 429 if sent overlapping requests. Switch matching to a hosted or free endpoint to raise this."
+                    : "Caps concurrent requests across matching, analysis and document generation. Raise only if the endpoint genuinely serves parallel requests."}</small>
                 </label>
               </div>
             </article>

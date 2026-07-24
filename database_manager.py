@@ -111,9 +111,11 @@ DEFAULT_APP_SETTINGS.update({
     "compat_base_url": "",
     "compat_api_key": "",
     "compat_model": "",
-    # How many jobs the analysis pipeline scores in parallel (clamped 1-8 in
-    # llm_handler). Stored as text like every other app setting.
-    "analysis_workers": "2",
+    # Max simultaneous LLM requests: sizes the analysis worker pool and the
+    # shared LLM concurrency gate (clamped 1-8 in llm_handler). Default 1 so a
+    # single-slot local server is never sent overlapping requests (it answers
+    # HTTP 429). Stored as text like every other app setting.
+    "analysis_workers": "1",
 })
 SOURCE_ALIASES = {
     "seek": "Seek",

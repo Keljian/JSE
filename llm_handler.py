@@ -36,6 +36,9 @@ import json
 import re
 import hashlib
 import concurrent.futures
+import contextlib
+import functools
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from config import MY_INFO
@@ -59,6 +62,60 @@ FULL_ANALYSIS_TRIAGE_THRESHOLD = 60
 TRIAGE_KEEP_THRESHOLD = 45
 
 print("Local LLM endpoint defaults loaded; configure the active endpoint in Settings.")
+
+
+# --- Global LLM concurrency gate --------------------------------------------
+# A local inference server typically serves one request at a time and returns
+# HTTP 429 when a second arrives mid-flight (its queue depth is often zero).
+# The analysis worker pool, the keyword-retry pool, live analysis, and document
+# generation can all reach the endpoint at once, which produced "Too Many
+# Requests". This gate caps concurrent outbound LLM requests to the configured
+# number of slots (the analysis_workers setting, default 1) so callers queue
+# instead of overwhelming the server. It spans every provider because scoring,
+# documents, research, and memory usually share the same local endpoint; raise
+# the setting only when the active endpoint genuinely serves parallel requests.
+_llm_gate_lock = threading.Lock()
+_llm_gate = None
+_llm_gate_size = None
+
+
+@contextlib.contextmanager
+def _llm_slot():
+    """Block until an LLM slot is free, honouring runtime cancellation.
+
+    The semaphore is (re)sized lazily from the current setting so a settings
+    change takes effect without a restart. A queued caller polls the cancel
+    event so a user cancel doesn't leave it wedged behind a long request.
+    """
+    global _llm_gate, _llm_gate_size
+    with _llm_gate_lock:
+        limit = _analysis_worker_count()
+        if _llm_gate is None or _llm_gate_size != limit:
+            _llm_gate = threading.BoundedSemaphore(limit)
+            _llm_gate_size = limit
+        gate = _llm_gate
+    while not gate.acquire(timeout=0.5):
+        if concurrency.cancel_event.is_set():
+            raise concurrency.OperationCancelledError("Operation cancelled while awaiting an LLM slot.")
+    try:
+        yield
+    finally:
+        gate.release()
+
+
+def _serialized_llm_call(fn):
+    """Route a provider entry point through the shared concurrency gate.
+
+    Applied to the four provider functions (the single points every outbound
+    LLM request passes through). The dispatcher itself is intentionally NOT
+    gated, so a dispatched call acquires exactly one slot — no re-entrant
+    deadlock against the non-reentrant semaphore.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _llm_slot():
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 class LLMHTTPError(Exception):
@@ -200,6 +257,7 @@ def _local_is_configured():
         return False
 
 
+@_serialized_llm_call
 def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, settings=None):
     """Core local OpenAI-compatible chat-completions call with retry logic.
 
@@ -333,6 +391,7 @@ def _messages_to_text(messages):
     return "\n\n".join(parts)
 
 
+@_serialized_llm_call
 def _call_openai_compatible(base_url, api_key, model, messages, temperature=0.2, max_tokens=4096, json_mode=False, require_key=True):
     if require_key and not api_key:
         raise ValueError("OpenAI / ChatGPT API key is not configured in Settings.")
@@ -350,6 +409,7 @@ def _call_openai_compatible(base_url, api_key, model, messages, temperature=0.2,
     return _strip_reasoning_blocks(data["choices"][0]["message"]["content"])
 
 
+@_serialized_llm_call
 def _call_claude(api_key, model, messages, temperature=0.2, max_tokens=4096):
     if not api_key:
         raise ValueError("Claude API key is not configured in Settings.")
@@ -381,6 +441,7 @@ def _call_claude(api_key, model, messages, temperature=0.2, max_tokens=4096):
     )
 
 
+@_serialized_llm_call
 def _call_gemini(api_key, model, messages, temperature=0.2, max_tokens=4096):
     if not api_key:
         raise ValueError("Gemini API key is not configured in Settings.")
@@ -1696,17 +1757,30 @@ def _maybe_align_fragments(job_id, score, full_description_for_analysis, profile
 
 
 def _analysis_worker_count():
-    """How many jobs to analyse in parallel (analysis_workers app setting).
+    """Max simultaneous LLM requests (analysis_workers app setting).
 
-    Default 2, clamped to 1-8. A local server with a single inference slot
-    should stay at 1-2 (extra requests queue server-side and the 429/503
-    retry logic absorbs pushback); hosted scoring providers (Gemini or a
-    free OpenAI-compatible endpoint) comfortably run 4-8.
+    Sizes both the analysis worker pool and the shared LLM concurrency gate,
+    so it is the single authority on how many requests hit the endpoint at
+    once. Clamped to 1-8, default 1.
+
+    The local endpoint is treated as single-slot: it returns HTTP 429 the
+    moment a second request arrives, and there is no reliable signal that a
+    given local runtime serves parallel requests. So whenever the matching
+    workflow targets the local provider, concurrency is forced to 1 regardless
+    of the stored setting. The setting only takes effect for hosted / free
+    OpenAI-compatible matching providers, which comfortably run 4-8.
     """
     try:
-        value = int(str(db.get_app_setting("analysis_workers", "") or "").strip() or 2)
+        settings = db.get_app_settings()
+    except Exception:
+        settings = {}
+    provider = str(settings.get("scoring_ai_provider") or "local").lower()
+    if provider == "local":
+        return 1
+    try:
+        value = int(str(settings.get("analysis_workers", "") or "").strip() or 1)
     except (TypeError, ValueError):
-        value = 2
+        value = 1
     return max(1, min(8, value))
 
 

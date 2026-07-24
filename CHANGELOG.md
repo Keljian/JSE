@@ -175,6 +175,17 @@ All notable changes to JSE are documented here.
 
 ### Fixed
 
+- Fixed "HTTP Error 429: Too Many Requests" from the local LLM endpoint during
+  bulk matching. A single-slot local server rejects a second request while one
+  is in flight, but the analysis worker pool, the concurrent keyword-retry
+  pool, live analysis, and document generation could all reach it at once with
+  no shared cap. Every outbound LLM request now passes through a global
+  concurrency gate sized by one setting; matching against the local endpoint is
+  forced to one request at a time (there is no reliable signal that a local
+  runtime serves parallel requests), and the "Simultaneous LLM requests"
+  control only raises concurrency for hosted / free OpenAI-compatible matching
+  providers that genuinely support it. A queued request also unblocks promptly
+  on cancellation instead of waiting behind an in-flight call.
 - Fixed intermittent "attempt to write a readonly database" errors (and the
   resulting bridge-worker restart loop) that appeared while scraping after the
   refresh/analysis parallelization. The new concurrent connection fan-out
