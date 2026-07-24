@@ -175,6 +175,17 @@ All notable changes to JSE are documented here.
 
 ### Fixed
 
+- Fixed document generation failing with "HTTP Error 429: Too Many Requests"
+  against Gemini on a free-tier quota. The REST retry helper ignored the
+  server's own back-off hint and gave up after a short blind delay; it now
+  waits the requested time (Gemini's `RetryInfo.retryDelay` in the body, or a
+  `Retry-After` header, capped) so a per-minute rate window can actually clear
+  before the next attempt. The optional evidence-cache creation no longer
+  spends the rate-limit budget retrying — it fails fast to implicit caching so
+  that budget goes to the calls that produce the documents. When a 429 still
+  persists, the batch log now explains it is a provider quota limit and points
+  to retrying a smaller batch or switching to a higher-limit model (a Gemini
+  "flash" model rather than "pro-preview").
 - Fixed "HTTP Error 429: Too Many Requests" from the local LLM endpoint during
   bulk matching. A single-slot local server rejects a second request while one
   is in flight, but the analysis worker pool, the concurrent keyword-retry

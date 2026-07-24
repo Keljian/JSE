@@ -203,12 +203,39 @@ def review_task(resume_md, cover_txt):
     )
 
 
-def _http_json(url, body=None, method=None, headers=None, timeout=300, retries=3):
+def _retry_wait_seconds(err, attempt, cap=75):
+    """Seconds to wait before retrying, honouring the server's own hint.
+
+    A Gemini 429 (RESOURCE_EXHAUSTED) carries a RetryInfo.retryDelay (e.g.
+    "38s") in the body — and sometimes a Retry-After header — reflecting the
+    real rate window, which is far longer than a blind backoff. Respect it,
+    capped so a daily-quota exhaustion (a very large delay) still fails in a
+    reasonable time rather than hanging. Falls back to linear backoff when no
+    hint is present."""
+    try:
+        header = err.headers.get("Retry-After") if getattr(err, "headers", None) else None
+        if header and str(header).strip().isdigit():
+            return min(int(str(header).strip()), cap)
+    except Exception:
+        pass
+    try:
+        match = re.search(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"', err.read().decode("utf-8", "replace"))
+        if match:
+            return min(int(float(match.group(1))) + 1, cap)
+    except Exception:
+        pass
+    return min(4 * (attempt + 1), cap)
+
+
+def _http_json(url, body=None, method=None, headers=None, timeout=300, retries=4):
     """POST/GET JSON with bounded retries on transient failures.
 
-    Retries 429/500/502/503 and network-level errors with linear backoff;
-    4xx config errors (400/401/403/404) raise immediately so callers can make
-    their own fallback decisions (e.g. retired-model 404 handling)."""
+    Retries 429/500/502/503 and network-level errors. On 429 it waits the
+    server's requested delay (Gemini RetryInfo.retryDelay or a Retry-After
+    header, capped) rather than a short blind backoff, so a free-tier rate
+    window can actually clear before the next attempt. 4xx config errors
+    (400/401/403/404) raise immediately so callers can make their own fallback
+    decisions (e.g. retired-model 404 handling)."""
     data = json.dumps(body).encode() if body is not None else None
     last_error = None
     for attempt in range(retries):
@@ -220,7 +247,7 @@ def _http_json(url, body=None, method=None, headers=None, timeout=300, retries=3
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503) and attempt < retries - 1:
                 last_error = e
-                time.sleep(4 * (attempt + 1))
+                time.sleep(_retry_wait_seconds(e, attempt))
                 continue
             raise
         except (urllib.error.URLError, TimeoutError, OSError) as e:
@@ -248,7 +275,10 @@ class _GeminiSession:
                 # preview model can otherwise outlive a short cache, and an expired
                 # cache makes generateContent 404 ("CachedContent not found").
                 "ttl": "1800s",
-            })
+            # The cache is an optional cost optimisation. Don't spend the rate-limit
+            # window retrying it — fail fast to implicit caching and keep that budget
+            # for the authoring calls that actually produce the documents.
+            }, retries=1)
             self.cache = data.get("name")
             if log and self.cache:
                 log(f"Cached evidence context ({self.cache.split('/')[-1]}) — reused across resume/cover/review.")

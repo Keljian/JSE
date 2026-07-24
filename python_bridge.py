@@ -2682,6 +2682,14 @@ def command_docs_generate_interested_batch(payload):
         except Exception as exc:
             failed += 1
             error = str(exc)
+            if "429" in error or "Too Many Requests" in error or "RESOURCE_EXHAUSTED" in error:
+                error = (
+                    f"{error} — the document AI provider is rate-limiting requests. "
+                    "This is usually a free-tier quota limit: wait a minute and retry a "
+                    "smaller batch, or switch the Application-documents provider/model in "
+                    "Settings (a 'flash' Gemini model has far higher free limits than a "
+                    "'pro-preview' one)."
+                )
             results.append({"job_id": job_id, "title": title, "ok": False, "error": error})
             emit("log", message=f"Document generation failed for {title}: {error}")
             emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
