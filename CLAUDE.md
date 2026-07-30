@@ -12,12 +12,20 @@ Python bridge so the renderer never imports Python modules directly.
 ```text
 electron/main.cjs      Electron main process, IPC, dialogs, downloads, worker supervision
 electron/preload.cjs   Safe contextBridge API exposed as window.jobAssistant
-src/main.jsx           React UI: dashboard, campaign, pipeline, workspace, settings
+src/main.jsx           Renderer composition root; mounts App inside the ErrorBoundary
+src/lib/               constants, format helpers, in-app dialogs
+src/components/        UI, layered: primitives, chips, panels, modals, workspace,
+                       dashboard, campaign, hiddenMarket, settings, ErrorBoundary
 src/styles.css         Application styles and responsive layout
-python_bridge.py       JSON command bridge; persistent worker for one-shot invokes
+python_bridge.py       Bridge entrypoint + merged dispatch table (see bridge/)
+bridge/                Command implementations grouped by prefix; each declares COMMANDS
 app_logic.py           Long-running workflow orchestration
-llm_handler.py         LLM analysis, research, document content, memory extraction
-database_manager.py    SQLite CRUD, settings, jobs, lanes, dashboard, campaign logic
+llm_handler.py         Facade over llm/ (providers, parsing, prompts, analysis,
+                       documents, memory, research)
+database_manager.py    Facade over db/ (connection, constants, text, companies,
+                       settings, scrapers, lanes, outcomes, jobs, campaign,
+                       intel, dashboard)
+facade.py              Write-forwarding + state proxying for the two facades
 db_setup.py            Database schema creation and migrations
 concurrency.py         Shared pause/resume/cancel primitives
 scraper_plugins.py     Scraper plugin registry, validation, import, execution helpers
@@ -51,6 +59,12 @@ config.py              Non-secret local defaults only
   before executing.
 - Scrapers should fail gracefully and return/log failure rather than crashing the
   app.
+- `db/`, `llm/` and `bridge/` are layered: at module scope, import only from an
+  earlier layer. Where the domain is genuinely cyclic, use a function-local
+  import and say why in a comment. Tests assert this.
+- Import `database_manager` and `llm_handler`, not `db` and `llm`. The facades
+  forward attribute writes so monkeypatching works, and proxy `DB_FILE` so it
+  has exactly one binding — see `facade.py` before changing either.
 
 ## Data And Privacy Rules
 

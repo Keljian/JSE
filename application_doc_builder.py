@@ -13,7 +13,6 @@ from pathlib import Path
 from datetime import datetime
 
 import docx
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 
 

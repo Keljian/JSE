@@ -7,7 +7,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$ROOT/build"
 CACHE_DIR="$BUILD_DIR/cache"
 RUNTIME_ROOT="$BUILD_DIR/python"
-REQUIREMENTS="$ROOT/requirements.txt"
+# Install from the fully pinned lock so two builds of the same commit ship the
+# same dependency tree. requirements.txt states intent; requirements.lock is
+# what actually gets installed.
+REQUIREMENTS="$ROOT/requirements.lock"
+[[ -f "$REQUIREMENTS" ]] || REQUIREMENTS="$ROOT/requirements.txt"
 ARCHS="${ARCHS:-arm64 x64}"
 
 mkdir -p "$CACHE_DIR" "$RUNTIME_ROOT"

@@ -29,8 +29,14 @@ resume, search settings, matching rules, templates, and preferences.
    - Uses local OpenAI-compatible models, Gemini, Claude, OpenAI, or compatible
      APIs depending on settings.
    - Runs a staged scoring flow: resume triage cache, fast keep/discard triage,
-     evidence-anchored full analysis, and strict deep gatekeeping for high-scoring
-     roles.
+     a hard-blocker gate, evidence-anchored full analysis, and strict deep
+     gatekeeping for high-scoring roles.
+   - The hard-blocker gate is the only stage allowed to return a decisive "don't
+     apply". It checks three things and nothing else — an unmet mandatory
+     credential or eligibility gate, a core domain mismatch, and seniority
+     misalignment in either direction — and returns skip, stretch (with named
+     gaps the later stages must answer rather than reframe), or clear. A skip
+     stops full analysis and blocks document generation until overridden.
    - Blends fit analysis with candidate-memory fragments from prior validated
      documents.
    - Supports re-analysis by stage, by selected job IDs, or by full pipeline.
@@ -42,6 +48,15 @@ resume, search settings, matching rules, templates, and preferences.
      rejection reasons, generated document paths, and timeline events.
    - Provides dashboard counts, cleanup views, stale-job detection, calendar
      follow-ups, and campaign planning.
+   - Records how each application reaches the employer (job board, recruiter,
+     warm referral, direct outreach) and ranks the campaign plan by channel
+     warmth ahead of the fit score, because a moderate role with a real contact
+     behind it converts better than a stronger cold portal submission. Jobs at
+     employers where a contact is already known show a possible warm path, and
+     the dashboard names a run of cold applications.
+   - Exports a triage packet: one file per sweep with the surviving roles' ad
+     text, metadata, scores, gate verdicts and warm-path hits, written to a
+     folder that can be watched, for a go/no-go pass outside the app.
 
 4. Work on a specific job
    - Opens a workspace with job details, company research, application material,
@@ -62,6 +77,11 @@ resume, search settings, matching rules, templates, and preferences.
      fragments, and templates to generate tailored content.
    - Supports DOCX generation via structured template rendering and a
      markdown-first path.
+   - Picks one of two document tracks. Roles matching the candidate's level get
+     a full senior treatment; roles scoped below it get a stripped-back resume
+     written to the ad's actual scope (same real employers, titles and dates —
+     only emphasis changes) and a cover letter that answers the
+     overqualification question directly instead of leaving it to the screener.
    - Can produce an external-LLM prompt for manual drafting workflows.
    - Saves generated documents locally under the applications data folder.
 
@@ -138,6 +158,9 @@ data areas include:
 - Company research and company profile information.
 - Resume triage cache, candidate fragments, and lane fragment affinities.
 - Generated document source tracking.
+- Blocker-gate verdicts, application channel, and document track per job.
+- Warm contacts and hidden-market leads.
+- Exported triage packets under `shortlists/`.
 
 ## Important Behavioural Notes
 
@@ -148,7 +171,11 @@ data areas include:
 - The app is local-first: database, resumes, generated documents, settings, and
   browser profiles live on the user's machine.
 - API keys and personal data should stay in local settings or untracked data
-  files, not in source files or packaged defaults.
+  files, not in source files or packaged defaults. Only `defaults/` is packaged
+  into the installer, and it must contain nothing personal.
+- Screening is allowed to say no. The blocker gate returns a decisive skip when
+  a hard blocker fires, and that skip actually stops document generation rather
+  than being one more opinion in the analysis text.
 
 ## One-Sentence Summary
 

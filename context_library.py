@@ -137,8 +137,8 @@ def _extract_text(path: Path) -> str:
             return _extract_doc(path)
         if ext in (".txt", ".md"):
             return path.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        return f""  # extraction failed; caller logs
+    except Exception:
+        return ""  # extraction failed; caller logs
     return ""
 
 

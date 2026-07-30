@@ -20,7 +20,10 @@
     "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "release:win": "npm run build && electron-builder --win nsis --x64 --publish always",
     "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
-    "dist:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never"
+    "dist:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "python -m pytest tests -q"
   },
   "dependencies": {
     "concurrently": "^9.1.2",
@@ -31,9 +34,14 @@
     "wait-on": "^8.0.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^34.0.0",
     "electron-builder": "^26.0.12",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.8.0",
     "vite": "^6.0.7"
   },
   "build": {
@@ -56,15 +64,14 @@
       "dist/**/*",
       "electron/**/*",
       "assets/**/*",
-      "scraper_plugins/**/*",
+      "defaults/**/*",
       "tools/**/*",
       "build/python/**/*",
       "*.py",
       "LICENSE",
       "README.md",
       "INSTALL_WINDOWS.md",
-      "requirements.txt",
-      "search_terms.json"
+      "requirements.txt"
     ],
     "win": {
       "icon": "assets/jse-icon.ico",

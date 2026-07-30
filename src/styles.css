@@ -4850,6 +4850,36 @@ button.update-toast-close:hover:not(:disabled) {
 .ad-chip.warn { background: #fff5dc; border-color: #ead29a; color: #73510f; }
 .ad-chip.good { background: #e1f2e8; border-color: #b8dac8; color: #1b5c3c; }
 .ad-chip.muted { background: var(--surface-alt); color: var(--text-muted); }
+.ad-chip.bad { background: #fbe4e4; border-color: #e3b1b1; color: #7a1f1f; font-weight: 600; }
+
+.blocker-gate-block { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
+.blocker-gate-block h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.blocker-gate-block h4 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.blocker-gate-block p { margin: 0 0 4px; }
+.blocker-gate-block ul { margin: 0; padding-left: 18px; }
+.blocker-gate-block li { margin-bottom: 4px; }
+.blocker-gate-block .button-row { margin-top: 12px; }
+
+.channel-block { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
+.channel-block h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.channel-block h4 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.channel-block ul { margin: 0; padding-left: 18px; }
+.channel-block li { margin-bottom: 4px; }
+.warm-path-hint { margin: 4px 0 0; font-size: 11px; line-height: 1.4; color: #1b5c3c; }
+
+.doc-track-block { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
+.doc-track-block h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.doc-track-block ul { margin: 6px 0 0; padding-left: 18px; }
+.doc-track-block li { margin-bottom: 4px; }
+
+/* Fallback shown by ErrorBoundary. Deliberately self-contained: whatever broke
+   the render must not be able to break the message about it. */
+.render-error { max-width: 760px; margin: 0 auto; padding: 48px 24px; font-family: system-ui, sans-serif; }
+.render-error h1 { margin: 0 0 12px; font-size: 22px; }
+.render-error p { margin: 0 0 20px; line-height: 1.5; color: var(--text-muted, #666); }
+.render-error-actions { display: flex; gap: 10px; margin-bottom: 24px; }
+.render-error pre { max-height: 45vh; overflow: auto; padding: 14px; border-radius: 8px;
+  background: #1e1e1e; color: #e6e6e6; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
 .ad-signals-block { margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-alt); }
 .ad-signals-block h3 { margin: 0 0 8px; font-size: 14px; }
 .ad-signals-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 6px 16px; margin: 8px 0 0; }
@@ -4919,6 +4949,110 @@ button.update-toast-close:hover:not(:disabled) {
 }
 .funnel-footer small { font-size: 11px; color: var(--text-muted); }
 .funnel-footer .link-button { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+
+/* Near-miss detail on the outcome nudge: "unsuccessful" alone loses the
+   distinction between a first-round screen-out and a runner-up finish. */
+.interview-nudge-detail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.interview-nudge-detail input {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.interview-nudge-detail button { min-height: 30px; padding: 4px 10px; font-size: 12px; }
+.funnel-insights .funnel-baseline.secondary-rate { margin-top: -4px; }
+.funnel-insights .funnel-baseline.secondary-rate strong { font-size: 18px; color: var(--text); }
+
+/* Weekly warm-channel nudge: a week of zero outreach is the condition worth
+   naming, given the board channel is where the final-round losses happen. */
+.warm-nudge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid #b0632f;
+  border-radius: 10px;
+}
+.warm-nudge-copy { display: grid; gap: 3px; }
+.warm-nudge-copy strong { font-size: 14px; }
+.warm-nudge-copy span { font-size: 12px; color: var(--text-muted); }
+.warm-nudge button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 12px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* Targeting card — allocation, not volume. */
+.targeting-headline {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.targeting-headline > div { display: grid; gap: 2px; }
+.targeting-headline strong { font-size: 22px; color: var(--accent-strong); }
+.targeting-headline span { font-size: 11px; color: var(--text-muted); }
+.targeting-headline > div.bad strong { color: #b0632f; }
+.targeting-headline > div.good strong { color: #2f8f6b; }
+.targeting-card h3 {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.targeting-rows { display: grid; gap: 3px; }
+.targeting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-alt);
+}
+.targeting-row span { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.targeting-row small { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.targeting-row.good { border-left-color: #2f8f6b; }
+.targeting-row.bad { border-left-color: #b0632f; }
+
+/* Manual warm-lead creation — a target employer with no advertised role. */
+.hm-add-target { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+.hm-manual-lead {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+}
+.hm-manual-lead .hint { margin: 0 0 10px; font-size: 12px; color: var(--text-muted); }
+.hm-manual-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+.hm-manual-grid label { display: grid; gap: 3px; }
+.hm-manual-grid label span { font-size: 11px; color: var(--text-muted); }
+.hm-manual-grid input { min-height: 32px; padding: 4px 10px; font-size: 13px; }
+.hm-manual-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.hm-manual-actions button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; }
 
 /* Interview Learnings tab */
 .learnings-view {

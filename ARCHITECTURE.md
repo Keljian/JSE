@@ -136,7 +136,10 @@ flowchart TD
     Resume --> TriageCache["Resume triage cache"]
     TriageCache --> FastTriage["Fast keep/discard triage"]
     FastTriage -->|discard| Reject["Auto reject or skip"]
-    FastTriage -->|keep| Full["Evidence-anchored full analysis"]
+    FastTriage -->|keep| Blocker["Hard-blocker gate"]
+    Blocker -->|skip| Blocked["Persist verdict, cap score, block documents"]
+    Blocker -->|stretch, named gaps| Full["Evidence-anchored full analysis"]
+    Blocker -->|clear| Full
     Full --> Gate{"Score >= deep gate threshold?"}
     Gate -->|yes| Deep["Strict deep gatekeeper"]
     Gate -->|no| Structured["Structured analysis result"]
@@ -146,6 +149,22 @@ flowchart TD
     Score --> DB["Update job analysis fields"]
     DB --> UI["Refresh dashboard/pipeline"]
 ```
+
+The hard-blocker gate is the only stage allowed to return a decisive negative.
+Triage and full analysis both score *how well* a role matches and are biased
+toward finding a bridge; the gate asks whether the role should be applied for
+at all. A deterministic pre-pass extracts the ad's own mandatory-requirement
+lines, and the LLM judges that short list against three blocker classes only:
+unmet mandatory credential/eligibility gates, core domain mismatch, and
+seniority misalignment in either direction. A `skip` must carry an evidenced,
+confident blocker or it is downgraded to `stretch`; a failed gate call yields no
+opinion and the job proceeds. `skip` stops full analysis and blocks document
+generation (overridable, and the override is recorded); `stretch` passes its
+named gaps into the full-analysis prompt to be answered rather than reframed.
+
+The gate also reports `seniority_direction` even when it does not fire, because
+a role scoped below the resume's ceiling changes how the application must be
+written. That feeds the two-track document strategy (see below).
 
 The analysis layer uses `llm_handler.py` and may call:
 
@@ -186,11 +205,33 @@ events.
 
 Outcomes drive learning. When a job reaches `applied`, an immutable
 `application_outcomes` snapshot records its dimensional state; the outcome then
-advances monotonically (`pending` → `interview` → `offer`, or `declined` /
-`ghosted` / `withdrawn`). The snapshot has no foreign key to `jobs`, so it (and
-the underlying interview rows) survive lane deletion and duplicate cleanup —
-jobs carrying real history are reassigned to a fallback lane rather than
-hard-deleted.
+advances monotonically (`pending` → `interview` → `final_round` → `runner_up` →
+`offer`, or `declined` / `ghosted` / `withdrawn`). The snapshot has no foreign
+key to `jobs`, so it (and the underlying interview rows) survive lane deletion
+and duplicate cleanup — jobs carrying real history are reassigned to a fallback
+lane rather than hard-deleted.
+
+`final_round` and `runner_up` exist because a first-round screen-out and a
+"second by a very small margin" used to collapse to the same `interview` →
+`declined` pair, hiding the results that carry the most information.
+`interview_stage_reached` and `loss_reason` record how far a near miss got and
+what ended it. Two conversion rates are therefore reported, not one:
+application → interview (an allocation problem) and interview → final round (a
+competition problem).
+
+Each snapshot also records a `channel`
+(`board` / `recruiter` / `warm_referral` / `direct_outreach`), derived from the
+job's source and employer type. Externally-logged (`Manual`) applications are
+left unattributed rather than guessed, since only the user knows whether one came
+from a referral.
+
+A snapshot whose job row was deleted is reconstructed from `job_postings` first
+(the normalized posting survives the cascade and carries every dimension), then
+from `application_events` (the company-intelligence blob and document filenames).
+Only when nothing is recoverable is the row marked `unresolved`: it still counts
+in the headline totals — the application really happened — but is excluded from
+every dimension breakdown and reported as `excluded_unresolved`, rather than
+being bucketed as `unknown` where it diluted every dimension it touched.
 
 ```mermaid
 flowchart TD
@@ -202,15 +243,76 @@ flowchart TD
     RoleKey --> Insights["compute_funnel_insights()\nconversion by dimension, by role_key"]
     Insights --> Card["Dashboard: Funnel Insights card"]
     Insights --> Priors["funnel_conversion_priors\n(app_settings)"]
-    Priors --> Composite["Bounded (+-10) prior on composite_score\n(never crosses auto-reject alone)"]
+    Priors --> Composite["Per-dimension clamped prior on composite_score\n(seniority_band +-25, others +-10;\nnever crosses auto-reject alone)"]
+    Priors --> Targeting["Targeting card\napplications + conversion by band and channel"]
     Ghost["50-day silent no-response"] --> OutcomeGhost["outcome = ghosted"]
-    Nudge["Past interview, no result"] --> Prompt["Dismissible dashboard nudge"]
+    Nudge["Past interview, no result"] --> Prompt["Dismissible dashboard nudge\n(how far did it go?)"]
 ```
 
 All conversion statistics aggregate by `role_key`, never by job id. Insights and
 priors are pure SQL/Python (no LLM); only interview-validated fragment mining
 uses a model. See `database_manager.compute_funnel_insights`,
 `backfill_application_outcomes`, and `composite_score_with_prior`.
+
+### 4b. Targeting — Band-Weighted Scoring And The Warm Channel
+
+Discovery is not the constraint (16,157 jobs scraped against 156 applications);
+allocation is. Two mechanisms act on that.
+
+**Band-weighted priors.** Observed conversion by seniority band spans ~20x
+(bridging titles 25%, manager-lead 1.2%, against a 5.8% baseline). A flat ±10
+clamp with a x40 scale cannot express that, so priors carry a per-dimension
+clamp and scale: `PRIOR_CLAMP_BY_DIMENSION` / `PRIOR_SCALE_BY_DIMENSION` grant
+`seniority_band` ±25 at x100 while every other dimension keeps the conservative
+±10 at x40. `conversion_prior_delta` combines the qualifying deltas as an average
+weighted by each dimension's clamp, so a dimension explicitly granted more
+authority is not diluted back to ±10 by three ±10 neighbours (with equal clamps
+it reduces exactly to the previous arithmetic mean).
+
+The auto-reject guard is unchanged and non-negotiable: a prior can never, on its
+own, push a job across `AUTO_REJECT_THRESHOLD` in either direction. Band is
+advisory — it is surfaced with its observed rate via `band_triage_note` and
+`explain_composite_score`, and it never rejects a job by itself.
+
+**Composite reweighting.** `calculate_composite_score` moved from 80/20 to 60/40
+(`COMPOSITE_MATCH_WEIGHT` / `COMPOSITE_FRAGMENT_WEIGHT`), because match_score did
+not separate outcomes at all: the 70-79 band converted at 5.6% and the 80-89 band
+at 6.5%. The weights are named constants shared by `llm_handler._compose_score`
+and mirrored in `src/main.jsx`.
+
+**Warm channel.** `hidden_market_leads` held zero rows because every path into it
+started from a target mined out of advert data — and the employers worth a warm
+approach are the ones not advertising. `hiddenMarket:addTarget` creates a lead
+against a named employer with no scraped job behind it. `warm_contacts` is the
+supporting contact book, kept deliberately separate from `people` (which is the
+*candidate's* identity, linked to `candidate_fragments` via
+`profiles.person_id` — writing employer contacts into it would scope the
+candidate's own memory fragments to strangers). A week with zero warm activity
+raises a dashboard nudge.
+
+**Channel warmth on the job.** The four-channel vocabulary
+(`board` / `recruiter` / `warm_referral` / `direct_outreach`) originally existed
+only on outcome snapshots, so warmth was known one step after it could be acted
+on. `jobs.channel` stores an explicit channel that overrides
+`application_channel`'s derivation, and `channel_warmth` derives a rank on top:
+warm (a referral or direct outreach — the routes where an application is not
+judged side by side against a better-matched candidate), named contact (a human
+is identified but the route is still the portal), or cold.
+
+Warmth is derived rather than stored as a fifth channel value on purpose: the
+finer distinction informs ranking without splitting the reporting dimension that
+Funnel Insights has already backfilled.
+
+`_sort_campaign_candidates` ranks by warmth **before** the campaign score, so a
+moderate warm role beats a stronger cold one. On the pipeline board
+(`command_jobs_list`) warmth sits above the score but below priority and due
+date, so an overdue action still leads. `warm_contact_index` is one grouped
+query — same pattern as `recurrence_index` — matched against each job's real
+employer first, so a recruiter-listed role still finds the contact at the end
+client. `get_channel_mix` reports how cold the recent applied mix is and which
+live roles already have a contact behind them; that is a different question from
+`get_warm_channel_activity`, which asks only whether any hidden-market work
+happened.
 
 ### 5. Company Research
 
@@ -270,8 +372,11 @@ research is refreshed after seven days or whenever the research model changes.
 
 ```mermaid
 flowchart TD
-    User["Generate docs for job"] --> Load["Load job, lane settings, resume, templates"]
-    Load --> Context["Retrieve candidate evidence\ncontext_library.py"]
+    User["Generate docs for job"] --> Gate{"Blocker verdict = skip?"}
+    Gate -->|yes, no override| Blocked["Refuse: BlockerGateError"]
+    Gate -->|no| Load["Load job, lane settings, resume, templates"]
+    Load --> Track["Resolve document track\nstripped back or full senior"]
+    Track --> Context["Retrieve candidate evidence\ncontext_library.py"]
     Context --> Prompt["Build role-specific document prompt"]
     Prompt --> LLM["Generate structured content or markdown"]
     LLM --> Validate["Parse/repair/check JSON or markdown"]
@@ -295,6 +400,28 @@ Outputs can include:
 - generated content JSON
 - external-LLM prompt Markdown
 - review/quality metadata
+
+**Two-track strategy.** Overqualification screening on support-grade roles is a
+measured rejection cause: the same senior evidence that wins a Head-of role gets
+the application binned. `database_manager.document_track` resolves **stripped
+back** or **full senior** from signals already computed — the blocker gate's
+`seniority_direction`, the title band, and the salary band. The gate's judgement
+is decisive on its own because it read the whole ad against the whole resume;
+the keyword heuristics require two agreeing signals, so one support-grade word
+in a manager title cannot strip a senior resume. `jobs.document_track` pins a
+manual override that survives re-analysis.
+
+On the stripped track `rich_application.resume_task` writes to the ad's actual
+scope — same real employers, titles and dates, with emphasis and depth changed
+and facts never changed — and `cover_task` adds a positioning instruction to
+answer the level question directly in one honest sentence rather than leave the
+screener to answer it.
+
+**Gate enforcement.** `python_bridge.assert_blocker_gate_clear` runs at the top
+of both generation commands. A `skip` verdict raises `BlockerGateError` unless
+the caller passes `override_blocker`, and the override is recorded as an
+application event so the decision is auditable. The Interested batch counts
+gated jobs as skipped rather than failed.
 
 ### 7. Candidate Memory And Context Library
 
@@ -350,8 +477,83 @@ install-tree data there without overwriting existing destination files.
 - `Application templates/`: local DOCX templates.
 - `Resumes/`: local managed resume files.
 - `Backups/`: manual or automated backups.
+- `shortlists/`: triage packets written by `jobs:exportShortlist`. Configurable
+  via the `shortlists_dir` app setting so it can point at a watched folder.
+- `defaults/`: the only first-run content that ships inside the installer.
+  Committed and neutral by definition — `search_terms.json` and any scraper
+  plugins that are genuinely product rather than personal. Seeded into the user
+  data directory on first launch, never overwriting existing files. The live
+  `search_terms.json` and `scraper_plugins/` at the repo root are gitignored
+  personal data and are deliberately *not* packaged; see `defaults/README.md`.
 - `.electron-data/`: Electron runtime profile/cache.
 - `dist/`, `build/`, `release/`, `installer/`: generated build/package output.
+
+## Module Layout
+
+The four monoliths were split into layered packages. Each keeps a facade or
+entrypoint at its original path, so no caller changed.
+
+| Was | Now | Entry point |
+| --- | --- | --- |
+| `database_manager.py` 9,191 lines | `db/` — 12 modules, largest 2,264 | `database_manager.py` (481-line facade) |
+| `llm_handler.py` 3,644 lines | `llm/` — 7 modules, largest 1,217 | `llm_handler.py` (139-line facade) |
+| `python_bridge.py` 3,509 lines | `bridge/` — 9 modules, largest 762 | `python_bridge.py` (139-line entrypoint) |
+| `src/main.jsx` 6,072 lines | `src/lib/` + `src/components/` — 13 modules, largest 863 | `src/main.jsx` (1,852-line composition root) |
+
+Each package is **layered**: a module may import at module scope only from
+layers declared before it. Where the domain is genuinely cyclic — a job stage
+transition writes an outcome, and building an outcome snapshot reads the job —
+the crossing uses a function-local import carrying a comment that says why.
+`tests/test_db_package.py` and `tests/test_bridge_package.py` assert the
+layering, so a module-scope back-reference fails the build rather than
+producing an import cycle at runtime.
+
+### Why the facades are not just re-export lists
+
+Splitting a single namespace into a package breaks two things that callers had
+always been able to do, and both fail **silently**:
+
+- **Monkeypatching.** `llm_handler._call_unsloth = stub` used to affect every
+  caller. After a split it rebinds the facade only, and the real function still
+  runs. This was not hypothetical: the moment the `llm/` split landed, three
+  tests began making live network calls and the suite went from 4s to 42s.
+- **Mutable module state.** `database_manager.DB_FILE` is repointed at a
+  throwaway database by every test. A plain re-export creates a second binding,
+  so the assignment moves the facade's copy while `get_db_connection()` keeps
+  opening the original file — tests passing while writing to the real database.
+  `tests/conftest.py` documents the incident that makes this non-negotiable.
+
+`facade.py` handles both. Attribute writes on a facade are forwarded into every
+module in the package that binds that name, and `DB_FILE` / `DATA_DIR` /
+`_wal_enabled` are proxied to `db.connection` rather than re-exported so exactly
+one binding exists. `facade.install` refuses to run if a proxied name has been
+re-exported by mistake.
+
+Two path traps came out of the same move and are asserted in tests:
+`db/connection.py` and `bridge/runtime.py` both derive the application root from
+`__file__` and now need `parents[1]`, not `parent` — getting it wrong silently
+relocates the entire data directory.
+
+The renderer keeps `src/main.jsx` as the composition root, mounted inside
+`components/ErrorBoundary`. JSE has no address bar and no reload button, so an
+uncaught render error would otherwise leave a blank window with no way to
+recover or report it.
+
+## Build And CI
+
+`.github/workflows/build-installers.yml` runs a fast Ubuntu `test` job — `ruff`,
+`eslint`, `pytest`, and the renderer build — that all three platform installer
+jobs depend on. Python dependencies install from `requirements.lock`, the fully
+pinned tree (regenerate with `tools/write_requirements_lock.py`);
+`requirements.txt` remains the human-readable statement of intent. The CI
+runtime cache keys on the lock, so a transitive release cannot silently change
+what an installer ships.
+
+Linting is deliberately narrow: real defect classes only (undefined names,
+unused variables and imports, mutable default arguments, bare excepts, React
+hook-ordering). The React Compiler rules in `eslint-plugin-react-hooks`'
+recommended preset are off — they surface optimisation advice, not defects, and
+a linter that is red on day one gets ignored.
 
 ## Command/Data Boundary
 

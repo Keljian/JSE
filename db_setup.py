@@ -7,6 +7,8 @@ from database_manager import (
     DEFAULT_PROFILE_SETTINGS,
     extract_job_metadata,
     backfill_application_outcomes,
+    backfill_outcome_channels,
+    repair_orphaned_outcome_snapshots,
 )
 
 PIPELINE_STAGES = (
@@ -136,6 +138,19 @@ def setup_database():
     _add_column(cursor, "jobs", "company_research_updated_at", "TEXT")
     _add_column(cursor, "jobs", "last_seen_at", "TEXT")
     _add_column(cursor, "jobs", "missing_sweeps", "INTEGER DEFAULT 0")
+    # Hard-blocker gate: a decisive skip / stretch / clear verdict recorded
+    # between triage and full analysis. 'skip' blocks document generation.
+    _add_column(cursor, "jobs", "blocker_verdict", "TEXT")
+    _add_column(cursor, "jobs", "blocker_reason", "TEXT")
+    _add_column(cursor, "jobs", "blocker_json", "TEXT")
+    _add_column(cursor, "jobs", "blocker_checked_at", "TEXT")
+    # Channel warmth on the job itself, not only on the outcome snapshot: how an
+    # application would reach the employer has to be known while the role is
+    # still being ranked, not just after it has been sent.
+    _add_column(cursor, "jobs", "channel", "TEXT")
+    # Two-track document strategy: an explicit override of the derived track,
+    # so a manual decision survives re-analysis.
+    _add_column(cursor, "jobs", "document_track", "TEXT")
     _add_column(cursor, "profiles", "preferred_location", "TEXT DEFAULT 'Melbourne VIC'")
     _add_column(cursor, "profiles", "seek_location", "TEXT DEFAULT 'Melbourne VIC'")
     _add_column(cursor, "profiles", "linkedin_location", "TEXT DEFAULT 'Australia'")
@@ -872,6 +887,33 @@ def setup_database():
         )
     ''')
 
+    # Warm-channel contact book. Deliberately separate from `people`: that table
+    # is the *candidate's* identity (profiles.person_id -> candidate_fragments),
+    # not a networking address book, so seeding it with employer contacts would
+    # scope the candidate's own memory fragments to strangers. Contacts here are
+    # organisation-scoped and feed hidden-market leads.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS warm_contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER,
+            contact_key TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            organisation TEXT,
+            organisation_key TEXT,
+            role_title TEXT,
+            email TEXT,
+            phone TEXT,
+            linkedin_url TEXT,
+            relationship TEXT,
+            origin TEXT,
+            notes TEXT,
+            last_contacted_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE SET NULL
+        )
+    ''')
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS hidden_market_contact_research (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -903,6 +945,16 @@ def setup_database():
     _add_column(cursor, "hidden_market_leads", "strategy_json", "TEXT")
     _add_column(cursor, "hidden_market_leads", "opportunity_score", "INTEGER")
     _add_column(cursor, "hidden_market_leads", "score_reasons_json", "TEXT")
+    _add_column(cursor, "hidden_market_leads", "warm_contact_id", "INTEGER")
+
+    # Near-miss resolution and channel attribution for the funnel. A first-round
+    # screen-out and a "second by a very small margin" both used to collapse to
+    # interview -> declined; interview_stage_reached / loss_reason separate them.
+    # `channel` records how the application was made (board / recruiter /
+    # warm_referral / direct_outreach) so conversion can be read per channel.
+    _add_column(cursor, "application_outcomes", "interview_stage_reached", "INTEGER")
+    _add_column(cursor, "application_outcomes", "loss_reason", "TEXT")
+    _add_column(cursor, "application_outcomes", "channel", "TEXT")
 
     # Typed fragment fields the LLM produces but the original schema dropped.
     # `keywords` drive activation, `anti_keywords` block misuse, `status`
@@ -936,6 +988,9 @@ def setup_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_application_outcomes_job ON application_outcomes(job_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_application_outcomes_role ON application_outcomes(role_key)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_application_outcomes_outcome ON application_outcomes(outcome)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_application_outcomes_channel ON application_outcomes(channel)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_warm_contacts_org ON warm_contacts(organisation_key)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_warm_contacts_profile ON warm_contacts(profile_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_profile_memory_profile ON profile_memory_fragments(profile_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_profile_memory_theme ON profile_memory_fragments(profile_id, theme)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_profile_memory_scans_profile ON profile_memory_scans(profile_id, scanned_at)")
@@ -1093,6 +1148,16 @@ def setup_database():
         backfill_application_outcomes()
     except Exception as exc:  # never let a backfill hiccup block startup
         print(f"application_outcomes backfill skipped: {exc}", file=sys.stderr)
+
+    # Attribute existing snapshots to an application channel, and re-derive the
+    # dimensional fields of snapshots that were written as orphaned stubs before
+    # event-based recovery existed. Both are individually flag-gated and safe to
+    # call on every launch.
+    try:
+        backfill_outcome_channels()
+        repair_orphaned_outcome_snapshots()
+    except Exception as exc:
+        print(f"application_outcomes repair skipped: {exc}", file=sys.stderr)
 
     print("Database 'job_applications.db' is ready.", file=sys.stderr)
 

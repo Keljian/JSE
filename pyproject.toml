@@ -1,0 +1,31 @@
+# Tooling configuration only. JSE is a local-first desktop app, not a
+# distributable Python package, so there is no [project] table here.
+
+[tool.ruff]
+line-length = 140
+target-version = "py311"
+extend-exclude = [
+    "build",
+    "dist",
+    "release",
+    "installer",
+    "node_modules",
+    "scraper_plugins",
+    ".electron-data",
+]
+
+[tool.ruff.lint]
+# Started deliberately narrow. These are the rules that catch real defects in
+# this codebase — undefined names, unused imports and variables, mutable
+# default arguments, bare excepts — rather than style opinions that would
+# produce a large, low-value first diff. Widen as the monoliths get split.
+select = ["F", "E9", "B006", "B008", "E711", "E712", "E713", "E714", "E722"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test modules import database_manager and db_setup for their side effects on
+# DB_FILE before anything else touches them; that is the point of conftest.
+"tests/conftest.py" = ["F401"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

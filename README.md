@@ -178,6 +178,28 @@ After manual setup, start JSE with:
 npm run start
 ```
 
+### Checks before pushing
+
+CI gates all three platform installer builds on these, so running them locally
+first saves a round trip:
+
+```bash
+python -m pytest tests -q
+```
+
+```bash
+python -m ruff check .
+```
+
+```bash
+npm run lint
+```
+
+Install the development tools with `python -m pip install -r requirements-dev.txt`.
+Python dependencies for a packaged build install from `requirements.lock`, the
+fully pinned tree; regenerate it with `tools/write_requirements_lock.py` after
+changing `requirements.txt`.
+
 ---
 
 ## First-Run Setup In The UI

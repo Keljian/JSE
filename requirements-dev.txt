@@ -1,0 +1,7 @@
+# Development and CI dependencies. Includes the runtime requirements so the
+# test job exercises the same imports the app does — several test modules import
+# scraping helpers, and skipping them silently would defeat the gate.
+-r requirements.txt
+
+pytest>=8.2.0
+ruff>=0.6.0

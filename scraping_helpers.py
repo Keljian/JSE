@@ -12,7 +12,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 
 import database_manager as db
 from concurrency import paused, cancel_event, OperationCancelledError
@@ -103,7 +103,6 @@ def scraper_resource_manager(wait_timeout=10):
             options = _build_chrome_options()
             
             driver = None
-            log = log_callback or print
             try:
                 driver = webdriver.Chrome(options=options)
                 driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
@@ -232,7 +231,7 @@ def scrape_job_details(driver, wait, job_list, log_callback, profile_id=1, job_t
                 retry_count += 1
                 log(f"   ⚠ Attempt {retry_count} failed for '{job_info['title']}': {e}")
                 if retry_count <= max_retries:
-                    log(f"   🔄 Retrying...")
+                    log("   🔄 Retrying...")
                 else:
                     log(f"   ❌ Max retries reached for '{job_info['title']}'")
                     description = f"Job description could not be loaded after {max_retries + 1} attempts for: {job_info['title']}"

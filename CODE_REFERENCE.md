@@ -23,24 +23,50 @@ caffeinated and the commits coming: https://ko-fi.com/keljian
   subprocesses for cancellable work.
 - `electron/preload.cjs` exposes the safe `window.jobAssistant` bridge used by
   React.
-- `src/main.jsx` contains the application UI: dashboard, campaign plan, pipeline,
-  activity, job workspace, document actions, and settings.
+- `src/main.jsx` is the renderer composition root: it owns application state and
+  wires the panels together, and mounts everything inside
+  `src/components/ErrorBoundary.jsx` so a render bug degrades to a readable
+  message instead of a blank window.
+- `src/lib/` holds non-visual code — `constants` (vocabularies and layout
+  constants), `format` (pure formatting/parsing/classification), and `dialogs`
+  (`appConfirm` / `appNotice` / `appPrompt`; the native `window.confirm` family
+  freezes input in this Electron build).
+- `src/components/` holds the UI, layered: `primitives`, `chips`, `panels`,
+  `modals`, `workspace`, `dashboard`, `campaign`, `hiddenMarket`, `settings`.
+  `tests/test_frontend_structure.py` asserts the shape (composition root stays
+  thin, the boundary stays mounted, no native dialogs).
 - `src/styles.css` contains the app theme, layout, responsive rules, and component
   styling.
 
 ## Python Bridge And Workflows
 
-- `python_bridge.py` is the JSON command dispatcher. In `--serve` mode it accepts
-  framed newline-delimited requests from Electron; as a one-shot command it reads
-  JSON from stdin and writes one result/error frame to stdout.
+- `python_bridge.py` is the entrypoint and dispatch table. In `--serve` mode it
+  accepts framed newline-delimited requests from Electron; as a one-shot command
+  it reads JSON from stdin and writes one result/error frame to stdout. The
+  command implementations live in `bridge/`, grouped by command prefix
+  (`runtime`, `documents`, `lanes`, `jobs`, `scrapers`, `intel`, `insights`,
+  `corpus`, `settings`). Each module declares its own `COMMANDS` mapping and
+  `python_bridge.py` merges them, refusing duplicate keys — adding a command
+  means editing one module. `bridge/runtime.py` owns the stdout protocol;
+  `use_protocol_stream` exists because assigning `_OUTPUT_STREAM` from
+  `python_bridge` would bind the name on the wrong module and send every
+  protocol frame to stderr.
+- `facade.py` backs the `database_manager` and `llm_handler` facades. It forwards
+  attribute writes into the package so monkeypatching still reaches the code
+  that runs, and proxies `DB_FILE` / `DATA_DIR` / `_wal_enabled` to
+  `db.connection` so exactly one binding exists. Read its module docstring
+  before changing either facade.
 - `app_logic.py` coordinates long-running workflows: keyword generation, scraping,
   job analysis, live analysis, and application preparation.
 - `concurrency.py` provides shared pause, resume, and cancel events used by LLM
   calls, scrapers, and task loops.
 - `db_setup.py` creates and migrates the SQLite schema.
-- `database_manager.py` owns SQLite access, settings, jobs, pipeline stages,
-  profiles/lanes, scraper metadata, application kits, candidate memory, campaign
-  planning, and dashboard/activity queries.
+- `database_manager.py` is the facade over the `db/` package, which owns SQLite
+  access, settings, jobs, pipeline stages, profiles/lanes, scraper metadata,
+  application kits, candidate memory, campaign planning, and dashboard queries.
+  Layer order (a module imports only from earlier layers): `connection`,
+  `constants`, `text`, `companies`, `settings`, `scrapers`, `lanes`, `outcomes`,
+  `jobs`, `campaign`, `intel`, `dashboard`. Import `database_manager`, not `db`.
 - The **Funnel feedback loop** lives in `database_manager.py`:
   `ensure_application_outcome` / `set_application_outcome` capture and advance the
   immutable `application_outcomes` snapshots on stage transitions;
@@ -51,12 +77,73 @@ caffeinated and the commits coming: https://ko-fi.com/keljian
   interview-validated candidate fragments. Bridge commands: `funnel:insights`,
   `funnel:mineInterviewFragments`, and `jobs:logExternal` (external-application
   capture). `get_interview_hygiene_nudges` powers the dashboard outcome nudges.
+- **Near-miss outcomes and channel attribution** extend that loop:
+  `record_application_outcome_detail` writes the `final_round` / `runner_up`
+  states plus `interview_stage_reached` and `loss_reason`;
+  `application_channel` derives `board` / `recruiter` / `warm_referral` /
+  `direct_outreach`; `backfill_outcome_channels` and
+  `repair_orphaned_outcome_snapshots` are the flag-gated one-shot migrations
+  (`_recover_job_dimensions` rebuilds a deleted job's dimensions from
+  `job_postings`, then `application_events`). Bridge commands:
+  `funnel:outcomeDetail`, `funnel:outcomeVocabulary`.
+- **Targeting** (`database_manager.py`): `PRIOR_CLAMP_BY_DIMENSION` /
+  `PRIOR_SCALE_BY_DIMENSION` give `seniority_band` more authority than the other
+  prior dimensions; `COMPOSITE_MATCH_WEIGHT` / `COMPOSITE_FRAGMENT_WEIGHT` are
+  the named composite weights (60/40, mirrored in `llm_handler._compose_score`
+  and `src/main.jsx`); `seniority_band_yields` and `band_triage_note` expose the
+  observed rate per band for the triage gate; `explain_composite_score` makes a
+  band demotion legible; `get_targeting_summary` powers the Targeting dashboard
+  card. Bridge commands: `targeting:summary`, `targeting:explainScore`.
+- **Warm channel** (`database_manager.py`): `warm_contacts` CRUD
+  (`list_warm_contacts`, `upsert_warm_contact`, `seed_warm_contacts`) is the
+  contact book — deliberately *not* the `people` table, which is the candidate's
+  own identity for `candidate_fragments`. `get_warm_channel_activity` drives the
+  weekly idle nudge. Bridge commands: `hiddenMarket:addTarget` (create a lead
+  against a named employer with no scraped job), `warmContacts:list|save|delete|seed`,
+  `warmChannel:activity`.
+- **Channel warmth on jobs** (`database_manager.py`): `jobs.channel` stores an
+  explicit channel that overrides `application_channel`'s derivation, set via
+  `set_job_channel`. `channel_warmth` derives the ranking dimension
+  (`WARMTH_WARM` / `WARMTH_NAMED` / `WARMTH_COLD`); `warm_contact_index` is the
+  single grouped lookup and `warm_path_for_job` matches a job's real employer
+  against it; `annotate_channel_warmth` attaches channel, warmth and warm path
+  to a batch of job dicts. `_sort_campaign_candidates` ranks warmth ahead of the
+  campaign score. `get_channel_mix` powers the cold-mix dashboard nudge and
+  lists live roles with an untapped contact. Bridge command: `jobs:setChannel`.
+- **Hard-blocker gate and document track** (`python_bridge.py`):
+  `assert_blocker_gate_clear` blocks document generation on a `skip` verdict
+  (overridable via `override_blocker`, recorded as an event) and raises
+  `BlockerGateError`, which the Interested batch treats as skipped rather than
+  failed. Bridge commands: `jobs:setBlockerVerdict`, `jobs:setDocumentTrack`.
+- **Triage packet export** (`python_bridge.py`): `command_jobs_export_shortlist`
+  writes one markdown and/or JSON packet per sweep — ad text, position
+  description, metadata, scores with the stored analysis, gate verdict with
+  blockers and named gaps, and warm-path hits — via `_shortlist_entry` and
+  `_shortlist_markdown` into `shortlists_dir()` (settable with the
+  `shortlists_dir` app setting, so it can be a watched folder). Bridge command:
+  `jobs:exportShortlist`.
 
 ## LLM And Document Generation
 
-- `llm_handler.py` talks to local OpenAI-compatible servers and optional cloud
-  providers. It performs resume triage, job scoring, deep gatekeeping, company
-  research, document content generation, and memory-fragment extraction.
+- `llm_handler.py` is the facade over the `llm/` package, which talks to local
+  OpenAI-compatible servers and optional cloud providers. Layer order:
+  `providers` (the concurrency gate, HTTP transport, the `_call_*` family),
+  `parsing` (reasoning-block stripping, JSON recovery), `prompts`, `analysis`
+  (triage, the hard-blocker gate, full analysis, deep gatekeeping), `documents`,
+  `memory`, `research`. Import `llm_handler`, not `llm`.
+  The hard-blocker gate lives here: `_extract_mandatory_requirements` is the
+  deterministic pre-pass over the ad, `_run_blocker_gate` returns the
+  skip/stretch/clear verdict, `_normalise_blocker_gate` applies the evidence and
+  confidence downgrade rules, and `BLOCKER_SKIP_SCORE_CAP` bounds the score a
+  skipped job can keep. Verdicts persist through
+  `database_manager.update_job_blocker_gate`; `python_bridge.assert_blocker_gate_clear`
+  enforces them at document generation.
+- `rich_application.py` carries the two-track document strategy:
+  `resume_task(track)` and `cover_task(today, name, track)` swap in the
+  stripped-back briefs, and `generate_rich(..., document_track=...)` selects
+  them. The track itself is resolved by `database_manager.document_track` /
+  `resolve_document_track` from the gate's `seniority_direction`, the title
+  band, and the salary band, with `jobs.document_track` as a manual override.
 - `context_library.py` indexes resumes, cover letters, KSC responses, PDFs, and
   other candidate evidence into a local TF-IDF retrieval store.
 - `corpus_miner.py` mines reusable candidate-memory fragments from indexed
@@ -88,11 +175,19 @@ caffeinated and the commits coming: https://ko-fi.com/keljian
 - `settings/local_llm_settings.json` stores Local endpoint URL, model, and
   optional local API key.
 - `requirements.txt`, `package.json`, and `vite.config.js` describe runtime and
-  build dependencies.
+  build dependencies. `requirements.lock` is the fully pinned tree the
+  runtime-prep scripts and the CI cache actually use; regenerate it with
+  `tools/write_requirements_lock.py`. `pyproject.toml` holds the ruff and pytest
+  configuration; `eslint.config.mjs` holds the renderer lint rules.
+- `defaults/` is the only first-run content packaged into the installer, and it
+  must stay neutral and committed. `search_terms.json` and `scraper_plugins/` at
+  the repo root are gitignored personal runtime data and are not packaged; see
+  `defaults/README.md` for why, and `tests/test_packaging_manifest.py` for the
+  assertions that keep it that way.
 - Generated search terms are stored per lane in the database (`lane_terms`
   table, via `database_manager.save_lane_terms` / `get_lane_terms`).
-  `search_terms.json` is a legacy seed file that the Electron shell copies into
-  the writable workspace; the Python backend no longer reads it.
+  `defaults/search_terms.json` is a legacy seed file that the Electron shell
+  copies into the writable workspace; the Python backend no longer reads it.
 - `settings/`, `applications/`, `older_applications/`, `Application templates/`,
   `Resumes/`, `Backups/`, `.electron-data/`, `dist/`, `build/`, `release/`,
   `installer/`, and `node_modules/` are runtime, generated, packaged, or
@@ -107,3 +202,5 @@ caffeinated and the commits coming: https://ko-fi.com/keljian
   memory.
 - Do not store live API keys, personal contact details, generated resumes, or the
   local SQLite database in source files or packaged defaults.
+- Run `python -m pytest tests -q`, `python -m ruff check .`, and `npm run lint`
+  before pushing; CI gates all three platform installer builds on them.

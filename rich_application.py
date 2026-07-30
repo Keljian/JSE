@@ -231,7 +231,48 @@ RESUME_TASK = (
 )
 
 
-def cover_task(today, name):
+# --- Two-track document strategy --------------------------------------------
+# Overqualification screening is a measured rejection cause on support-grade
+# roles. On that track the same senior evidence that wins a Head-of role is what
+# gets the application binned, so the documents are written to a different
+# brief: scope matched to the ad, and the level question answered in the letter
+# rather than left for the screener to answer for you.
+
+STRIPPED_RESUME_BRIEF = (
+    "\n\nTRACK: STRIPPED BACK. This role is scoped below the candidate's demonstrated ceiling, so a "
+    "full senior resume will be screened out as overqualified before a human reads it. Write to the ad's "
+    "actual scope:\n"
+    "- Lead the professional summary with the work THIS role asks for, described at THIS role's level. Do not "
+    "open with head-of-function or strategic framing.\n"
+    "- Keep the same real employers, titles and dates — never misrepresent history. Change emphasis and depth, "
+    "not facts.\n"
+    "- Prefer achievements that show hands-on delivery of the ad's duties over budget ownership, headcount, "
+    "board reporting, or org-design outcomes. Drop senior-scope bullets that do not map to the ad.\n"
+    "- Three to five bullets for the most relevant roles; one or two for the rest.\n"
+    "- Do not pad Key Skills with capabilities the role has no use for."
+)
+
+SENIOR_RESUME_BRIEF = (
+    "\n\nTRACK: FULL SENIOR. The role matches the candidate's level, so lead with ownership, scope and "
+    "quantified outcomes at their demonstrated ceiling."
+)
+
+STRIPPED_COVER_BRIEF = (
+    "\n- POSITIONING: this role sits below the candidate's demonstrated ceiling. A screener will see that "
+    "and assume the candidate will leave, or is applying as a stopgap. Answer it directly in the letter, in "
+    "one honest sentence early on: say plainly why this role and this employer are wanted now. Do not "
+    "pretend the seniority difference does not exist, do not apologise for it, and do not overclaim "
+    "long-term commitment the evidence cannot support. Then spend the rest of the letter on evidence that "
+    "the candidate can and will do THIS job well."
+)
+
+
+def resume_task(track="senior"):
+    """The resume brief for a document track. See STRIPPED_RESUME_BRIEF."""
+    return RESUME_TASK + (STRIPPED_RESUME_BRIEF if track == "stripped_back" else SENIOR_RESUME_BRIEF)
+
+
+def cover_task(today, name, track="senior"):
     return (
         "TASK: Using only the evidence and job above, write a tailored cover letter, mirroring the authentic "
         "voice/tone of the candidate's PRIOR COVER LETTERS.\n"
@@ -240,6 +281,7 @@ def cover_task(today, name):
         f"metrics; `Yours sincerely,`; {name}.\n"
         "Keep the entire letter to 400 words or fewer so it fits on one page. "
         "No sender contact header (the renderer adds it). Output ONLY the letter text."
+        + (STRIPPED_COVER_BRIEF if track == "stripped_back" else "")
     )
 
 
@@ -565,7 +607,8 @@ def _review(caller, context_block, job, resume_md, cover_txt):
 # --------------------------------------------------------------------------- #
 def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
                   source_resume_text=None, additional_candidate_context="",
-                  log=print, out_dir="applications", conn=None, do_review=True):
+                  log=print, out_dir="applications", conn=None, do_review=True,
+                  document_track="senior"):
     owns_conn = conn is None
     if conn is None:
         conn = sqlite3.connect(str(clib.DB_PATH)); conn.row_factory = sqlite3.Row
@@ -607,10 +650,11 @@ def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
     session = build_session(settings, GENERIC_SYSTEM, job_brief, log=log)
     provider_label = session.label
     try:
-        log(f"Authoring resume with {provider_label}…")
-        resume_md = session.ask(RESUME_TASK).strip()
+        track = document_track if document_track in ("senior", "stripped_back") else "senior"
+        log(f"Authoring resume with {provider_label} on the {track.replace('_', ' ')} track…")
+        resume_md = session.ask(resume_task(track)).strip()
         log("Authoring cover letter…")
-        cover_txt = session.ask(cover_task(today, f"{info['first_name']} {info['last_name']}")).strip()
+        cover_txt = session.ask(cover_task(today, f"{info['first_name']} {info['last_name']}", track)).strip()
 
         review = {}
         if do_review:
@@ -637,6 +681,7 @@ def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
     mdpath.write_text(json.dumps({
         "resume_markdown": resume_md, "cover_letter_text": cover_txt,
         "evidence_used": selected, "review": review, "provider": provider_label,
+        "document_track": track,
         "additional_candidate_context_included": bool(additional_candidate_context),
         "additional_candidate_context": additional_candidate_context,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -650,4 +695,5 @@ def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
         "content_json_path": str(mdpath), "provider": provider_label,
         "review": review, "evidence_used": selected,
         "resume_markdown": resume_md, "cover_letter_text": cover_txt,
+        "document_track": track,
     }

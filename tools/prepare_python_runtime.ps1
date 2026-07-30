@@ -8,7 +8,13 @@ $runtimeDir = Join-Path $buildDir "python"
 $runtimePython = Join-Path $runtimeDir "python.exe"
 $embedZip = Join-Path $cacheDir "python-$pythonVersion-embed-amd64.zip"
 $getPip = Join-Path $cacheDir "get-pip.py"
-$requirements = Join-Path $root "requirements.txt"
+# Install from the fully pinned lock so two builds of the same commit ship the
+# same dependency tree. requirements.txt states intent; requirements.lock is
+# what actually gets installed.
+$requirements = Join-Path $root "requirements.lock"
+if (!(Test-Path $requirements)) {
+  $requirements = Join-Path $root "requirements.txt"
+}
 
 New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
 

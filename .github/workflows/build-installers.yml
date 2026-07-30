@@ -50,9 +50,52 @@ jobs:
             exit 1
           fi
 
+  # Fast gate on the whole matrix below. Three platform builds taking ~20
+  # minutes each to produce installers from code that fails its own tests is
+  # the expensive way to find out.
+  test:
+    name: Tests and lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Lint Python
+        run: python -m ruff check .
+
+      - name: Lint JavaScript
+        run: npm run lint
+
+      - name: Run Python tests
+        run: python -m pytest tests -q
+
+      - name: Type-free renderer build check
+        run: npm run build
+
   windows:
     name: Windows x64
-    needs: verify-version
+    needs:
+      - verify-version
+      - test
     runs-on: windows-latest
     steps:
       - name: Check out source
@@ -68,7 +111,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: build/cache
-          key: windows-python-runtime-${{ hashFiles('requirements.txt', 'tools/prepare_python_runtime.ps1') }}
+          key: windows-python-runtime-${{ hashFiles('requirements.lock', 'tools/prepare_python_runtime.ps1') }}
 
       - name: Prepare bundled Python
         shell: pwsh
@@ -113,7 +156,9 @@ jobs:
 
   macos:
     name: macOS ${{ matrix.label }}
-    needs: verify-version
+    needs:
+      - verify-version
+      - test
     strategy:
       fail-fast: false
       matrix:
@@ -139,7 +184,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: build/cache
-          key: macos-${{ matrix.arch }}-python-runtime-${{ hashFiles('requirements.txt', 'tools/prepare_python_runtime_mac.sh') }}
+          key: macos-${{ matrix.arch }}-python-runtime-${{ hashFiles('requirements.lock', 'tools/prepare_python_runtime_mac.sh') }}
 
       - name: Prepare bundled Python
         shell: bash
@@ -190,7 +235,9 @@ jobs:
 
   linux:
     name: Ubuntu x64
-    needs: verify-version
+    needs:
+      - verify-version
+      - test
     runs-on: ubuntu-22.04
     steps:
       - name: Check out source
@@ -206,7 +253,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: build/cache
-          key: linux-x64-python-runtime-${{ hashFiles('requirements.txt', 'tools/prepare_python_runtime_linux.sh') }}
+          key: linux-x64-python-runtime-${{ hashFiles('requirements.lock', 'tools/prepare_python_runtime_linux.sh') }}
 
       - name: Prepare bundled Python
         shell: bash

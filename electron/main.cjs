@@ -114,11 +114,21 @@ function prepareWritableWorkspace() {
   fs.mkdirSync(path.join(runtimeRootDir, "older_applications"), { recursive: true });
   for (const item of [
     "job_applications.db",
-    "search_terms.json",
     "Application templates",
     "Resumes"
   ]) {
     copySeedItem(path.join(rootDir, item), path.join(userDataDir, item));
+  }
+  // Neutral first-run content ships in defaults/ and is copied out on first
+  // launch. The live search_terms.json and scraper_plugins/ are personal
+  // runtime data and are no longer packaged: an installer built on a dev
+  // machine used to embed whichever ones happened to be sitting in the repo,
+  // so the same commit produced different apps depending on who built it.
+  for (const [source, destination] of [
+    ["search_terms.json", path.join(userDataDir, "search_terms.json")],
+    ["scraper_plugins", path.join(userDataDir, "scraper_plugins")]
+  ]) {
+    copySeedItem(path.join(rootDir, "defaults", source), destination);
   }
 }
 

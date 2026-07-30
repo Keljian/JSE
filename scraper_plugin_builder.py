@@ -777,7 +777,7 @@ def _builder_prompt(answers, recon=None, feedback=None):
         f'- manifest.mode must be "{mode}". ({mode_note})',
         "- config_schema should include base_url, company_name, location, max_pages, test_keyword.",
         "- scraper.py must define:",
-        f'    def scrape(keyword, status_callback=None, log_callback=None, profile_id=1,',
+        '    def scrape(keyword, status_callback=None, log_callback=None, profile_id=1,',
         f'               base_url="", company_name="", location="", max_pages={max_pages}, dry_run=False, **config):',
         f'- default keyword for testing: "{default_keyword}", page limit: {max_pages}.',
         "- Keep scraper_code concise (under 150 lines). Use helpers — do not reinvent WebDriver setup or detail loops.",

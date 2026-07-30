@@ -25,8 +25,12 @@ Application templates/
 job_applications.db
 *.db-wal
 *.db-shm
+# Orphaned SQLite WAL/shm left behind when an open database file is replaced.
+.fuse_hidden*
 .test_analyses.json
-search_terms.json
-scraper_plugins/
+# Personal runtime copies only. The leading slash matters: neutral, shippable
+# equivalents live in defaults/ and must stay tracked.
+/search_terms.json
+/scraper_plugins/
 external_scrapers/
 *.scraper-plugin.zip
