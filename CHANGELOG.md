@@ -4,6 +4,8 @@ All notable changes to JSE are documented here.
 
 ## Unreleased
 
+## 1.0.0-beta.2 - 2026-07-31
+
 ### Added
 
 - Added **job flags**. Triage now scores a role and raises flags on it in the

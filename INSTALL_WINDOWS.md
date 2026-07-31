@@ -12,7 +12,7 @@ found malware; it means Windows cannot verify a publisher certificate.
    the release. In PowerShell, run:
 
    ```powershell
-   Get-FileHash .\JSE-1.0.0-beta.1-x64-unsigned-beta.exe -Algorithm SHA256
+   Get-FileHash .\JSE-1.0.0-beta.2-x64-unsigned-beta.exe -Algorithm SHA256
    ```
 
 3. Install Google Chrome if it is not already installed. Browser-based searchers
