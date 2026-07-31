@@ -298,105 +298,153 @@ def _update_existing_scraped_job(conn, job_id, job_data, metadata, fingerprint=N
     conn.execute(f"UPDATE jobs SET {', '.join(assignments)} WHERE id = ?", params)
 
 
-BLOCKER_VERDICTS = ("skip", "stretch", "clear", "unknown")
+# --- Job flags --------------------------------------------------------------
+# Flags are observations recorded against a job: the specific, checkable
+# concerns raised at triage. They deliberately do not gate anything — no code
+# path branches on them — so they are stored beside the score rather than
+# folded into it.
+
+JOB_FLAG_TYPES = (
+    "credential_gate", "domain_mismatch", "seniority_below", "seniority_above", "evidence_gap",
+)
+
+JOB_FLAG_LABELS = {
+    "credential_gate": "Credential gate",
+    "domain_mismatch": "Domain mismatch",
+    "seniority_below": "Below your level",
+    "seniority_above": "Above your level",
+    "evidence_gap": "Evidence gap",
+}
 
 
-def normalize_blocker_verdict(value):
-    """Coerce a blocker-gate verdict to one of BLOCKER_VERDICTS.
+def normalize_flag_type(value):
+    """Coerce a flag type to one of JOB_FLAG_TYPES.
 
-    Anything unrecognised becomes 'unknown', which never blocks downstream
-    work — an unreadable verdict must fail open, not silently kill a role.
+    Unrecognised types become "evidence_gap" rather than being dropped: the
+    requirement text is the valuable part, and losing an observation because
+    its label was misspelled would be the wrong trade.
     """
-    verdict = str(value or "").strip().lower().replace("-", "_")
-    if verdict in {"stretch_with_named_gaps", "stretch_with_gaps"}:
-        return "stretch"
-    if verdict in {"clear_fit", "clear"}:
-        return "clear"
-    return verdict if verdict in BLOCKER_VERDICTS else "unknown"
+    flag_type = str(value or "").strip().lower().replace("-", "_")
+    return flag_type if flag_type in JOB_FLAG_TYPES else "evidence_gap"
 
 
-def update_job_blocker_gate(job_id, verdict, reason, payload=None):
-    """Persist the hard-blocker gate verdict for a job.
+def _flag_summary_types(flags):
+    """Denormalised type list, so SQL can filter without parsing JSON."""
+    seen = []
+    for flag in flags:
+        if flag["type"] not in seen:
+            seen.append(flag["type"])
+    return ",".join(seen)
 
-    Stored separately from match_score on purpose: the verdict answers "should
-    this be applied for at all", which is a different question from "how well
-    does the resume match". Document generation reads the verdict; ranking
-    reads the score.
+
+def update_job_flags(job_id, payload, replace_manual=False):
+    """Store the flags raised for a job.
+
+    Manual flags survive re-analysis by default. Someone who added "recruiter
+    would not name the client" does not want it erased the next time triage
+    runs, and re-deriving it is not possible — only the person knows.
     """
-    verdict = normalize_blocker_verdict(verdict)
+    payload = payload or {}
+    incoming = []
+    for flag in payload.get("flags") or []:
+        requirement = str(flag.get("requirement") or "").strip()
+        if not requirement:
+            continue
+        flag_type = normalize_flag_type(flag.get("type"))
+        confidence = str(flag.get("confidence") or "").strip().lower()
+        incoming.append({
+            "type": flag_type,
+            "label": JOB_FLAG_LABELS[flag_type],
+            "requirement": requirement,
+            "detail": str(flag.get("detail") or "").strip(),
+            "confidence": confidence if confidence in {"high", "medium", "low"} else "low",
+            "source": "manual" if str(flag.get("source") or "") == "manual" else "auto",
+        })
+
+    if not replace_manual:
+        existing = (get_job_flags(job_id) or {}).get("flags") or []
+        manual = [flag for flag in existing if flag.get("source") == "manual"]
+        incoming = [flag for flag in incoming if flag.get("source") != "manual"] + manual
+
+    record = {
+        "flags": incoming,
+        "domain_match": str(payload.get("domain_match") or "").strip(),
+        "seniority_match": str(payload.get("seniority_match") or "").strip(),
+        "seniority_direction": str(payload.get("seniority_direction") or "unknown").strip().lower(),
+        "summary": str(payload.get("summary") or "").strip(),
+    }
     now = datetime.now().isoformat(timespec="seconds")
-    blob = None
-    if payload is not None:
-        try:
-            blob = json.dumps(payload, ensure_ascii=False)
-        except (TypeError, ValueError):
-            blob = None
     with get_db_connection() as conn:
         conn.execute(
             """
             UPDATE jobs
-            SET blocker_verdict = ?,
-                blocker_reason = ?,
-                blocker_json = ?,
-                blocker_checked_at = ?,
+            SET job_flags_json = ?,
+                job_flags_types = ?,
+                job_flags_checked_at = ?,
                 updated_at = ?
             WHERE id = ?
             """,
-            (verdict, str(reason or "").strip() or None, blob, now, now, job_id),
+            (
+                json.dumps(record, ensure_ascii=False),
+                _flag_summary_types(incoming) or None,
+                now,
+                now,
+                job_id,
+            ),
         )
         conn.commit()
-    return verdict
+    return record
 
 
-def clear_job_blocker_gate(job_id, reset_analysis=True):
-    """Drop a stored blocker verdict so the next analysis re-runs the gate.
-
-    Also clears analysis_signature by default: clearing a verdict means the
-    user disagreed with the gate, and the job is only genuinely reconsidered if
-    the next sweep actually re-analyses it rather than skipping it as unchanged.
-    """
-    now = datetime.now().isoformat(timespec="seconds")
-    signature_clause = ", analysis_signature = NULL" if reset_analysis else ""
-    with get_db_connection() as conn:
-        conn.execute(
-            f"""
-            UPDATE jobs
-            SET blocker_verdict = NULL,
-                blocker_reason = NULL,
-                blocker_json = NULL,
-                blocker_checked_at = NULL{signature_clause},
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (now, job_id),
-        )
-        conn.commit()
-
-
-def get_job_blocker_gate(job_id):
-    """Return the stored blocker verdict for a job as a plain dict."""
+def get_job_flags(job_id):
+    """Return the stored flags for a job as a plain dict."""
     with get_db_connection() as conn:
         row = conn.execute(
-            """
-            SELECT blocker_verdict, blocker_reason, blocker_json, blocker_checked_at
-            FROM jobs WHERE id = ?
-            """,
+            "SELECT job_flags_json, job_flags_checked_at FROM jobs WHERE id = ?",
             (job_id,),
         ).fetchone()
     if not row:
         return None
-    details = {}
-    if row["blocker_json"]:
+    record = {}
+    if row["job_flags_json"]:
         try:
-            details = json.loads(row["blocker_json"]) or {}
+            record = json.loads(row["job_flags_json"]) or {}
         except (TypeError, ValueError):
-            details = {}
-    return {
-        "verdict": normalize_blocker_verdict(row["blocker_verdict"]),
-        "reason": row["blocker_reason"] or "",
-        "checked_at": row["blocker_checked_at"] or "",
-        "details": details,
-    }
+            record = {}
+    record.setdefault("flags", [])
+    record.setdefault("summary", "")
+    record.setdefault("seniority_direction", "unknown")
+    record["checked_at"] = row["job_flags_checked_at"] or ""
+    return record
+
+
+def add_job_flag(job_id, flag_type, requirement, detail="", confidence="high"):
+    """Add a flag by hand. Marked manual so re-analysis will not erase it."""
+    record = get_job_flags(job_id) or {"flags": []}
+    record["flags"] = list(record.get("flags") or []) + [{
+        "type": normalize_flag_type(flag_type),
+        "requirement": str(requirement or "").strip(),
+        "detail": str(detail or "").strip(),
+        "confidence": confidence,
+        "source": "manual",
+    }]
+    return update_job_flags(job_id, record, replace_manual=True)
+
+
+def dismiss_job_flag(job_id, requirement):
+    """Remove one flag by its requirement text."""
+    record = get_job_flags(job_id) or {"flags": []}
+    target = str(requirement or "").strip().lower()
+    record["flags"] = [
+        flag for flag in record.get("flags") or []
+        if str(flag.get("requirement") or "").strip().lower() != target
+    ]
+    return update_job_flags(job_id, record, replace_manual=True)
+
+
+def clear_job_flags(job_id):
+    """Drop every flag on a job, including manual ones."""
+    return update_job_flags(job_id, {"flags": []}, replace_manual=True)
 
 
 def update_job_fragment_alignment(job_id, fragment_score, composite_score, alignment_json):
@@ -1530,7 +1578,7 @@ PIPELINE_SUMMARY_COLUMNS = (
     "feedback", "notes", "next_action", "next_action_date", "retired_reason",
     "last_interaction_at", "date_scraped", "updated_at",
     "employer_type", "actual_company", "advertiser_company", "company_confidence",
-    "blocker_verdict", "blocker_reason", "channel",
+    "job_flags_types", "job_flags_json", "channel",
 )
 
 

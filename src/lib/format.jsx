@@ -77,7 +77,26 @@ function primaryScore(job) {
   return hasFragment ? Math.round((0.80 * match) + (0.20 * Number(job.fragment_score || 0))) : match;
 }
 
-const blockerVerdictOf = (job) => String(job?.blocker_verdict || "").trim().toLowerCase();
+// Flags arrive either as the parsed record (workspace) or as the denormalised
+// type list the board query returns. Read both so callers do not have to care.
+const jobFlagsOf = (job) => {
+  const record = job?.job_flags;
+  if (record && Array.isArray(record.flags)) return record.flags;
+  if (typeof job?.job_flags_json === "string" && job.job_flags_json) {
+    try {
+      const parsed = JSON.parse(job.job_flags_json);
+      if (Array.isArray(parsed?.flags)) return parsed.flags;
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+const jobFlagTypesOf = (job) => {
+  const types = String(job?.job_flags_types || "").split(",").filter(Boolean);
+  return types.length ? types : jobFlagsOf(job).map((flag) => flag.type).filter(Boolean);
+};
 
 function displayFileName(value) {
   const text = String(value || "").trim();
@@ -202,4 +221,4 @@ function countBy(items, key, fallback = "unknown") {
   }, {});
 }
 
-export { normalizeStage, canMoveToInterested, openSupportLink, documentAiLabel, todayPlus, formatDate, closingDateSourceMeta, formatBytes, toErrorMessage, scoreClass, primaryScore, blockerVerdictOf, displayFileName, isWordDocumentPath, parseJsonObject, isWeakCompanyName, parseAnalysisReport, actionMeta, gateDecisionMeta, hasCompanyResearch, toDateTimeInputValue, countBy };
+export { normalizeStage, canMoveToInterested, openSupportLink, documentAiLabel, todayPlus, formatDate, closingDateSourceMeta, formatBytes, toErrorMessage, scoreClass, primaryScore, jobFlagsOf, jobFlagTypesOf, displayFileName, isWordDocumentPath, parseJsonObject, isWeakCompanyName, parseAnalysisReport, actionMeta, gateDecisionMeta, hasCompanyResearch, toDateTimeInputValue, countBy };

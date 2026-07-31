@@ -138,12 +138,13 @@ def setup_database():
     _add_column(cursor, "jobs", "company_research_updated_at", "TEXT")
     _add_column(cursor, "jobs", "last_seen_at", "TEXT")
     _add_column(cursor, "jobs", "missing_sweeps", "INTEGER DEFAULT 0")
-    # Hard-blocker gate: a decisive skip / stretch / clear verdict recorded
-    # between triage and full analysis. 'skip' blocks document generation.
-    _add_column(cursor, "jobs", "blocker_verdict", "TEXT")
-    _add_column(cursor, "jobs", "blocker_reason", "TEXT")
-    _add_column(cursor, "jobs", "blocker_json", "TEXT")
-    _add_column(cursor, "jobs", "blocker_checked_at", "TEXT")
+    # Flags raised at triage: specific, checkable concerns recorded against a
+    # job. They gate nothing, so they live beside the score rather than in it.
+    # job_flags_types is a denormalised comma-separated type list so the board
+    # can filter without parsing JSON for every row.
+    _add_column(cursor, "jobs", "job_flags_json", "TEXT")
+    _add_column(cursor, "jobs", "job_flags_types", "TEXT")
+    _add_column(cursor, "jobs", "job_flags_checked_at", "TEXT")
     # Channel warmth on the job itself, not only on the outcome snapshot: how an
     # application would reach the employer has to be known while the role is
     # still being ranked, not just after it has been sent.

@@ -110,18 +110,21 @@ caffeinated and the commits coming: https://ko-fi.com/keljian
   to a batch of job dicts. `_sort_campaign_candidates` ranks warmth ahead of the
   campaign score. `get_channel_mix` powers the cold-mix dashboard nudge and
   lists live roles with an untapped contact. Bridge command: `jobs:setChannel`.
-- **Hard-blocker gate and document track** (`python_bridge.py`):
-  `assert_blocker_gate_clear` blocks document generation on a `skip` verdict
-  (overridable via `override_blocker`, recorded as an event) and raises
-  `BlockerGateError`, which the Interested batch treats as skipped rather than
-  failed. Bridge commands: `jobs:setBlockerVerdict`, `jobs:setDocumentTrack`.
-- **Triage packet export** (`python_bridge.py`): `command_jobs_export_shortlist`
-  writes one markdown and/or JSON packet per sweep — ad text, position
-  description, metadata, scores with the stored analysis, gate verdict with
-  blockers and named gaps, and warm-path hits — via `_shortlist_entry` and
-  `_shortlist_markdown` into `shortlists_dir()` (settable with the
-  `shortlists_dir` app setting, so it can be a watched folder). Bridge command:
-  `jobs:exportShortlist`.
+- **Job flags** (`db/jobs.py`): `update_job_flags` / `get_job_flags` /
+  `add_job_flag` / `dismiss_job_flag` / `clear_job_flags` store the flags raised
+  at triage. `job_flags_json` holds the record; `job_flags_types` is a
+  denormalised comma-separated type list so the board can filter without parsing
+  JSON per row. Manual flags carry `source: "manual"` and survive re-analysis.
+  Nothing branches on a flag: `bridge.jobs.report_job_flags` only writes them to
+  the task log during generation. Bridge commands: `jobs:addFlag`,
+  `jobs:dismissFlag`, `jobs:clearFlags`, `jobs:setDocumentTrack`.
+- **Triage packet export** (`bridge/jobs.py`): `command_jobs_export_shortlist`
+  writes one markdown and/or JSON packet per sweep (ad text, position
+  description, metadata, scores with the stored analysis, flags, and warm-path
+  hits) via `_shortlist_entry` and `_shortlist_markdown` into `shortlists_dir()`,
+  settable with the `shortlists_dir` app setting so it can be a watched folder.
+  Flagged roles stay in the packet by default; callers may narrow it with
+  `exclude_flags`. Bridge command: `jobs:exportShortlist`.
 
 ## LLM And Document Generation
 
@@ -129,21 +132,20 @@ caffeinated and the commits coming: https://ko-fi.com/keljian
   OpenAI-compatible servers and optional cloud providers. Layer order:
   `providers` (the concurrency gate, HTTP transport, the `_call_*` family),
   `parsing` (reasoning-block stripping, JSON recovery), `prompts`, `analysis`
-  (triage, the hard-blocker gate, full analysis, deep gatekeeping), `documents`,
-  `memory`, `research`. Import `llm_handler`, not `llm`.
-  The hard-blocker gate lives here: `_extract_mandatory_requirements` is the
-  deterministic pre-pass over the ad, `_run_blocker_gate` returns the
-  skip/stretch/clear verdict, `_normalise_blocker_gate` applies the evidence and
-  confidence downgrade rules, and `BLOCKER_SKIP_SCORE_CAP` bounds the score a
-  skipped job can keep. Verdicts persist through
-  `database_manager.update_job_blocker_gate`; `python_bridge.assert_blocker_gate_clear`
-  enforces them at document generation.
+  (triage, full analysis, deep gatekeeping), `documents`, `memory`, `research`.
+  Import `llm_handler`, not `llm`.
+  Flagging lives inside triage: `_triage_job` scores the role and raises flags in
+  one call, `_extract_mandatory_requirements` is the deterministic pre-pass that
+  hands it the ad's own "must have" lines, `_normalise_job_flags` drops any flag
+  that fails to name a requirement, and `_persist_flags` writes them without ever
+  raising. Triage receives the full advertisement rather than an extract.
 - `rich_application.py` carries the two-track document strategy:
   `resume_task(track)` and `cover_task(today, name, track)` swap in the
   stripped-back briefs, and `generate_rich(..., document_track=...)` selects
   them. The track itself is resolved by `database_manager.document_track` /
-  `resolve_document_track` from the gate's `seniority_direction`, the title
-  band, and the salary band, with `jobs.document_track` as a manual override.
+  `resolve_document_track` from the `seniority_direction` triage reported, the
+  title band, and the salary band, with `jobs.document_track` as a manual
+  override.
 - `context_library.py` indexes resumes, cover letters, KSC responses, PDFs, and
   other candidate evidence into a local TF-IDF retrieval store.
 - `corpus_miner.py` mines reusable candidate-memory fragments from indexed

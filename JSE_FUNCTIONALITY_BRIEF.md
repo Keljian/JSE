@@ -28,15 +28,16 @@ resume, search settings, matching rules, templates, and preferences.
 2. Analyse job fit
    - Uses local OpenAI-compatible models, Gemini, Claude, OpenAI, or compatible
      APIs depending on settings.
-   - Runs a staged scoring flow: resume triage cache, fast keep/discard triage,
-     a hard-blocker gate, evidence-anchored full analysis, and strict deep
-     gatekeeping for high-scoring roles.
-   - The hard-blocker gate is the only stage allowed to return a decisive "don't
-     apply". It checks three things and nothing else — an unmet mandatory
-     credential or eligibility gate, a core domain mismatch, and seniority
-     misalignment in either direction — and returns skip, stretch (with named
-     gaps the later stages must answer rather than reframe), or clear. A skip
-     stops full analysis and blocks document generation until overridden.
+   - Runs a staged scoring flow: resume triage cache, triage, evidence-anchored
+     full analysis, and strict deep gatekeeping for high-scoring roles.
+   - Triage scores the role and raises flags on it in the same call, reading the
+     full advertisement. Flags cover unmet mandatory credentials, domain
+     mismatches, seniority misalignment in either direction, and concrete
+     evidence gaps. Each one names the ad's own requirement and why the resume
+     does not meet it.
+   - Flags are shown, never enforced. They do not block document generation,
+     change a score, or remove a role from any list. You can dismiss one, or add
+     your own, and your own survive re-analysis.
    - Blends fit analysis with candidate-memory fragments from prior validated
      documents.
    - Supports re-analysis by stage, by selected job IDs, or by full pipeline.
@@ -158,7 +159,7 @@ data areas include:
 - Company research and company profile information.
 - Resume triage cache, candidate fragments, and lane fragment affinities.
 - Generated document source tracking.
-- Blocker-gate verdicts, application channel, and document track per job.
+- Job flags, application channel, and document track per job.
 - Warm contacts and hidden-market leads.
 - Exported triage packets under `shortlists/`.
 
@@ -173,9 +174,9 @@ data areas include:
 - API keys and personal data should stay in local settings or untracked data
   files, not in source files or packaged defaults. Only `defaults/` is packaged
   into the installer, and it must contain nothing personal.
-- Screening is allowed to say no. The blocker gate returns a decisive skip when
-  a hard blocker fires, and that skip actually stops document generation rather
-  than being one more opinion in the analysis text.
+- Screening informs, it does not decide. Triage raises flags on a role and the
+  app shows them wherever that role appears, but no flag blocks an action. The
+  person using JSE decides which roles are worth applying for.
 
 ## One-Sentence Summary
 

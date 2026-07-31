@@ -1,10 +1,10 @@
-/** Detail panels: blocker gate, channel, document track, company, analysis. */
-import React, { useMemo } from "react";
-import { Loader2, Sparkles } from "lucide-react";
-import { BLOCKER_CHIPS, CHANNEL_OPTIONS, DOC_TRACK_OPTIONS } from "../lib/constants";
-import { actionMeta, blockerVerdictOf, gateDecisionMeta, isWeakCompanyName, parseAnalysisReport, parseJsonObject, scoreClass } from "../lib/format";
+/** Detail panels: flags, channel, document track, company, analysis. */
+import React, { useMemo, useState } from "react";
+import { Check, Loader2, Plus, Sparkles, X } from "lucide-react";
+import { CHANNEL_OPTIONS, DOC_TRACK_OPTIONS, JOB_FLAG_FILTERS } from "../lib/constants";
+import { actionMeta, gateDecisionMeta, isWeakCompanyName, parseAnalysisReport, parseJsonObject, scoreClass } from "../lib/format";
 import { ValueList } from "../components/primitives";
-import { BlockerChip, WarmthChip } from "../components/chips";
+import { JobFlagChips, WarmthChip } from "../components/chips";
 
 function DocumentTrackBlock({ job, onSetTrack }) {
   const resolved = job?.document_track_resolved;
@@ -74,45 +74,86 @@ function ChannelBlock({ job, onSetChannel }) {
   );
 }
 
-function BlockerGateBlock({ job, onSetVerdict }) {
-  const verdict = blockerVerdictOf(job);
-  const gate = job?.blocker_gate?.details || {};
-  const hardBlockers = Array.isArray(gate.hard_blockers) ? gate.hard_blockers : [];
-  const namedGaps = Array.isArray(gate.named_gaps) ? gate.named_gaps : [];
-  if (!BLOCKER_CHIPS[verdict]) {
-    return (
-      <section className="blocker-gate-block">
-        <h3>Hard-blocker gate</h3>
-        <p className="muted">Not yet checked. The gate runs between triage and full analysis.</p>
-        <div className="button-row">
-          <button className="secondary" onClick={() => onSetVerdict("skip", "Marked as skip manually.")}>Mark as skip</button>
-        </div>
-      </section>
-    );
-  }
+function JobFlagsBlock({ job, onDismissFlag, onAddFlag, onClearFlags }) {
+  const record = job?.job_flags || {};
+  const flags = Array.isArray(record.flags) ? record.flags : [];
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ type: "evidence_gap", requirement: "", detail: "" });
+
+  const submit = () => {
+    if (!draft.requirement.trim()) return;
+    onAddFlag(draft);
+    setDraft({ type: "evidence_gap", requirement: "", detail: "" });
+    setAdding(false);
+  };
+
   return (
-    <section className="blocker-gate-block">
-      <h3>Hard-blocker gate <BlockerChip job={job} /></h3>
-      <p>{String(job?.blocker_reason || "").trim() || "No reason recorded."}</p>
-      {gate.confidence ? <p className="muted">Confidence: {gate.confidence}{gate.downgraded_from ? ` · downgraded from ${gate.downgraded_from}` : ""}</p> : null}
-      {hardBlockers.length ? (
-        <>
-          <h4>Hard blockers</h4>
-          <ul>{hardBlockers.map((item, i) => <li key={i}><strong>{item.requirement}</strong>{item.why_unmet ? ` — ${item.why_unmet}` : ""}</li>)}</ul>
-        </>
+    <section className="job-flags-block">
+      <h3>Flags <JobFlagChips job={job} /></h3>
+      <p className="muted">
+        {record.summary
+          || (record.checked_at ? "Nothing stood out at triage." : "Not checked yet. Flags are raised when this job is analysed.")}
+      </p>
+      {record.seniority_match ? (
+        <p className="muted">Level: {record.seniority_match}</p>
       ) : null}
-      {namedGaps.length ? (
-        <>
-          <h4>Named gaps</h4>
-          <ul>{namedGaps.map((gap, i) => <li key={i}>{gap}</li>)}</ul>
-        </>
+
+      {flags.length ? (
+        <ul className="job-flag-list">
+          {flags.map((flag, index) => (
+            <li key={`${flag.type}-${index}`}>
+              <div>
+                <strong>{flag.label || flag.type}</strong>
+                <span className={`flag-confidence ${flag.confidence}`}>{flag.confidence} confidence</span>
+                {flag.source === "manual" ? <span className="flag-confidence manual">yours</span> : null}
+              </div>
+              <p>{flag.requirement}</p>
+              {flag.detail ? <small>{flag.detail}</small> : null}
+              <button className="secondary icon-only" title="Dismiss this flag" onClick={() => onDismissFlag(flag.requirement)}>
+                <X size={13} />
+              </button>
+            </li>
+          ))}
+        </ul>
       ) : null}
-      <div className="button-row">
-        <button className="secondary" onClick={() => onSetVerdict(null, "Cleared from the workspace.")}>Clear verdict</button>
-        {verdict === "skip"
-          ? <button className="secondary" onClick={() => onSetVerdict("stretch", "Overruled from the workspace.")}>Overrule to stretch</button>
-          : <button className="secondary" onClick={() => onSetVerdict("skip", "Marked as skip from the workspace.")}>Mark as skip</button>}
-      </div>
+
+      {adding ? (
+        <div className="job-flag-form">
+          <label className="field">
+            <span>Type</span>
+            <select value={draft.type} onChange={(event) => setDraft({ ...draft, type: event.target.value })}>
+              {JOB_FLAG_FILTERS.filter((option) => option.value).map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>What the ad asks for</span>
+            <input
+              value={draft.requirement}
+              placeholder="Requires current NV1 clearance"
+              onChange={(event) => setDraft({ ...draft, requirement: event.target.value })}
+            />
+          </label>
+          <label className="field">
+            <span>Why it does not fit (optional)</span>
+            <input
+              value={draft.detail}
+              placeholder="Not held and takes months to sponsor"
+              onChange={(event) => setDraft({ ...draft, detail: event.target.value })}
+            />
+          </label>
+          <div className="button-row">
+            <button onClick={submit}><Check size={15} /> Add flag</button>
+            <button className="secondary" onClick={() => setAdding(false)}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div className="button-row">
+          <button className="secondary" onClick={() => setAdding(true)}><Plus size={15} /> Add a flag</button>
+          {flags.length ? <button className="secondary" onClick={onClearFlags}>Clear all</button> : null}
+        </div>
+      )}
     </section>
   );
 }
@@ -314,4 +355,4 @@ function AnalysisReport({ text, matchScore = null }) {
   );
 }
 
-export { DocumentTrackBlock, ChannelBlock, BlockerGateBlock, CompanyPanel, AnalysisBullets, EvidenceMatches, AnalysisReport };
+export { DocumentTrackBlock, ChannelBlock, JobFlagsBlock, CompanyPanel, AnalysisBullets, EvidenceMatches, AnalysisReport };

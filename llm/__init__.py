@@ -8,7 +8,7 @@ Modules are layered — each may import only from the layers above it:
     providers   the concurrency gate, HTTP transport, the call* family
     parsing     reasoning-block stripping and JSON recovery
     prompts     system prompts and the thresholds they are written against
-    analysis    triage, the hard-blocker gate, full analysis, deep gatekeeping
+    analysis    triage (which also raises flags), full analysis, deep gatekeeping
     documents   application document content generation
     memory      candidate-memory fragment extraction and consolidation
     research    company/job intelligence and hidden-market strategy
@@ -69,7 +69,6 @@ from .parsing import (  # noqa: F401
 from .prompts import (  # noqa: F401
     ANALYSIS_SYSTEM_PROMPT,
     APPLICATION_DOCUMENT_SYSTEM_PROMPT,
-    BLOCKER_GATE_SYSTEM_PROMPT,
     COMPANY_RESEARCH_SYSTEM_PROMPT,
     DEEP_GATEKEEPER_SYSTEM_PROMPT,
     FULL_ANALYSIS_TRIAGE_THRESHOLD,
@@ -78,8 +77,11 @@ from .prompts import (  # noqa: F401
     TRIAGE_SYSTEM_PROMPT,
 )
 from .analysis import (  # noqa: F401
-    BLOCKER_GATE_VERDICTS,
-    BLOCKER_SKIP_SCORE_CAP,
+    JOB_FLAG_LABELS,
+    JOB_FLAG_TYPES,
+    _format_flags_section,
+    _normalise_job_flags,
+    _persist_flags,
     _CREDENTIAL_CUES,
     _MANDATORY_CUES,
     _REQUIREMENT_SPLIT_RE,
@@ -92,16 +94,13 @@ from .analysis import (  # noqa: F401
     _compose_score,
     _extract_mandatory_requirements,
     _format_analysis_text,
-    _format_blocker_section,
     _format_fragment_context,
     _format_gatekeeper_section,
     _get_resume_triage_summary,
     _lane_title_overlap,
     _maybe_align_fragments,
-    _normalise_blocker_gate,
     _perform_analysis_loop,
     _resume_hash,
-    _run_blocker_gate,
     _run_deep_gatekeeper,
     _triage_job,
     analyze_jobs,

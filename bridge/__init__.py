@@ -7,7 +7,7 @@ to implement lives here, grouped by command prefix:
     runtime     the stdout protocol, workspace paths, shared row helpers
     documents   document extraction and application document generation
     lanes       lanes/profiles, resumes, search terms, candidate memory
-    jobs        job listing and updates, the blocker gate, shortlist export
+    jobs        job listing and updates, flags, shortlist export
     scrapers    scraper plugins and search runs
     intel       hidden market, warm contacts, company research
     insights    dashboard, funnel, targeting, campaign, calendar

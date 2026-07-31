@@ -37,17 +37,17 @@ class TrackDerivationTests(unittest.TestCase):
         self.assertEqual(result["track"], db.DOC_TRACK_STRIPPED)
         self.assertTrue(len(result["reasons"]) >= 2)
 
-    def test_the_gate_saying_below_is_enough_on_its_own(self):
-        # The gate looked at the whole ad against the whole resume; that
+    def test_triage_saying_below_is_enough_on_its_own(self):
+        # Triage looked at the whole ad against the resume summary; that
         # judgement outranks the keyword heuristics.
         result = db.document_track(
             {"title": "Technology Lead", "salary": "$150,000"},
             {"seniority_direction": "below"},
         )
         self.assertEqual(result["track"], db.DOC_TRACK_STRIPPED)
-        self.assertTrue(any("Blocker gate" in reason for reason in result["reasons"]))
+        self.assertTrue(any("Triage placed" in reason for reason in result["reasons"]))
 
-    def test_gate_saying_aligned_or_above_does_not_strip(self):
+    def test_triage_saying_aligned_or_above_does_not_strip(self):
         for direction in ("aligned", "above", "unknown"):
             result = db.document_track({"title": "Head of Technology"}, {"seniority_direction": direction})
             self.assertEqual(result["track"], db.DOC_TRACK_SENIOR, direction)
@@ -104,9 +104,9 @@ class TrackPersistenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             db.set_job_document_track(self.job_id, "middling")
 
-    def test_the_stored_gate_direction_feeds_the_resolver(self):
-        db.update_job_blocker_gate(self.job_id, "stretch", "Below ceiling.", {
-            "verdict": "stretch", "seniority_direction": "below",
+    def test_the_stored_seniority_direction_feeds_the_resolver(self):
+        db.update_job_flags(self.job_id, {
+            "flags": [], "summary": "Below ceiling.", "seniority_direction": "below",
         })
         self.assertEqual(db.resolve_document_track(self.job_id)["track"], db.DOC_TRACK_STRIPPED)
 

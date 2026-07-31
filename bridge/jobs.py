@@ -1,4 +1,4 @@
-"""Job commands: listing, updates, the blocker gate, and shortlist export.
+"""Job commands: listing, updates, flags, and shortlist export.
 
 Split out of python_bridge.py, which re-exports everything here.
 """
@@ -7,7 +7,6 @@ from pathlib import Path
 
 import database_manager as db
 from .runtime import (
-    BlockerGateError,
     _ad_signals_cache,
     _clean_text,
     compact_job_dict,
@@ -167,27 +166,39 @@ def _job_has_researched_company_intel(job):
     return bool(intelligence.get("ai_research") or intelligence.get("cached_company_profile"))
 
 
-def command_jobs_set_blocker_verdict(payload):
-    """Manually set or clear a job's hard-blocker verdict.
-
-    The gate is a model, so the user needs a way to overrule it in both
-    directions: clearing a verdict sends the job back through the gate on the
-    next analysis, and setting one to 'skip' records a human decision that
-    blocks document generation just as the model's would.
-    """
+def command_jobs_add_flag(payload):
+    """Add a flag by hand. Marked manual, so re-analysis will not erase it."""
     job_id = payload["job_id"]
-    verdict = db.normalize_blocker_verdict(payload.get("verdict"))
-    reason = str(payload.get("reason") or "").strip()
-    if payload.get("clear") or not payload.get("verdict"):
-        db.clear_job_blocker_gate(job_id)
-        db.add_application_event(job_id, "analysis", "Blocker verdict cleared",
-                                 reason or "Verdict cleared; the gate will re-run on the next analysis.")
-        return {"job_id": job_id, "verdict": None, "gate": db.get_job_blocker_gate(job_id)}
-    db.update_job_blocker_gate(job_id, verdict, reason or "Set manually.",
-                               {"verdict": verdict, "reason": reason, "source": "manual"})
-    db.add_application_event(job_id, "analysis", f"Blocker verdict set to {verdict}",
-                             reason or "Set manually.")
-    return {"job_id": job_id, "verdict": verdict, "gate": db.get_job_blocker_gate(job_id)}
+    record = db.add_job_flag(
+        job_id,
+        payload.get("type"),
+        payload.get("requirement"),
+        payload.get("detail") or "",
+        payload.get("confidence") or "high",
+    )
+    db.add_application_event(
+        job_id, "note", "Flag added",
+        f"{payload.get('type')}: {payload.get('requirement')}",
+    )
+    return {"job_id": job_id, "flags": record}
+
+
+def command_jobs_dismiss_flag(payload):
+    """Remove a single flag. Nothing depended on it, so nothing else changes."""
+    job_id = payload["job_id"]
+    record = db.dismiss_job_flag(job_id, payload.get("requirement"))
+    db.add_application_event(
+        job_id, "note", "Flag dismissed", str(payload.get("requirement") or ""),
+    )
+    return {"job_id": job_id, "flags": record}
+
+
+def command_jobs_clear_flags(payload):
+    """Drop every flag on a job, manual ones included."""
+    job_id = payload["job_id"]
+    record = db.clear_job_flags(job_id)
+    db.add_application_event(job_id, "note", "Flags cleared", "All flags removed.")
+    return {"job_id": job_id, "flags": record}
 
 
 SHORTLIST_DEFAULT_STAGES = ("new", "interested")
@@ -195,8 +206,7 @@ SHORTLIST_DEFAULT_STAGES = ("new", "interested")
 
 def _shortlist_entry(job, warm_index):
     """One survivor, flattened to what a go/no-go decision actually needs."""
-    gate = db.get_job_blocker_gate(job["id"]) or {}
-    details = gate.get("details") or {}
+    flag_record = db.get_job_flags(job["id"]) or {}
     warm_path = db.warm_path_for_job(job, warm_index)
     return {
         "id": job["id"],
@@ -221,10 +231,9 @@ def _shortlist_entry(job, warm_index):
             {"name": c.get("name"), "role_title": c.get("role_title"), "relationship": c.get("relationship")}
             for c in warm_path[:5]
         ],
-        "blocker_verdict": gate.get("verdict") or "unknown",
-        "blocker_reason": gate.get("reason") or "",
-        "hard_blockers": details.get("hard_blockers") or [],
-        "named_gaps": details.get("named_gaps") or [],
+        "flags": flag_record.get("flags") or [],
+        "flag_summary": flag_record.get("summary") or "",
+        "seniority_direction": flag_record.get("seniority_direction") or "unknown",
         "analysis": job.get("ai_analysis") or "",
         "description": job.get("description") or "",
         "position_description_text": job.get("position_description_text") or "",
@@ -247,13 +256,13 @@ def _shortlist_markdown(entries, generated_at, window_label):
         "",
     ]
     for index, entry in enumerate(entries, start=1):
-        flags = [entry["warmth_label"]]
-        if entry["blocker_verdict"] in ("skip", "stretch"):
-            flags.append(f"gate: {entry['blocker_verdict']}")
+        chips = [entry["warmth_label"]]
+        if entry["flags"]:
+            chips.append(f"{len(entry['flags'])} flag{'' if len(entry['flags']) == 1 else 's'}")
         lines.append(
             f"{index}. **{entry['title']}** — {entry['company'] or 'Unknown company'} · "
             f"score {entry['composite_score'] if entry['composite_score'] is not None else entry['match_score']} · "
-            f"{' · '.join(flags)}"
+            f"{' · '.join(chips)}"
         )
     lines.append("")
 
@@ -280,17 +289,15 @@ def _shortlist_markdown(entries, generated_at, window_label):
                 for c in entry["warm_path"] if c.get("name")
             ]
             lines.extend([f"**Warm path:** {', '.join(described)}", ""])
-        lines.extend([f"**Blocker gate:** {entry['blocker_verdict']} — {entry['blocker_reason'] or 'no reason recorded'}", ""])
-        if entry["hard_blockers"]:
-            lines.append("**Hard blockers:**")
-            for item in entry["hard_blockers"]:
-                requirement = item.get("requirement") if isinstance(item, dict) else str(item)
-                why = item.get("why_unmet") if isinstance(item, dict) else ""
-                lines.append(f"- {requirement}" + (f" — {why}" if why else ""))
-            lines.append("")
-        if entry["named_gaps"]:
-            lines.append("**Named gaps:**")
-            lines.extend(f"- {gap}" for gap in entry["named_gaps"])
+        if entry["flag_summary"]:
+            lines.extend([f"**Flags:** {entry['flag_summary']}", ""])
+        if entry["flags"]:
+            for item in entry["flags"]:
+                detail = f" — {item.get('detail')}" if item.get("detail") else ""
+                lines.append(
+                    f"- **{item.get('label') or item.get('type')}** "
+                    f"({item.get('confidence')} confidence): {item.get('requirement')}{detail}"
+                )
             lines.append("")
         if entry["analysis"]:
             lines.extend(["**Analysis:**", "", "```", entry["analysis"].strip(), "```", ""])
@@ -318,7 +325,10 @@ def command_jobs_export_shortlist(payload):
     min_score = payload.get("min_score")
     stages = [db.normalize_stage(stage) for stage in (payload.get("stages") or SHORTLIST_DEFAULT_STAGES)]
     fmt = str(payload.get("format") or "both").lower()
-    include_blocked = bool(payload.get("include_blocked"))
+    # Nothing is excluded by default: the packet exists so a human can make the
+    # call, and pre-filtering it would make that call on their behalf. Callers
+    # may narrow it explicitly by flag type.
+    exclude_flags = {str(value).strip().lower() for value in (payload.get("exclude_flags") or []) if value}
 
     filters = {
         "profile_id": profile_id,
@@ -332,10 +342,13 @@ def command_jobs_export_shortlist(payload):
     jobs = [row_to_dict(row) for row in rows]
     jobs = [job for job in jobs if db.normalize_stage(job.get("pipeline_stage") or job.get("status")) in stages]
     db.annotate_channel_warmth(jobs, warm_index)
-    if not include_blocked:
-        # A skip verdict means "do not apply"; putting it in the go/no-go packet
-        # would hand back the decision the gate already made.
-        jobs = [job for job in jobs if db.normalize_blocker_verdict(job.get("blocker_verdict")) != "skip"]
+    if exclude_flags:
+        jobs = [
+            job for job in jobs
+            if not (exclude_flags & {
+                part for part in str(job.get("job_flags_types") or "").split(",") if part
+            })
+        ]
     jobs.sort(key=lambda job: (
         -int(job.get("warmth") or 0),
         -int(job.get("composite_score") or job.get("match_score") or 0),
@@ -398,7 +411,7 @@ def command_jobs_detail(payload):
     job_dict = row_to_dict(job)
     if job_dict:
         job_dict["ad_signals"] = ad_signals.derive(job_dict, db.recurrence_count_for(job_dict))
-        job_dict["blocker_gate"] = db.get_job_blocker_gate(payload["job_id"])
+        job_dict["job_flags"] = db.get_job_flags(payload["job_id"])
         job_dict["document_track_resolved"] = db.resolve_document_track(payload["job_id"])
         db.annotate_channel_warmth(
             [job_dict], db.warm_contact_index(job_dict.get("profile_id"))
@@ -481,35 +494,23 @@ def command_analysis_job(payload):
     return {"job": row_to_dict(db.get_job_details(payload["job_id"]))}
 
 
-def assert_blocker_gate_clear(job, payload):
-    """Stop document generation when the hard-blocker gate said skip.
+def report_job_flags(job):
+    """Note any flags in the task log as documents are generated.
 
-    The gate is the only stage allowed to return a decisive no, so its verdict
-    has to actually stop something — otherwise it is just another opinion in
-    the analysis text. Callers can pass override_blocker to proceed anyway;
-    the override is recorded against the job so the decision is auditable.
+    Deliberately only a log line. Flags are observations, and an earlier design
+    that let them block generation put the tool in the position of overruling
+    the person using it — for a judgement it is not well placed to make. The
+    flags are on the card and in the workspace before this point; if the
+    decision is to apply anyway, that is the decision.
     """
-    verdict = db.normalize_blocker_verdict(
-        job["blocker_verdict"] if job and "blocker_verdict" in job.keys() else ""
-    )
-    if verdict != "skip":
+    record = db.get_job_flags(job["id"]) if job else None
+    flags = (record or {}).get("flags") or []
+    if not flags:
         return
-    reason = str(
-        (job["blocker_reason"] if "blocker_reason" in job.keys() else "") or ""
-    ).strip() or "The hard-blocker gate marked this role as skip."
-    if payload.get("override_blocker"):
-        emit("log", message=f"Blocker gate override: generating documents anyway. Gate said: {reason}")
-        db.add_application_event(
-            job["id"],
-            "documents",
-            "Hard-blocker gate overridden",
-            f"Documents generated despite a skip verdict.\nGate reason: {reason}",
-        )
-        return
-    raise BlockerGateError(
-        f"Document generation blocked by the hard-blocker gate: {reason} "
-        "Generate anyway to override, or clear the verdict on the job to re-analyse it."
-    )
+    emit("log", message=(
+        f"{len(flags)} flag{'' if len(flags) == 1 else 's'} on this role: "
+        + "; ".join(f"{item['label']} — {item['requirement']}" for item in flags)
+    ))
 
 
 def command_jobs_set_document_track(payload):
@@ -549,7 +550,9 @@ COMMANDS = {
     "jobs:resetRejected": command_jobs_reset_rejected,
     "jobs:moveProfile": command_jobs_move_profile,
     "jobs:detail": command_jobs_detail,
-    "jobs:setBlockerVerdict": command_jobs_set_blocker_verdict,
+    "jobs:addFlag": command_jobs_add_flag,
+    "jobs:dismissFlag": command_jobs_dismiss_flag,
+    "jobs:clearFlags": command_jobs_clear_flags,
     "jobs:setChannel": command_jobs_set_channel,
     "jobs:exportShortlist": command_jobs_export_shortlist,
     "jobs:setDocumentTrack": command_jobs_set_document_track,

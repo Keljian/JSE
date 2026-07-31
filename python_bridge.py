@@ -32,7 +32,6 @@ from db_setup import setup_database  # noqa: E402
 from bridge import runtime  # noqa: E402
 from bridge.runtime import (  # noqa: E402,F401
     JobNotLiveError,
-    BlockerGateError,
     bridge_error_message,
     emit,
     load_json_payload,

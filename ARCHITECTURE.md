@@ -134,12 +134,10 @@ flowchart TD
     Request["Run analysis"] --> Jobs["Fetch jobs to analyze"]
     Jobs --> Resume["Load lane resume/context"]
     Resume --> TriageCache["Resume triage cache"]
-    TriageCache --> FastTriage["Fast keep/discard triage"]
+    TriageCache --> FastTriage["Triage: score + raise flags"]
+    FastTriage --> Flags["Record flags on the job"]
     FastTriage -->|discard| Reject["Auto reject or skip"]
-    FastTriage -->|keep| Blocker["Hard-blocker gate"]
-    Blocker -->|skip| Blocked["Persist verdict, cap score, block documents"]
-    Blocker -->|stretch, named gaps| Full["Evidence-anchored full analysis"]
-    Blocker -->|clear| Full
+    FastTriage -->|keep| Full["Evidence-anchored full analysis"]
     Full --> Gate{"Score >= deep gate threshold?"}
     Gate -->|yes| Deep["Strict deep gatekeeper"]
     Gate -->|no| Structured["Structured analysis result"]
@@ -150,21 +148,39 @@ flowchart TD
     DB --> UI["Refresh dashboard/pipeline"]
 ```
 
-The hard-blocker gate is the only stage allowed to return a decisive negative.
-Triage and full analysis both score *how well* a role matches and are biased
-toward finding a bridge; the gate asks whether the role should be applied for
-at all. A deterministic pre-pass extracts the ad's own mandatory-requirement
-lines, and the LLM judges that short list against three blocker classes only:
-unmet mandatory credential/eligibility gates, core domain mismatch, and
-seniority misalignment in either direction. A `skip` must carry an evidenced,
-confident blocker or it is downgraded to `stretch`; a failed gate call yields no
-opinion and the job proceeds. `skip` stops full analysis and blocks document
-generation (overridable, and the override is recorded); `stretch` passes its
-named gaps into the full-analysis prompt to be answered rather than reframed.
+Triage does two jobs in one call: it scores the role, and it raises flags on it.
+A flag is a specific, checkable concern, and each one names the ad's own
+requirement plus why the resume does not meet it. There are five types:
+`credential_gate`, `domain_mismatch`, `seniority_below`, `seniority_above` and
+`evidence_gap`. A deterministic pre-pass pulls the ad's mandatory-requirement
+lines out first, and triage now receives the full advertisement rather than a
+3,500-character extract, so a registration buried at the bottom still gets seen.
 
-The gate also reports `seniority_direction` even when it does not fire, because
-a role scoped below the resume's ceiling changes how the application must be
-written. That feeds the two-track document strategy (see below).
+**Flags do not gate anything.** No code path branches on them. They never block
+document generation, never cap a score, and never drop a role from a listing or
+a shortlist packet.
+
+That is a deliberate correction. An earlier version of this stage returned a
+skip / stretch / clear verdict and refused to generate documents on a skip. It
+put a model in the position of overruling the person using the tool, on a
+judgement about their own career that the model is badly placed to make. Flags
+keep all of the detection and none of the authority.
+
+The rules that survived are the ones that keep flags worth reading. A flag has
+to name the ad's requirement or it gets dropped, because unevidenced flags are
+noise and noise is what teaches people to skim past the real ones. Low
+confidence is kept and labelled rather than discarded, since the reader is the
+one deciding. Flags added by hand survive re-analysis, because nothing can
+re-derive "the recruiter would not name the client".
+
+Flagging costs no extra LLM call. It lives inside triage precisely because
+nothing branches on it, so a separate pass bought nothing while doubling the
+per-job round trips against a single-slot local model. Folding it in also
+widened coverage: triage runs on every job, where the old stage only ran on the
+ones that had already cleared the threshold.
+
+Triage reports `seniority_direction` whether or not it raises a seniority flag,
+which feeds the two-track document strategy below.
 
 The analysis layer uses `llm_handler.py` and may call:
 
@@ -372,9 +388,8 @@ research is refreshed after seven days or whenever the research model changes.
 
 ```mermaid
 flowchart TD
-    User["Generate docs for job"] --> Gate{"Blocker verdict = skip?"}
-    Gate -->|yes, no override| Blocked["Refuse: BlockerGateError"]
-    Gate -->|no| Load["Load job, lane settings, resume, templates"]
+    User["Generate docs for job"] --> Note["Note any flags in the task log"]
+    Note --> Load["Load job, lane settings, resume, templates"]
     Load --> Track["Resolve document track\nstripped back or full senior"]
     Track --> Context["Retrieve candidate evidence\ncontext_library.py"]
     Context --> Prompt["Build role-specific document prompt"]
@@ -402,26 +417,25 @@ Outputs can include:
 - review/quality metadata
 
 **Two-track strategy.** Overqualification screening on support-grade roles is a
-measured rejection cause: the same senior evidence that wins a Head-of role gets
-the application binned. `database_manager.document_track` resolves **stripped
-back** or **full senior** from signals already computed — the blocker gate's
-`seniority_direction`, the title band, and the salary band. The gate's judgement
-is decisive on its own because it read the whole ad against the whole resume;
-the keyword heuristics require two agreeing signals, so one support-grade word
-in a manager title cannot strip a senior resume. `jobs.document_track` pins a
-manual override that survives re-analysis.
+measured rejection cause, where the same senior evidence that wins a Head-of
+role gets the application binned. `database_manager.document_track` resolves
+**stripped back** or **full senior** from signals already computed: the
+`seniority_direction` triage reported, the title band, and the salary band.
+Triage's judgement is decisive on its own because it read the whole ad against
+the resume. The keyword heuristics need two agreeing signals, so one
+support-grade word in a manager title cannot strip a senior resume.
+`jobs.document_track` pins a manual override that survives re-analysis.
 
 On the stripped track `rich_application.resume_task` writes to the ad's actual
-scope — same real employers, titles and dates, with emphasis and depth changed
-and facts never changed — and `cover_task` adds a positioning instruction to
-answer the level question directly in one honest sentence rather than leave the
-screener to answer it.
+scope, keeping the same real employers, titles and dates while changing emphasis
+and depth. Facts never change. `cover_task` adds a positioning instruction to
+answer the level question directly in one honest sentence rather than leaving
+the screener to answer it.
 
-**Gate enforcement.** `python_bridge.assert_blocker_gate_clear` runs at the top
-of both generation commands. A `skip` verdict raises `BlockerGateError` unless
-the caller passes `override_blocker`, and the override is recorded as an
-application event so the decision is auditable. The Interested batch counts
-gated jobs as skipped rather than failed.
+**Nothing blocks generation.** `bridge.jobs.report_job_flags` runs at the top of
+both generation commands and writes any flags to the task log. That is all it
+does. The flags are already on the card and in the workspace by then, so if the
+decision is to apply anyway, that is the decision.
 
 ### 7. Candidate Memory And Context Library
 

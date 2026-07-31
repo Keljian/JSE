@@ -4852,13 +4852,19 @@ button.update-toast-close:hover:not(:disabled) {
 .ad-chip.muted { background: var(--surface-alt); color: var(--text-muted); }
 .ad-chip.bad { background: #fbe4e4; border-color: #e3b1b1; color: #7a1f1f; font-weight: 600; }
 
-.blocker-gate-block { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
-.blocker-gate-block h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
-.blocker-gate-block h4 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
-.blocker-gate-block p { margin: 0 0 4px; }
-.blocker-gate-block ul { margin: 0; padding-left: 18px; }
-.blocker-gate-block li { margin-bottom: 4px; }
-.blocker-gate-block .button-row { margin-top: 12px; }
+.job-flags-block { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
+.job-flags-block h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.job-flags-block > p { margin: 0 0 4px; }
+.job-flag-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.job-flag-list li { position: relative; padding: 8px 34px 8px 10px; margin-bottom: 6px; border-left: 3px solid var(--border); background: var(--surface); border-radius: 6px; }
+.job-flag-list li > div { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.job-flag-list li p { margin: 3px 0 0; }
+.job-flag-list li small { color: var(--text-muted); }
+.job-flag-list li > button { position: absolute; top: 6px; right: 6px; }
+.flag-confidence { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 999px; background: var(--surface-alt); color: var(--text-muted); }
+.flag-confidence.high { background: #fbe4e4; color: #7a1f1f; }
+.flag-confidence.manual { background: #e1eaf7; color: #1b3c5c; }
+.job-flag-form { margin-top: 10px; padding: 10px; border-radius: 8px; background: var(--surface); }
 
 .channel-block { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
 .channel-block h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }

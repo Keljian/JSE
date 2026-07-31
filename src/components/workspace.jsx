@@ -6,9 +6,9 @@ import { canMoveToInterested, formatDate, normalizeStage, toDateTimeInputValue, 
 import { appConfirm, appNotice } from "../lib/dialogs";
 import { ClosingDateSourceBadge, DropZone, LinkedText, Modal, ScoreStack } from "../components/primitives";
 import { AdSignalsBlock } from "../components/chips";
-import { AnalysisReport, BlockerGateBlock, ChannelBlock, CompanyPanel, DocumentTrackBlock } from "../components/panels";
+import { AnalysisReport, ChannelBlock, CompanyPanel, DocumentTrackBlock, JobFlagsBlock } from "../components/panels";
 
-function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiveTab, onClose, onSave, onApplicationDateApplied, onGenerateDocs, onGeneratePrompt, onCompanyResearch, onAddEvent, onAddInterview, onUpdateInterview, onDocumentDrop, onViewDocument, onDownloadDocument, onRevealDocument, onConvertDocumentPdf, onAnalyzeJob, onMoveProfile, analyzing, generatingDocs, researchingCompany, documentAiName, onRejectJob, onMoveInterested, onSetBlockerVerdict, onSetChannel, onSetDocumentTrack }) {
+function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiveTab, onClose, onSave, onApplicationDateApplied, onGenerateDocs, onGeneratePrompt, onCompanyResearch, onAddEvent, onAddInterview, onUpdateInterview, onDocumentDrop, onViewDocument, onDownloadDocument, onRevealDocument, onConvertDocumentPdf, onAnalyzeJob, onMoveProfile, analyzing, generatingDocs, researchingCompany, documentAiName, onRejectJob, onMoveInterested, onAddFlag, onDismissFlag, onClearFlags, onSetChannel, onSetDocumentTrack }) {
   const [form, setForm] = useState(job || {});
   const [targetProfileId, setTargetProfileId] = useState(job?.profile_id || "");
   const [profileMoving, setProfileMoving] = useState(false);
@@ -169,7 +169,7 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
         <div className="workspace-panel two-col">
           <section>
             <AdSignalsBlock signals={job.ad_signals} />
-            <BlockerGateBlock job={job} onSetVerdict={onSetBlockerVerdict} />
+            <JobFlagsBlock job={job} onAddFlag={onAddFlag} onDismissFlag={onDismissFlag} onClearFlags={onClearFlags} />
             <ChannelBlock job={job} onSetChannel={onSetChannel} />
             <DocumentTrackBlock job={job} onSetTrack={onSetDocumentTrack} />
             <h3>Analysis</h3>

@@ -1,14 +1,27 @@
 /** Job card and the compact signal chips it renders. */
 import React from "react";
-import { APPLY_CHANNEL_LABELS, BLOCKER_CHIPS, WARMTH_CHIPS } from "../lib/constants";
-import { blockerVerdictOf, formatDate } from "../lib/format";
+import { APPLY_CHANNEL_LABELS, JOB_FLAG_CHIPS, WARMTH_CHIPS } from "../lib/constants";
+import { formatDate, jobFlagTypesOf, jobFlagsOf } from "../lib/format";
 import { ScoreStack } from "../components/primitives";
 
-function BlockerChip({ job }) {
-  const entry = BLOCKER_CHIPS[blockerVerdictOf(job)];
-  if (!entry) return null;
-  const [tone, label, fallbackTitle] = entry;
-  return <span className={`ad-chip ${tone}`} title={String(job?.blocker_reason || "").trim() || fallbackTitle}>{label}</span>;
+function JobFlagChips({ job }) {
+  const flags = jobFlagsOf(job);
+  const types = jobFlagTypesOf(job);
+  if (!types.length) return null;
+  const detailFor = (type) => flags
+    .filter((flag) => flag.type === type)
+    .map((flag) => `${flag.requirement}${flag.detail ? ` — ${flag.detail}` : ""}`)
+    .join("\n");
+  return (
+    <>
+      {types.map((type) => {
+        const entry = JOB_FLAG_CHIPS[type];
+        if (!entry) return null;
+        const [tone, label] = entry;
+        return <span key={type} className={`ad-chip ${tone}`} title={detailFor(type) || label}>{label}</span>;
+      })}
+    </>
+  );
 }
 
 function WarmthChip({ job }) {
@@ -90,7 +103,7 @@ const JobCard = React.memo(function JobCard({ job, onOpen, onDragStart, onReject
       </div>
       <div className="card-score-row">
         <ScoreStack job={job} compact />
-        <BlockerChip job={job} />
+        <JobFlagChips job={job} />
         <WarmthChip job={job} />
       </div>
       <p>{job.company || "Unknown company"}</p>
@@ -109,4 +122,4 @@ const JobCard = React.memo(function JobCard({ job, onOpen, onDragStart, onReject
   );
 });
 
-export { BlockerChip, WarmthChip, WarmPathHint, AdSignalChips, AdSignalsBlock, JobCard };
+export { JobFlagChips, WarmthChip, WarmPathHint, AdSignalChips, AdSignalsBlock, JobCard };

@@ -6,38 +6,46 @@ All notable changes to JSE are documented here.
 
 ### Added
 
-- Added the **hard-blocker gate**, a stage between triage and full analysis whose
-  only job is to return a decisive negative. Triage and full analysis both ask
-  "how well does this match", and both are structurally biased toward finding a
-  reframing; nothing in the chain was built to say "don't apply". The gate asks
-  a different question and answers it with `skip`, `stretch`, or `clear`:
+- Added **job flags**. Triage now scores a role and raises flags on it in the
+  same call, where a flag is a specific, checkable concern that names the ad's
+  own requirement and why the resume does not meet it. Five types:
+  `credential_gate`, `domain_mismatch`, `seniority_below`, `seniority_above` and
+  `evidence_gap`.
+  - **Flags never gate anything.** No code path branches on them. They do not
+    block document generation, cap a score, or drop a role from a listing or a
+    shortlist packet. Everything they carry is shown next to the score so the
+    person deciding can see it.
   - **Deterministic pre-pass.** `_extract_mandatory_requirements` pulls the ad's
-    own "must have / essential / mandatory" lines out of the prose and flags the
-    subset naming a credential, registration, or eligibility gate. The gate LLM
-    judges that short list rather than re-reading the whole ad, where the
-    surrounding narrative pulls it toward an angle. Items framed as *preferred*,
-    *desirable*, or *advantageous* are never treated as blockers.
-  - **Three blocker classes only:** an unmet mandatory credential or eligibility
-    gate, a core domain mismatch, or seniority misalignment in either direction.
-    Every blocker must name the ad's requirement *and* why the resume cannot
-    meet it; the prompt states that "no" is a valid and valuable answer and that
-    reframing a mismatch is a failure of the stage.
-  - **Guards against becoming a false-negative machine.** A `skip` with no
-    evidenced blocker, or with low confidence, is downgraded to `stretch` with
-    the blockers carried over as named gaps. An unparseable or failed gate call
-    yields no opinion and the job continues to full analysis.
-  - **`skip` short-circuits the expensive work.** Full analysis is not run, the
-    score is capped at the keep floor (visible for review, never promoted, and
-    deliberately never below the auto-reject line), and document generation is
-    blocked in the workspace, the campaign plan, and the Interested batch until
-    explicitly overridden. Overrides are recorded as an application event.
-  - **`stretch` feeds its named gaps into the full-analysis prompt**, which is
-    instructed to answer them directly and let unanswerable gaps lower the
-    score rather than paper over them.
-  - Verdicts are persisted per job (`blocker_verdict`, `blocker_reason`,
-    `blocker_json`, `blocker_checked_at`), shown as a chip on job cards and a
-    detail panel in the workspace, and can be cleared, overruled, or set by hand
-    via `jobs:setBlockerVerdict`.
+    own "must have / essential / mandatory" lines out of the prose and marks the
+    subset naming a credential, registration, or eligibility gate. Items framed
+    as *preferred*, *desirable* or *advantageous* can never be a credential
+    flag. Triage also now receives the full advertisement instead of a
+    3,500-character extract, so a registration buried at the bottom still gets
+    seen.
+  - **No extra LLM call.** Flagging was folded into triage because nothing
+    branches on it, so a separate pass bought nothing while doubling the per-job
+    round trips against a single-slot local model. Folding it in also widened
+    coverage: triage runs on every job, where a post-triage stage would only see
+    the ones that already cleared the threshold.
+  - **Rules that keep flags readable.** A flag must name the ad's requirement or
+    it is dropped, since unevidenced flags are noise and noise teaches people to
+    skim past the real ones. Low confidence is kept and labelled rather than
+    discarded, because the reader decides. An unparseable triage response yields
+    no flags and the job continues.
+  - **Flags feed the analysis prompt**, which is instructed to answer each one
+    directly and let unanswerable ones lower the score rather than paper over
+    them.
+  - Stored per job (`job_flags_json`, `job_flags_types`, `job_flags_checked_at`),
+    shown as chips on job cards and a panel in the workspace. You can dismiss a
+    flag or add your own; yours are marked manual and survive re-analysis, since
+    nothing can re-derive "the recruiter would not name the client". Bridge
+    commands: `jobs:addFlag`, `jobs:dismissFlag`, `jobs:clearFlags`.
+
+  This replaced a first attempt that returned a skip / stretch / clear verdict
+  and refused to generate documents on a skip. That version put a model in the
+  position of overruling its user on a judgement about their own career, which
+  is worse than offering no help at all. The detection was worth keeping; the
+  authority was not.
 
 - Added **channel warmth** as a first-class dimension on jobs, not just on
   outcome snapshots. Warmth was only known after an application was sent, which
@@ -68,20 +76,21 @@ All notable changes to JSE are documented here.
 - Added **triage packet export** (`jobs:exportShortlist`). The daily loop is a
   sweep followed by a human go/no-go pass elsewhere, and that handoff was manual
   copying. One markdown and/or JSON file per sweep now carries the whole
-  shortlist — ad text, position description, extracted metadata, scores with the
-  stored analysis, gate verdict with its blockers and named gaps, and warm-path
-  hits — written to a configurable (watchable) folder. Warm roles lead the
-  packet; roles the gate already ruled out are excluded unless asked for.
+  shortlist: ad text, position description, extracted metadata, scores with the
+  stored analysis, any flags, and warm-path hits, written to a configurable
+  (watchable) folder. Warm roles lead the packet. Flagged roles stay in it,
+  because filtering them out would make the go/no-go call the packet exists to
+  support; `exclude_flags` narrows it on request.
 
 - Added an explicit **two-track document strategy**. Overqualification screening
   on support-grade roles is a measured rejection cause, and the fix existed only
   as a manual practice:
-  - The blocker gate now reports `seniority_direction` (`below` / `aligned` /
-    `above`) even when it does not fire, because a role below the resume's
+  - Triage now reports `seniority_direction` (`below` / `aligned` / `above`)
+    whether or not it raises a seniority flag, because a role below the resume's
     ceiling changes how the application must be written.
   - `document_track` derives **stripped back** vs **full senior** from signals
-    already computed — the gate's direction, the title band, and the salary
-    band. The gate's judgement is decisive on its own; the keyword heuristics
+    already computed: that direction, the title band, and the salary band.
+    Triage's judgement is decisive on its own; the keyword heuristics
     need two agreeing signals, so one support-grade word in a manager title
     cannot strip a senior resume. A manual override persists on the job.
   - On the stripped track the resume is written to the ad's actual scope (same

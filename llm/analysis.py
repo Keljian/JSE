@@ -1,4 +1,4 @@
-"""The scoring chain: triage, the hard-blocker gate, full analysis, deep gatekeeping.
+"""The scoring chain: triage (which also raises flags), full analysis, deep gatekeeping.
 
 Split out of llm_handler.py, which re-exports everything here.
 """
@@ -22,7 +22,6 @@ from .parsing import (
 )
 from .prompts import (
     ANALYSIS_SYSTEM_PROMPT,
-    BLOCKER_GATE_SYSTEM_PROMPT,
     DEEP_GATEKEEPER_SYSTEM_PROMPT,
     FULL_ANALYSIS_TRIAGE_THRESHOLD,
     TRIAGE_KEEP_THRESHOLD,
@@ -243,17 +242,58 @@ RESUME:
     return summary
 
 
-def _triage_job(resume_summary, full_description, log):
-    user_prompt = f"""Estimate job fit for first-pass triage.
+def _triage_job(resume_summary, full_description, job_title, profile_id, log):
+    """Score the role and raise flags on it, in one call.
+
+    Flagging used to be a second LLM pass. It was folded in here because flags
+    do not gate anything: nothing downstream branches on them, so there was
+    nothing to justify a second round trip per job. Merging also widened
+    coverage — triage runs on every job, while the old stage only ran on the
+    ones that had already cleared the triage threshold.
+
+    Triage gets the FULL advertisement rather than an extract, plus the ad's
+    mandatory-requirement lines pulled out deterministically, so a credential
+    gate stated in the small print at the bottom is still visible.
+
+    Returns (score, reason, keep, flags) where flags is the normalised dict, or
+    None when the model gave nothing usable.
+    """
+    mandatory, credential_gates = _extract_mandatory_requirements(full_description)
+    stated_requirements = (
+        "\n".join(f"- {line}" for line in mandatory)
+        if mandatory else "The ad states no explicitly mandatory requirements. Do not invent a credential gate."
+    )
+    credential_block = (
+        "\n".join(f"- {line}" for line in credential_gates)
+        if credential_gates else "None detected by the deterministic pre-pass."
+    )
+    user_prompt = f"""Score this role for first-pass triage and raise any flags on it.
+
+JOB TITLE: {job_title or 'Not supplied'}
+
+MANDATORY REQUIREMENT LINES EXTRACTED FROM THE AD (deterministic pre-pass — the ad's own words):
+---
+{stated_requirements}
+---
+
+OF THOSE, THE ONES NAMING A CREDENTIAL, REGISTRATION, OR ELIGIBILITY GATE:
+---
+{credential_block}
+---
+
+PROFILE PREFERENCE WEIGHTING:
+---
+{_analysis_preferences(profile_id)}
+---
 
 COMPACT RESUME SUMMARY:
 ---
-{resume_summary[:1800]}
+{resume_summary[:2200]}
 ---
 
-JOB EXTRACT:
+FULL JOB ADVERTISEMENT:
 ---
-{full_description[:3500]}
+{full_description[:12000]}
 ---"""
     response = _call_scoring_ai(
         messages=[
@@ -261,26 +301,42 @@ JOB EXTRACT:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.05,
-        max_tokens=768,
+        max_tokens=2000,
         json_mode=True,
     )
     data = _extract_json(response)
     if not data:
         log(f"Triage response was not valid JSON; sending to full analysis. Response: {response[:180]}...")
-        return 100, "Triage failed open.", True
+        return 100, "Triage failed open.", True, None
     score = max(0, min(100, int(data.get("match_score", 0) or 0)))
-    return score, data.get("reason", "No triage reason supplied."), bool(data.get("keep", score >= TRIAGE_KEEP_THRESHOLD))
+    flags = _normalise_job_flags(data)
+    flags["stated_requirement_count"] = len(mandatory)
+    flags["credential_gate_count"] = len(credential_gates)
+    return (
+        score,
+        data.get("reason", "No triage reason supplied."),
+        bool(data.get("keep", score >= TRIAGE_KEEP_THRESHOLD)),
+        flags,
+    )
 
 
-BLOCKER_GATE_VERDICTS = ("skip", "stretch", "clear", "unknown")
+# --- Job flags --------------------------------------------------------------
+# Flags are observations, not decisions. Nothing downstream branches on them:
+# they never block document generation, never cap a score, and never remove a
+# role from the pipeline. They exist so the person deciding can see the specific,
+# checkable concerns about a role next to its score.
 
+JOB_FLAG_TYPES = (
+    "credential_gate", "domain_mismatch", "seniority_below", "seniority_above", "evidence_gap",
+)
 
-# A skip verdict caps the stored score at the keep floor: the role stays
-# visible for manual review but can never sit high in the campaign plan.
-# Deliberately equal to (not below) database_manager.AUTO_REJECT_THRESHOLD, so
-# the gate never silently auto-rejects — blocking documents is its job, purging
-# the pipeline is not.
-BLOCKER_SKIP_SCORE_CAP = TRIAGE_KEEP_THRESHOLD
+JOB_FLAG_LABELS = {
+    "credential_gate": "Credential gate",
+    "domain_mismatch": "Domain mismatch",
+    "seniority_below": "Below your level",
+    "seniority_above": "Above your level",
+    "evidence_gap": "Evidence gap",
+}
 
 
 # Phrases that mark a requirement as mandatory rather than aspirational. Ads
@@ -315,9 +371,9 @@ _REQUIREMENT_SPLIT_RE = re.compile(r"(?<=[.;:!?])\s+|\n+")
 def _extract_mandatory_requirements(text, limit=14):
     """Pull the ad's own mandatory-requirement statements out of the prose.
 
-    Deterministic on purpose. The gate LLM is far more decisive when handed a
-    short list of the ad's actual "must have" lines than when asked to re-read
-    the whole ad, where the surrounding narrative pulls it toward a reframing.
+    Deterministic on purpose. A model handed a short list of the ad's actual
+    "must have" lines checks credentials far more reliably than one asked to
+    re-read the whole ad, where the surrounding narrative crowds them out.
 
     Returns (mandatory_lines, credential_gate_lines); the second list is the
     subset that names a credential, registration, or eligibility gate.
@@ -344,162 +400,91 @@ def _extract_mandatory_requirements(text, limit=14):
     return mandatory, credential_gates
 
 
-def _normalise_blocker_gate(data):
-    """Coerce raw gate JSON into the stored shape, applying the safety rules.
+def _normalise_job_flags(data):
+    """Coerce raw triage JSON into the stored flag shape.
 
-    Two rules matter here. A skip must carry at least one evidenced hard
-    blocker, and a low-confidence skip is downgraded to a stretch: this stage
-    exists to remove false positives, and it must not become a new source of
-    false negatives.
+    One rule is enforced: a flag must name the ad's requirement, or it is
+    dropped. An unevidenced flag is noise, and noise is what makes people stop
+    reading the evidenced ones. Nothing else is filtered — low confidence is
+    kept and labelled, because the reader decides, not this function.
     """
-    verdict = str(data.get("verdict") or "").strip().lower().replace("-", "_")
-    if verdict.startswith("stretch"):
-        verdict = "stretch"
-    elif verdict.startswith("clear"):
-        verdict = "clear"
-    elif verdict != "skip":
-        verdict = "unknown"
+    flags = []
+    for item in data.get("flags") or []:
+        if not isinstance(item, dict):
+            continue
+        requirement = str(item.get("requirement") or "").strip()
+        if not requirement:
+            continue
+        flag_type = str(item.get("type") or "").strip().lower().replace("-", "_")
+        if flag_type not in JOB_FLAG_TYPES:
+            flag_type = "evidence_gap"
+        confidence = str(item.get("confidence") or "").strip().lower()
+        if confidence not in {"high", "medium", "low"}:
+            confidence = "low"
+        flags.append({
+            "type": flag_type,
+            "label": JOB_FLAG_LABELS[flag_type],
+            "requirement": requirement,
+            "detail": str(item.get("detail") or "").strip(),
+            "confidence": confidence,
+            "source": "auto",
+        })
 
-    confidence = str(data.get("confidence") or "").strip().lower()
-    if confidence not in {"high", "medium", "low"}:
-        confidence = "low"
-
-    # Direction matters even when the verdict is not a skip: a role below the
-    # resume's ceiling still gets applied for sometimes, and when it does the
-    # documents have to be written differently.
     direction = str(data.get("seniority_direction") or "").strip().lower()
     if direction not in {"below", "above", "aligned"}:
         direction = "unknown"
 
-    blockers = []
-    for item in data.get("hard_blockers") or []:
-        if isinstance(item, dict):
-            requirement = str(item.get("requirement") or "").strip()
-            why = str(item.get("why_unmet") or "").strip()
-        else:
-            requirement, why = str(item or "").strip(), ""
-        if requirement:
-            blockers.append({"requirement": requirement, "why_unmet": why})
-
-    gaps = [gap for gap in _coerce_list(data.get("named_gaps")) if gap]
-    downgraded_from = None
-
-    if verdict == "skip" and not blockers:
-        # The evidence rule was not met, so the skip is unsupported.
-        downgraded_from, verdict = "skip", "stretch"
-    elif verdict == "skip" and confidence == "low":
-        downgraded_from, verdict = "skip", "stretch"
-        gaps = gaps + [
-            f"{item['requirement']} ({item['why_unmet']})".strip().rstrip("()").strip()
-            for item in blockers
-        ]
-
-    if verdict == "clear" and gaps:
-        verdict = "stretch"
+    summary = str(data.get("flag_summary") or "").strip()
+    if not summary:
+        summary = (
+            f"{len(flags)} flag{'' if len(flags) == 1 else 's'} raised."
+            if flags else "Nothing stood out."
+        )
 
     return {
-        "verdict": verdict,
-        "confidence": confidence,
-        "hard_blockers": blockers,
-        "named_gaps": gaps,
+        "flags": flags,
         "domain_match": str(data.get("domain_match") or "").strip(),
         "seniority_match": str(data.get("seniority_match") or "").strip(),
         "seniority_direction": direction,
-        "reason": str(data.get("reason") or "").strip() or "No gate reason supplied.",
-        "downgraded_from": downgraded_from,
+        "summary": summary,
     }
 
 
-def _run_blocker_gate(resume_summary, resume_text, full_description, job_title, profile_id, log):
-    """Decide skip / stretch / clear for one job before full analysis.
-
-    Returns the normalised verdict dict, or None when the gate could not run —
-    callers must treat None as "no opinion" and continue, never as a block.
-    """
-    mandatory, credential_gates = _extract_mandatory_requirements(full_description)
-    stated_requirements = (
-        "\n".join(f"- {line}" for line in mandatory)
-        if mandatory else "The ad states no explicitly mandatory requirements. Judge domain and seniority only; do not invent a credential gate."
-    )
-    credential_block = (
-        "\n".join(f"- {line}" for line in credential_gates)
-        if credential_gates else "None detected by the deterministic pre-pass."
-    )
-    user_prompt = f"""Decide whether the candidate should apply for this role at all.
-
-JOB TITLE: {job_title or 'Not supplied'}
-
-MANDATORY REQUIREMENT LINES EXTRACTED FROM THE AD (deterministic pre-pass — these are the ad's own words):
----
-{stated_requirements}
----
-
-OF THOSE, THE ONES NAMING A CREDENTIAL, REGISTRATION, OR ELIGIBILITY GATE:
----
-{credential_block}
----
-
-PROFILE PREFERENCE WEIGHTING:
----
-{_analysis_preferences(profile_id)}
----
-
-COMPACT RESUME SUMMARY:
----
-{resume_summary[:2200]}
----
-
-RESUME EXTRACT:
----
-{resume_text[:8000]}
----
-
-FULL JOB ADVERTISEMENT:
----
-{full_description[:9000]}
----"""
-    response = _call_scoring_ai(
-        messages=[
-            {"role": "system", "content": BLOCKER_GATE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.05,
-        max_tokens=2000,
-        json_mode=True,
-    )
-    data = _extract_json(response)
-    if not data:
-        log(f"Blocker gate response was not valid JSON; continuing to full analysis. Response: {response[:180]}...")
-        return None
-    result = _normalise_blocker_gate(data)
-    result["stated_requirement_count"] = len(mandatory)
-    result["credential_gate_count"] = len(credential_gates)
-    return result
-
-
-def _format_blocker_section(result):
-    """Render the gate verdict for the stored analysis text."""
-    lines = [
-        "Hard-Blocker Gate:",
-        f"- Verdict: {result['verdict']}",
-        f"- Confidence: {result['confidence']}",
-        f"- Domain Match: {result.get('domain_match') or 'N/A'}",
-        f"- Seniority Match: {result.get('seniority_match') or 'N/A'}",
-        f"- Seniority Direction: {result.get('seniority_direction') or 'unknown'}",
-        f"- Reason: {result['reason']}",
-    ]
-    if result.get("downgraded_from"):
-        lines.append(
-            f"- Note: gate returned '{result['downgraded_from']}' but it was not supported by "
-            "evidenced, confident blockers, so it was downgraded."
+def _persist_flags(job_id, flags, log):
+    """Store triage flags. Never raises: a flag is an observation, and failing
+    to record one must not cost the job its analysis."""
+    if not flags:
+        return
+    try:
+        db.update_job_flags(job_id, flags)
+    except Exception as exc:
+        log(f"Flag persist skipped for job {job_id}: {exc}")
+        return
+    if flags.get("flags"):
+        log(
+            f"Flags for job ID {job_id}: "
+            + ", ".join(f"{item['label']} ({item['confidence']})" for item in flags["flags"])
         )
-    lines.append("")
-    lines.append(_bullet_section(
-        "Hard Blockers",
-        [f"{item['requirement']} -> {item['why_unmet']}" if item.get("why_unmet") else item["requirement"]
-         for item in result.get("hard_blockers") or []],
-    ))
-    lines.append(_bullet_section("Named Gaps", result.get("named_gaps")))
+
+
+def _format_flags_section(result):
+    """Render flags for the stored analysis text."""
+    flags = result.get("flags") or []
+    lines = [
+        "Flags:",
+        f"- Summary: {result.get('summary') or 'None'}",
+        f"- Domain: {result.get('domain_match') or 'N/A'}",
+        f"- Seniority: {result.get('seniority_match') or 'N/A'} ({result.get('seniority_direction') or 'unknown'})",
+        "",
+        _bullet_section(
+            "Raised",
+            [
+                f"[{flag['label']}, {flag['confidence']} confidence] {flag['requirement']}"
+                + (f" -> {flag['detail']}" if flag.get("detail") else "")
+                for flag in flags
+            ],
+        ),
+    ]
     return "\n".join(lines)
 
 
@@ -877,11 +862,14 @@ def _analyze_single_job(job, ctx):
     analysis_signature = db.make_analysis_signature(resume_text, description, pdf_text, position_description_text)
     job_title = job["title"] if "title" in job.keys() else ""
     triage_score = None
+    flags = None
 
     try:
-        triage_score, triage_reason, keep = _triage_job(
+        triage_score, triage_reason, keep, flags = _triage_job(
             f"{resume_summary}\n\n{preference_context}",
             full_description_for_analysis,
+            job_title,
+            profile_id,
             log,
         )
         triage_score, boost_hits, penalty_hits = _apply_preference_weight(triage_score, full_description_for_analysis, profile_id)
@@ -916,9 +904,14 @@ def _analyze_single_job(job, ctx):
                     f"'{job_title}' matches lane targets. Escalating to full analysis."
                 )
         if triage_score < FULL_ANALYSIS_TRIAGE_THRESHOLD and not rescued:
+            # Flags are recorded even here. A role that never earns the
+            # full-analysis spend still benefits from carrying the reason it
+            # looked marginal, and this is now the only stage that raises them.
+            _persist_flags(job_id, flags, log)
             analysis_text = (
                 f"Triage Match Score: {triage_score}%\n\n"
                 f"Triage Result:\n{triage_reason}\n\n"
+                f"{_format_flags_section(flags) if flags else ''}\n\n"
                 f"{_band_block(job)}"
                 f"Full analysis skipped because the first-pass score was below {FULL_ANALYSIS_TRIAGE_THRESHOLD}%."
             )
@@ -935,62 +928,24 @@ def _analyze_single_job(job, ctx):
             raise
         log(f"Triage failed for job ID {job_id}; falling back to full analysis: {e}")
 
-    # --- Hard-blocker gate --------------------------------------------------
-    # Only runs when triage produced a score, because a skip verdict persists
-    # the triage score alongside it. When triage failed we keep the existing
-    # behaviour and fall straight through to full analysis.
-    blocker = None
-    if triage_score is not None:
-        try:
-            blocker = _run_blocker_gate(
-                resume_summary,
-                resume_text,
-                full_description_for_analysis,
-                job_title,
-                profile_id,
-                log,
+    # Flags come from triage. They are recorded and shown; nothing here branches
+    # on them, so a flagged role continues to full analysis exactly like any
+    # other. The person deciding sees the flags, not this function.
+    _persist_flags(job_id, flags, log)
+
+    flag_block = ""
+    if flags and flags["flags"]:
+        flag_block = (
+            "\n\nFLAGS RAISED AT TRIAGE (the ad's own requirements, checked against the resume). "
+            "Address each one directly rather than reframing it away. If one cannot be answered with "
+            "resume evidence, say so and let it lower the score:\n"
+            "---\n"
+            + "\n".join(
+                f"- [{item['label']}] {item['requirement']}"
+                + (f" -> {item['detail']}" if item.get("detail") else "")
+                for item in flags["flags"]
             )
-        except concurrency.OperationCancelledError:
-            raise
-        except Exception as e:
-            if concurrency.cancel_event.is_set():
-                raise
-            # A gate failure must never block a role. No opinion, carry on.
-            log(f"Blocker gate failed for job ID {job_id}; continuing to full analysis: {e}")
-            blocker = None
-
-    if blocker:
-        try:
-            db.update_job_blocker_gate(job_id, blocker["verdict"], blocker["reason"], blocker)
-        except Exception as exc:
-            log(f"Blocker verdict persist skipped for job {job_id}: {exc}")
-        log(f"Blocker gate for job ID {job_id}: {blocker['verdict']} ({blocker['confidence']} confidence) - {blocker['reason']}")
-
-    if blocker and blocker["verdict"] == "skip":
-        capped_score = min(triage_score, BLOCKER_SKIP_SCORE_CAP)
-        analysis_text = (
-            f"Match Score: {capped_score}%\n\n"
-            f"Triage Match Score: {triage_score}%\n\n"
-            f"{_format_blocker_section(blocker)}\n\n"
-            f"{_band_block(job)}"
-            "Full analysis and document generation skipped: the hard-blocker gate returned a "
-            "decisive skip. Clear the verdict in the workspace if you disagree; that also queues "
-            "the job for re-analysis."
-        )
-        db.update_job_analysis(job_id, analysis_text, capped_score, analysis_signature)
-        try:
-            db.update_job_fragment_alignment(job_id, None, _compose_score(capped_score, None), None)
-        except Exception as exc:
-            log(f"Composite score persist skipped for job {job_id}: {exc}")
-        return
-
-    blocker_block = ""
-    if blocker and blocker.get("named_gaps"):
-        blocker_block = (
-            "\n\nHARD-BLOCKER GATE — NAMED GAPS (a prior stage has already checked eligibility, domain and level; "
-            "these gaps are real and must be answered directly, not reframed away. If a gap cannot be answered with "
-            "resume evidence, say so and let it lower the score):\n"
-            "---\n" + "\n".join(f"- {gap}" for gap in blocker["named_gaps"]) + "\n---"
+            + "\n---"
         )
 
     fragment_block = (
@@ -1008,7 +963,7 @@ CANDIDATE RESUME:
 PROFILE PREFERENCE WEIGHTING:
 ---
 {preference_context}
----{fragment_block}{blocker_block}
+---{fragment_block}{flag_block}
 
 JOB ADVERTISEMENT:
 ---
@@ -1065,8 +1020,8 @@ JOB ADVERTISEMENT:
             _analysis_fragment_alignment(data, bool(fragment_context))
             if data and score >= 65 else (None, None)
         )
-        if blocker:
-            analysis_text = f"{analysis_text}\n\n{_format_blocker_section(blocker)}"
+        if flags:
+            analysis_text = f"{analysis_text}\n\n{_format_flags_section(flags)}"
         band_block = _band_block(job)
         if band_block:
             analysis_text = f"{analysis_text}\n\n{band_block.rstrip()}"

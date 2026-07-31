@@ -148,8 +148,8 @@ JOB_SUMMARY_FIELDS = {
     "actual_company",
     "advertiser_company",
     "company_confidence",
-    "blocker_verdict",
-    "blocker_reason",
+    "job_flags_types",
+    "job_flags_json",
     "channel",
 }
 
@@ -328,7 +328,3 @@ def resolve_workspace_path(value):
 
 class JobNotLiveError(ValueError):
     """A confident liveness check says document generation should be skipped."""
-
-
-class BlockerGateError(ValueError):
-    """The hard-blocker gate returned a decisive skip for this job."""

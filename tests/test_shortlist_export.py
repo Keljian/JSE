@@ -1,9 +1,10 @@
 """Regression checks for the triage packet export (jobs:exportShortlist).
 
 The packet replaces a manual copy-paste handoff, so it is only worth anything
-if it is complete: every survivor, with the ad text, the scores, the gate
-verdict, and any warm path, in one file. These tests pin the contents, the
-ordering, and the exclusion of roles the gate already ruled out.
+if it is complete: every survivor, with the ad text, the scores, any flags, and
+any warm path, in one file. These tests pin the contents and the ordering, and
+check that flagged roles stay in rather than being filtered out on the reader's
+behalf.
 """
 import json
 import shutil
@@ -97,10 +98,12 @@ class ShortlistExportTests(unittest.TestCase):
             match_score=82, composite_score=84, salary="$160,000", location="Mentone VIC",
         )
         db.update_job_analysis(job_id, "Match Score: 82%\nFit Level: Strong", 82)
-        db.update_job_blocker_gate(job_id, "stretch", "Named platform gaps.", {
-            "verdict": "stretch",
-            "named_gaps": ["Ad asks for Dynamics 365; resume shows Salesforce."],
-            "hard_blockers": [],
+        db.update_job_flags(job_id, {
+            "flags": [{"type": "evidence_gap",
+                       "requirement": "Ad asks for Dynamics 365.",
+                       "detail": "Resume shows Salesforce.",
+                       "confidence": "high"}],
+            "summary": "Named platform gap.",
         })
         db.upsert_warm_contact("Dana Lee", organisation="Flavorite", role_title="COO", profile_id=1)
 
@@ -109,8 +112,8 @@ class ShortlistExportTests(unittest.TestCase):
         entry = payload["jobs"][0]
 
         self.assertEqual(entry["title"], "Head of Technology")
-        self.assertEqual(entry["blocker_verdict"], "stretch")
-        self.assertEqual(entry["named_gaps"], ["Ad asks for Dynamics 365; resume shows Salesforce."])
+        self.assertEqual(entry["flag_summary"], "Named platform gap.")
+        self.assertEqual(entry["flags"][0]["requirement"], "Ad asks for Dynamics 365.")
         self.assertEqual(entry["warm_path"][0]["name"], "Dana Lee")
         self.assertIn("must hold a current licence", entry["description"])
         self.assertIn("Match Score", entry["analysis"])
@@ -122,13 +125,21 @@ class ShortlistExportTests(unittest.TestCase):
         self.assertIn("Ad asks for Dynamics 365", markdown)
         self.assertIn("must hold a current licence", markdown)
 
-    def test_gated_skips_are_excluded_unless_asked_for(self):
+    def test_flagged_roles_stay_in_the_packet(self):
+        # The packet is the input to a human go/no-go. Dropping flagged roles
+        # would make that decision on their behalf, which is the whole thing
+        # this design moved away from.
         keep = self._add("Keeper", "Coldco", "https://example.com/s4")
-        blocked = self._add("Blocked", "Clinicalco", "https://example.com/s5")
-        db.update_job_blocker_gate(blocked, "skip", "Registration gate.", {"verdict": "skip"})
+        flagged = self._add("Flagged", "Clinicalco", "https://example.com/s5")
+        db.update_job_flags(flagged, {
+            "flags": [{"type": "credential_gate", "requirement": "AHPRA registration."}],
+        })
 
-        self.assertEqual(self._export()["job_ids"], [keep])
-        self.assertCountEqual(self._export(include_blocked=True)["job_ids"], [keep, blocked])
+        self.assertCountEqual(self._export()["job_ids"], [keep, flagged])
+        self.assertEqual(
+            self._export(exclude_flags=["credential_gate"])["job_ids"], [keep],
+            "an explicit exclusion should still be possible",
+        )
 
     def test_warm_roles_lead_the_packet(self):
         cold = self._add("Cold", "Coldco", "https://example.com/s6", match_score=95, composite_score=95)

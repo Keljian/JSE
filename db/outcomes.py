@@ -364,13 +364,13 @@ _STRIPPED_TITLE_TERMS = (
 )
 
 
-def document_track(job, blocker_details=None):
+def document_track(job, flag_details=None):
     """Which document strategy this role needs, and why.
 
-    Derived rather than asked of another LLM call: the blocker gate already
-    judged level alignment, the salary band is already parsed, and the title
-    band is already classified. An explicit stored track always wins, so a
-    manual decision survives re-analysis.
+    Derived rather than asked of another LLM call: triage already reported the
+    seniority direction, the salary band is already parsed, and the title band
+    is already classified. An explicit stored track always wins, so a manual
+    decision survives re-analysis.
     """
     from .campaign import campaign_salary_band
     # Imported here rather than at module scope: document_track needs a
@@ -380,9 +380,9 @@ def document_track(job, blocker_details=None):
         return {"track": stored, "source": "manual", "reasons": ["Set manually for this role."]}
 
     reasons = []
-    details = blocker_details or {}
+    details = flag_details or {}
     if str(details.get("seniority_direction") or "").strip().lower() == "below":
-        reasons.append("Blocker gate placed the role below the resume's ceiling.")
+        reasons.append("Triage placed the role below the resume's ceiling.")
 
     title = str(job.get("title") or "").lower()
     matched_titles = [term for term in _STRIPPED_TITLE_TERMS if term in title]
@@ -397,8 +397,8 @@ def document_track(job, blocker_details=None):
 
     # One weak signal is noise; the risk is real when the level reads low from
     # more than one direction, or when the gate said so outright.
-    gate_said_below = any("Blocker gate" in reason for reason in reasons)
-    if gate_said_below or len(reasons) >= 2:
+    triage_said_below = any("Triage placed" in reason for reason in reasons)
+    if triage_said_below or len(reasons) >= 2:
         return {"track": DOC_TRACK_STRIPPED, "source": "derived", "reasons": reasons}
     return {
         "track": DOC_TRACK_SENIOR,
@@ -424,14 +424,14 @@ def set_job_document_track(job_id, track):
 
 def resolve_document_track(job_id):
     """The effective track for a job, with the gate's own judgement folded in."""
-    from .jobs import get_job_blocker_gate, get_job_details
+    from .jobs import get_job_details, get_job_flags
     # Imported here rather than at module scope: resolve_document_track needs a
     # module that imports this one back.
     job = get_job_details(job_id)
     if not job:
         raise ValueError(f"Job {job_id} was not found.")
-    gate = get_job_blocker_gate(job_id) or {}
-    return document_track(dict(job), gate.get("details"))
+    flags = get_job_flags(job_id) or {}
+    return document_track(dict(job), flags)
 
 
 def set_job_channel(job_id, channel):

@@ -94,13 +94,24 @@ const APPLY_CHANNEL_LABELS = {
   board_apply: "Board apply",
 };
 
-// Hard-blocker gate verdicts. 'skip' is the decisive negative: it blocks
-// document generation until the user explicitly overrides it.
-const BLOCKER_CHIPS = {
-  skip: ["bad", "Skip", "Hard-blocker gate: do not apply"],
-  stretch: ["warn", "Stretch", "Hard-blocker gate: no hard blocker, but named gaps must be addressed"],
-  clear: ["good", "Clear fit", "Hard-blocker gate: no blockers and no material gaps"],
+// Flags raised at triage. They are observations shown beside the score; no
+// code path branches on them, so a flagged role behaves like any other.
+const JOB_FLAG_CHIPS = {
+  credential_gate: ["bad", "Credential gate"],
+  domain_mismatch: ["bad", "Domain mismatch"],
+  seniority_below: ["warn", "Below your level"],
+  seniority_above: ["warn", "Above your level"],
+  evidence_gap: ["muted", "Evidence gap"],
 };
+
+const JOB_FLAG_FILTERS = [
+  { value: "", label: "Any flags" },
+  { value: "credential_gate", label: "Credential gate" },
+  { value: "domain_mismatch", label: "Domain mismatch" },
+  { value: "seniority_below", label: "Below your level" },
+  { value: "seniority_above", label: "Above your level" },
+  { value: "evidence_gap", label: "Evidence gap" },
+];
 
 // Channel warmth. Warm routes convert far better than cold portals, so the
 // board shows warmth next to the score rather than burying it in the workspace.
@@ -170,4 +181,4 @@ const PLAN_KIND_META = {
   stage: { label: "New opportunity", cls: "u4" }
 };
 
-export { PIPELINE, WORKSPACE_TABS, KANBAN_COLUMN_RENDER_CAP, WORK_MODES, LOCAL_AI_RUNTIMES, DOCUMENT_AI_PROVIDERS, COMPAT_PRESETS, SUPPORT_MESSAGE, SUPPORT_URL, RELEASES_URL, SETTINGS_SECTIONS, CORPUS_DOC_TYPES, COMPOSITE_MATCH_WEIGHT, COMPOSITE_FRAGMENT_WEIGHT, APPLY_CHANNEL_LABELS, BLOCKER_CHIPS, CHANNEL_OPTIONS, WARMTH_CHIPS, DOC_TRACK_OPTIONS, ANALYSIS_TOP_FIELDS, SCOPE_FIELD_KEYS, NEAR_MISS_RESOLUTIONS, HM_STATUS_LABELS, HM_OUTCOME_LABELS, HM_TYPE_LABELS, PLAN_KIND_META };
+export { JOB_FLAG_CHIPS, JOB_FLAG_FILTERS, PIPELINE, WORKSPACE_TABS, KANBAN_COLUMN_RENDER_CAP, WORK_MODES, LOCAL_AI_RUNTIMES, DOCUMENT_AI_PROVIDERS, COMPAT_PRESETS, SUPPORT_MESSAGE, SUPPORT_URL, RELEASES_URL, SETTINGS_SECTIONS, CORPUS_DOC_TYPES, COMPOSITE_MATCH_WEIGHT, COMPOSITE_FRAGMENT_WEIGHT, APPLY_CHANNEL_LABELS, CHANNEL_OPTIONS, WARMTH_CHIPS, DOC_TRACK_OPTIONS, ANALYSIS_TOP_FIELDS, SCOPE_FIELD_KEYS, NEAR_MISS_RESOLUTIONS, HM_STATUS_LABELS, HM_OUTCOME_LABELS, HM_TYPE_LABELS, PLAN_KIND_META };

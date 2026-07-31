@@ -16,7 +16,7 @@ import "./styles.css";
 import jseIcon from "../assets/jse-icon.png";
 
 import { KANBAN_COLUMN_RENDER_CAP, PIPELINE, SUPPORT_MESSAGE, SUPPORT_URL, WORK_MODES } from "./lib/constants";
-import { blockerVerdictOf, documentAiLabel, formatBytes, hasCompanyResearch, normalizeStage, openSupportLink, primaryScore, toErrorMessage, todayPlus } from "./lib/format";
+import { documentAiLabel, formatBytes, hasCompanyResearch, normalizeStage, openSupportLink, jobFlagTypesOf, primaryScore, toErrorMessage, todayPlus } from "./lib/format";
 import { appConfirm, appNotice, dialogBridge } from "./lib/dialogs";
 import { DialogModal, DocumentTextModal } from "./components/primitives";
 import { JobCard } from "./components/chips";
@@ -599,29 +599,18 @@ function App() {
     }
   };
 
-  // The gate's whole value is that a skip actually stops something. Ask once,
-  // then pass the override through so the bridge records the decision.
-  const confirmBlockerOverride = async (job) => {
-    if (blockerVerdictOf(job) !== "skip") return { proceed: true, override: false };
-    const reason = String(job?.blocker_reason || "").trim() || "The gate found a hard blocker.";
-    const confirmed = await appConfirm({
-      title: "Hard-blocker gate says skip",
-      message: `${reason}\n\nThis role was gated as a non-starter, so documents are not generated for it by default. Generate anyway?`,
-      confirmLabel: "Generate anyway",
-      warning: true
-    });
-    if (!confirmed) appendLog(`Document generation cancelled for ${job.title}: blocker gate says skip.`);
-    return { proceed: confirmed, override: confirmed };
-  };
-
   const generateDocsForJob = async (job) => {
     if (!job) return;
-    const { proceed, override } = await confirmBlockerOverride(job);
-    if (!proceed) return;
+    // Flags are noted in the log, not enforced. They are already on the card
+    // and in the workspace; if the call is to apply anyway, that is the call.
+    const flagCount = jobFlagTypesOf(job).length;
+    if (flagCount) {
+      appendLog(`${job.title} has ${flagCount} flag${flagCount === 1 ? "" : "s"}; generating anyway.`);
+    }
     appendLog(`Generating context-grounded documents for ${job.title} with ${documentAiLabel(settings)}.`);
     runTask(
       "docs:generateRich",
-      { profile_id: job.profile_id, job_id: job.id, override_blocker: override },
+      { profile_id: job.profile_id, job_id: job.id },
       "Application documents generated (with evidence review)."
     );
   };
@@ -636,14 +625,14 @@ function App() {
       appendLog("Document generation is already running.");
       return;
     }
-    const blocked = candidates.filter((job) => blockerVerdictOf(job) === "skip");
-    const blockedNote = blocked.length
-      ? `\n\n${blocked.length} of these ${blocked.length === 1 ? "was" : "were"} gated as skip by the hard-blocker check and will be passed over: ${blocked.map((job) => job.title).join(", ")}.`
+    const flagged = candidates.filter((job) => jobFlagTypesOf(job).length);
+    const flaggedNote = flagged.length
+      ? `\n\n${flagged.length} of these carr${flagged.length === 1 ? "ies" : "y"} flags worth a look first: ${flagged.map((job) => job.title).join(", ")}.`
       : "";
     const confirmed = await appConfirm({
       title: "Generate Interested documents",
-      message: `Generate a tailored resume and cover letter for all ${candidates.length} job${candidates.length === 1 ? "" : "s"} currently shown in Interested? Jobs are processed one at a time and existing generated files for the same company and role are replaced.${blockedNote}`,
-      confirmLabel: `Generate ${candidates.length - blocked.length} job${candidates.length - blocked.length === 1 ? "" : "s"}`
+      message: `Generate a tailored resume and cover letter for all ${candidates.length} job${candidates.length === 1 ? "" : "s"} currently shown in Interested? Jobs are processed one at a time and existing generated files for the same company and role are replaced.${flaggedNote}`,
+      confirmLabel: `Generate ${candidates.length} job${candidates.length === 1 ? "" : "s"}`
     });
     if (!confirmed) return;
 
@@ -903,23 +892,22 @@ function App() {
     await refresh();
   };
 
-  const setWorkspaceBlockerVerdict = async (verdict, reason) => {
+  const runFlagCommand = async (command, payload, note) => {
     if (!workspace.job) return;
     try {
-      await invoke("jobs:setBlockerVerdict", {
-        job_id: workspace.job.id,
-        verdict: verdict || "",
-        clear: !verdict,
-        reason: reason || ""
-      });
-      appendLog(verdict ? `Blocker verdict set to ${verdict} for ${workspace.job.title}.` : `Blocker verdict cleared for ${workspace.job.title}.`);
+      await invoke(command, { job_id: workspace.job.id, ...payload });
+      appendLog(`${note} for ${workspace.job.title}.`);
       const detail = await invoke("jobs:detail", { job_id: workspace.job.id });
       setWorkspace((current) => ({ ...current, job: detail.job, events: detail.events }));
       await refresh();
     } catch (error) {
-      appendLog(`Could not update the blocker verdict: ${toErrorMessage(error)}`);
+      appendLog(`Could not update flags: ${toErrorMessage(error)}`);
     }
   };
+
+  const addWorkspaceFlag = (draft) => runFlagCommand("jobs:addFlag", draft, "Flag added");
+  const dismissWorkspaceFlag = (requirement) => runFlagCommand("jobs:dismissFlag", { requirement }, "Flag dismissed");
+  const clearWorkspaceFlags = () => runFlagCommand("jobs:clearFlags", {}, "Flags cleared");
 
   const exportShortlist = async () => {
     setExportingShortlist(true);
@@ -980,8 +968,6 @@ function App() {
 
   const generateDocs = async (additionalCandidateContext = "") => {
     if (!workspace.job) return;
-    const { proceed, override } = await confirmBlockerOverride(workspace.job);
-    if (!proceed) return;
     appendLog(`Generating context-grounded documents with ${documentAiLabel(settings)}.`);
     runTask(
       "docs:generateRich",
@@ -989,8 +975,7 @@ function App() {
         profile_id: workspace.job.profile_id,
         job_id: workspace.job.id,
         position_description_text: workspace.job.position_description_text || "",
-        additional_candidate_context: additionalCandidateContext,
-        override_blocker: override
+        additional_candidate_context: additionalCandidateContext
       },
       "Application documents generated (with evidence review)."
     );
@@ -1816,7 +1801,9 @@ function App() {
           documentAiName={documentAiLabel(settings)}
           onRejectJob={rejectFromWorkspace}
           onMoveInterested={moveInterestedFromWorkspace}
-          onSetBlockerVerdict={setWorkspaceBlockerVerdict}
+          onAddFlag={addWorkspaceFlag}
+          onDismissFlag={dismissWorkspaceFlag}
+          onClearFlags={clearWorkspaceFlags}
           onSetChannel={setWorkspaceChannel}
           onSetDocumentTrack={setWorkspaceDocumentTrack}
         />

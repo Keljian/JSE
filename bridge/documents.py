@@ -11,7 +11,6 @@ import database_manager as db
 from config import MY_INFO
 from job_liveness import check_job_liveness
 from .runtime import (
-    BlockerGateError,
     JobNotLiveError,
     _resolve_existing_path,
     applications_dir,
@@ -278,7 +277,7 @@ def resolve_additional_candidate_context(payload, job):
 
 
 def command_docs_generate(payload):
-    from .jobs import assert_blocker_gate_clear
+    from .jobs import report_job_flags
     # Imported here rather than at module scope: command_docs_generate needs a
     # module that imports this one back.
     import application_doc_builder
@@ -289,7 +288,7 @@ def command_docs_generate(payload):
     job_id = payload["job_id"]
     resume_text = read_resume_text(profile_id)
     job = db.get_job_details(job_id)
-    assert_blocker_gate_clear(job, payload)
+    report_job_flags(job)
     additional_candidate_context = resolve_additional_candidate_context(payload, job)
     settings = db.get_lane_settings(profile_id)
     try:
@@ -366,7 +365,7 @@ def command_docs_generate(payload):
 
 def command_docs_generate_rich(payload):
     """Context-grounded generation: rich evidence + Gemini/Claude + clean render + review."""
-    from .jobs import assert_blocker_gate_clear
+    from .jobs import report_job_flags
     # Imported here rather than at module scope: command_docs_generate_rich needs a
     # module that imports this one back.
     import rich_application
@@ -375,7 +374,7 @@ def command_docs_generate_rich(payload):
     job = db.get_job_details(job_id)
     if not job:
         raise ValueError(f"Job {job_id} was not found.")
-    assert_blocker_gate_clear(job, payload)
+    report_job_flags(job)
     additional_candidate_context = resolve_additional_candidate_context(payload, job)
     emit("status", message=f"Checking whether {job['title']} is still live…")
     liveness = check_job_liveness(job)
@@ -695,7 +694,6 @@ def command_docs_generate_interested_batch(payload):
                 "job_id": job_id,
                 "profile_id": job["profile_id"],
                 "position_description_text": job["position_description_text"] or "",
-                "override_blocker": bool(payload.get("override_blocker")),
             })
             succeeded += 1
             results.append({
@@ -716,15 +714,6 @@ def command_docs_generate_interested_batch(payload):
             emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
                  job_id=job_id, title=title, status="skipped",
                  message=f"Skipped closed job {index} of {total}: {title}")
-        except BlockerGateError as exc:
-            skipped += 1
-            reason = str(exc)
-            results.append({"job_id": job_id, "title": title, "ok": False, "skipped": True,
-                            "blocked": True, "error": reason})
-            emit("log", message=f"{title}: {reason}")
-            emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
-                 job_id=job_id, title=title, status="skipped",
-                 message=f"Skipped blocked job {index} of {total}: {title}")
         except Exception as exc:
             failed += 1
             error = str(exc)
