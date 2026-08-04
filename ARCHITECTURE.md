@@ -182,6 +182,51 @@ ones that had already cleared the threshold.
 Triage reports `seniority_direction` whether or not it raises a seniority flag,
 which feeds the two-track document strategy below.
 
+#### What the scoring chain is judged against
+
+Every scoring pass — triage, full analysis, deep gatekeeper — is judged against
+a **positioning doctrine**: which role families are on target, at what level, in
+what salary band. `llm.prompts.POSITIONING_DOCTRINE` is the default, and a lane
+can override it with `profiles.positioning_doctrine` (Settings > Lane).
+
+The override exists because the doctrine was global while the app is multi-lane.
+The default describes the candidate's primary market and retires families that
+sit below it, so a secondary lane hunting a lower level got its own target roles
+capped by a doctrine written about a different search. A blank override means
+"use the default", which is right for the lane the default was written for.
+
+Alongside it, each pass receives an **ACTIVE LANE BRIEF** built from the lane's
+`lane_intent`, `target_titles`, `target_domains`, `seniority`, `must_have_terms`
+and `avoid_terms`. The brief outranks the doctrine on role family and level for
+that pass: a role matching the lane's stated targets is on-target by definition,
+and the retired-track and level-mismatch caps do not apply to it. Every other
+cap and knockout still does. Before this existed the lane's targets reached the
+model nowhere at all — they were used only for a token-overlap check — so the
+model judged level against the doctrine's primary track on every lane.
+
+Lane weighting terms (`boost_terms`, `penalty_terms`) shift the triage score by
+at most +10 / -15 in total. They split on semicolons, commas or newlines.
+
+#### Borderline rescue
+
+A role scoring under the full-analysis threshold is escalated to full analysis
+anyway when its title reads as one of the lane's own targets. Full analysis is
+the only stage that can promote as well as demote, so a single noisy triage
+number does not get the last word on an on-lane role.
+
+The rescue is deliberately not gated on `keep` or the keep threshold. The caps
+it exists to second-guess are level judgements, and those land at 40 with
+`keep=false` — below both gates — so a rescue requiring either could never reach
+the roles that needed it. It is gated on `TRIAGE_RESCUE_FLOOR` instead, and on
+the absence of a high-confidence `credential_gate` flag: level is a matter of
+strategy, but a mandatory registration the resume cannot evidence is not, and no
+lane brief makes the candidate eligible for it.
+
+Title matching is prefix-based rather than exact, so ordinary word forms of the
+same term count (technician/technical, teacher/teaching). Titles of one or two
+words must match in full; longer ones need two overlaps, so a stray shared word
+is not enough on its own.
+
 The analysis layer uses `llm_handler.py` and may call:
 
 - local OpenAI-compatible models

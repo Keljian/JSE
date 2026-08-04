@@ -71,6 +71,10 @@ DEFAULT_PROFILE_SETTINGS = {
     "must_have_terms": "",
     "avoid_terms": "",
     "document_strategy": "",
+    # Blank means the lane is scored against the global positioning doctrine in
+    # llm.prompts. Set it per lane when the lane's market is not the candidate's
+    # primary one.
+    "positioning_doctrine": "",
     "active": 1,
 }
 

@@ -70,13 +70,19 @@ from llm.parsing import (  # noqa: F401
 )
 from llm.prompts import (  # noqa: F401
     ANALYSIS_SYSTEM_PROMPT,
+    ANALYSIS_SYSTEM_PROMPT_BASE,
     APPLICATION_DOCUMENT_SYSTEM_PROMPT,
     COMPANY_RESEARCH_SYSTEM_PROMPT,
     DEEP_GATEKEEPER_SYSTEM_PROMPT,
+    DEEP_GATEKEEPER_SYSTEM_PROMPT_BASE,
     FULL_ANALYSIS_TRIAGE_THRESHOLD,
     POSITIONING_DOCTRINE,
     TRIAGE_KEEP_THRESHOLD,
     TRIAGE_SYSTEM_PROMPT,
+    TRIAGE_SYSTEM_PROMPT_BASE,
+    lane_brief,
+    resolve_positioning_doctrine,
+    with_doctrine,
 )
 from llm.analysis import (  # noqa: F401
     JOB_FLAG_LABELS,

@@ -16,9 +16,13 @@ print("Local LLM endpoint defaults loaded; configure the active endpoint in Sett
 
 
 # ---------------------------------------------------------------------------
-# POSITIONING DOCTRINE (June 2026) — single source of truth for how the
-# screening prompts understand the target market. Update HERE when strategy
-# changes; the triage / analysis / gatekeeper prompts all append it.
+# POSITIONING DOCTRINE (June 2026) — the DEFAULT view of the target market,
+# used by any lane that has not set its own. Update HERE when the overall
+# strategy changes; a lane whose market is a slice of this one (a secondary
+# technical lane, say) should set profiles.positioning_doctrine instead, or the
+# doctrine's RETIRED clause will cap the very roles that lane exists to find.
+# Resolved per lane by resolve_positioning_doctrine(); the triage / analysis /
+# gatekeeper prompts append the resolved text, not this constant directly.
 # ---------------------------------------------------------------------------
 POSITIONING_DOCTRINE = """CANDIDATE POSITIONING (authoritative — June 2026)
 Single identity: a technology leader for businesses whose product is physical, technical or creative work (manufacturing, agtech, food production, energy, industrial services, design-led and professional practices). The builder-practitioner who creates structure and foundations where none exist, and works in the tools himself.
@@ -44,7 +48,64 @@ TIMING & LIABILITIES
 Use this positioning to judge role-family fit, level fit, and application ROI. Never use it to invent or inflate resume facts."""
 
 
-ANALYSIS_SYSTEM_PROMPT = """You are a senior Australian career analyst evaluating ONE resume against ONE job advertisement. Downstream tooling uses your JSON to decide whether to apply and how to tailor documents.
+def resolve_positioning_doctrine(lane_settings=None):
+    """The doctrine this lane is scored against.
+
+    A lane override wins outright. The global doctrine describes the candidate's
+    primary market, and a secondary lane hunting a different level or family
+    needs its own or it gets capped by a doctrine written about someone else's
+    search.
+    """
+    override = str((lane_settings or {}).get("positioning_doctrine") or "").strip()
+    return override or POSITIONING_DOCTRINE
+
+
+def with_doctrine(base_prompt, lane_settings=None):
+    """Append the lane's resolved doctrine to a doctrine-free base prompt."""
+    return f"{base_prompt}\n\n{resolve_positioning_doctrine(lane_settings)}"
+
+
+# Fields rendered into the lane brief, in the order a reader wants them.
+_LANE_BRIEF_FIELDS = (
+    ("Lane intent", "lane_intent"),
+    ("Target titles", "target_titles"),
+    ("Target domains", "target_domains"),
+    ("Target seniority", "seniority"),
+    ("Must-have signals", "must_have_terms"),
+    ("Avoid signals", "avoid_terms"),
+)
+
+
+def lane_brief(lane_settings=None):
+    """Render the active lane's own targeting brief for the scoring prompts.
+
+    The lane's targets used to exist only as a token-overlap check in the
+    borderline rescue: the model itself never saw which titles or seniority the
+    search was actually after, so it judged level against the doctrine's primary
+    track and retired roles the lane was created to find. Returns "" when the
+    lane has stated nothing, so nothing empty reaches the prompt.
+    """
+    settings = lane_settings or {}
+    lines = []
+    for label, key in _LANE_BRIEF_FIELDS:
+        value = " ".join(str(settings.get(key) or "").split())
+        if value:
+            lines.append(f"- {label}: {value}")
+    if not lines:
+        return ""
+    return (
+        "ACTIVE LANE BRIEF (the search actually running right now)\n"
+        + "\n".join(lines)
+        + "\n\nPRECEDENCE: the CANDIDATE POSITIONING section describes the whole candidate across every lane."
+        " This brief describes the one lane being scored. Where they disagree about which role families or"
+        " seniority levels are in scope, THIS BRIEF WINS for this pass. A role matching the lane's stated"
+        " titles, domains and seniority is on-target by definition: do not apply a retired-track or"
+        " level-mismatch cap to it, and do not treat its level as a mismatch merely because the candidate has"
+        " worked above it. Score it on evidence overlap with the ad's actual duties."
+    )
+
+
+ANALYSIS_SYSTEM_PROMPT_BASE = """You are a senior Australian career analyst evaluating ONE resume against ONE job advertisement. Downstream tooling uses your JSON to decide whether to apply and how to tailor documents.
 
 OUTPUT CONTRACT
 - Return exactly ONE minified JSON object. Nothing before or after it. No markdown, no code fences, no commentary, no <think> tags.
@@ -72,7 +133,7 @@ RESTRICTIVE GUARDS (apply these caps before finalising)
 - Cap at 78 if "cover_letter_angle" is generic ("transferable skills", "proven leader", "strong fit") or could be reused unchanged for a dozen other jobs.
 - Cap at 78 if you cannot name at least 3 specific resume artefacts (role, employer, project, outcome) that map to specific ad requirements.
 - Cap at 74 if the ad is a recruiter post with no end client, no concrete duty detail, and no salary band — there is too little signal to score higher honestly.
-- Cap at 69 if the seniority signalled by the ad is materially above or below the resume's demonstrated ceiling.
+- Cap at 69 if the seniority signalled by the ad is materially above or below the resume's demonstrated ceiling. Does NOT apply when an ACTIVE LANE BRIEF is supplied and the ad's level matches the seniority that brief is targeting — a lane deliberately hunting below the resume's ceiling is a strategy, not a mismatch.
 
 FIT LEVEL MAPPING
 - 90-100 -> "exceptional"; 80-89 -> "strong"; 70-79 -> "possible"; 50-69 -> "weak"; 0-49 -> "poor".
@@ -115,10 +176,13 @@ REQUIRED JSON SHAPE (every key present, even if empty)
 }
 
 EXAMPLE (content style only; required schema above is authoritative):
-{"match_score":86,"fit_level":"strong","suitability_summary":"Strong fit. The resume's eight years leading Microsoft 365 and Azure platform teams at <employer> covers the ad's core platform-ownership outcomes. Public-sector procurement language is absent and should be added in tailoring.","high_fit_rationale":"Lead with the <employer> M365 tenant consolidation (covers 'cloud platform leadership') and the <project> ITSM rebuild (covers 'service management uplift'). Biggest risk to neutralise: no explicit Victorian government experience — frame the council program as comparable public-sector delivery.","strengths":["Led M365 consolidation across 4 business units at <employer>","Owned $2.1M annual platform budget","Direct line management of 11 engineers"],"weaknesses":["No explicit Victorian government tenure","ITIL v4 certification not stated"],"key_skills":["Cloud platform leadership","Service management","Vendor governance","Stakeholder management","Budget ownership","Team leadership","Cyber risk posture","Change advisory"],"application_focus_points":["Mirror the ad's 'platform owner' language in the summary","Quantify team, budget and tenant scale up front","Add a public-sector framing line"],"resume_focus":["Promote the M365 consolidation bullet into the summary","Reword 'managed vendors' as 'governed $1.4M in panel contracts'","Drop early helpdesk role detail to free space"],"cover_letter_angle":"Position as the platform owner who already ran a multi-business-unit M365 consolidation with the budget and team scale this Victorian government role expects.","interview_focus":["Walk through the M365 tenant consolidation decision tree","Prepare a public-sector procurement story"],"recommended_action":"Prepare targeted application"}""" + "\n\n" + POSITIONING_DOCTRINE
+{"match_score":86,"fit_level":"strong","suitability_summary":"Strong fit. The resume's eight years leading Microsoft 365 and Azure platform teams at <employer> covers the ad's core platform-ownership outcomes. Public-sector procurement language is absent and should be added in tailoring.","high_fit_rationale":"Lead with the <employer> M365 tenant consolidation (covers 'cloud platform leadership') and the <project> ITSM rebuild (covers 'service management uplift'). Biggest risk to neutralise: no explicit Victorian government experience — frame the council program as comparable public-sector delivery.","strengths":["Led M365 consolidation across 4 business units at <employer>","Owned $2.1M annual platform budget","Direct line management of 11 engineers"],"weaknesses":["No explicit Victorian government tenure","ITIL v4 certification not stated"],"key_skills":["Cloud platform leadership","Service management","Vendor governance","Stakeholder management","Budget ownership","Team leadership","Cyber risk posture","Change advisory"],"application_focus_points":["Mirror the ad's 'platform owner' language in the summary","Quantify team, budget and tenant scale up front","Add a public-sector framing line"],"resume_focus":["Promote the M365 consolidation bullet into the summary","Reword 'managed vendors' as 'governed $1.4M in panel contracts'","Drop early helpdesk role detail to free space"],"cover_letter_angle":"Position as the platform owner who already ran a multi-business-unit M365 consolidation with the budget and team scale this Victorian government role expects.","interview_focus":["Walk through the M365 tenant consolidation decision tree","Prepare a public-sector procurement story"],"recommended_action":"Prepare targeted application"}"""
 
 
-TRIAGE_SYSTEM_PROMPT = """You are the first-pass classifier for an Australian job-search pipeline. You do two things in one pass: score whether this role deserves expensive full analysis, and raise flags on it.
+ANALYSIS_SYSTEM_PROMPT = with_doctrine(ANALYSIS_SYSTEM_PROMPT_BASE)
+
+
+TRIAGE_SYSTEM_PROMPT_BASE = """You are the first-pass classifier for an Australian job-search pipeline. You do two things in one pass: score whether this role deserves expensive full analysis, and raise flags on it.
 
 You are given the FULL job advertisement, not an extract, so judge on what the ad actually says rather than inferring from a fragment.
 
@@ -127,6 +191,7 @@ OUTPUT CONTRACT
 - Australian English spelling. "reason" is plain prose (no markdown) and names the single dominant signal first.
 
 DECISION PROCESS (apply in order)
+0. LANE CHECK (runs before everything below): if an ACTIVE LANE BRIEF is supplied and this role matches its stated titles, domains and seniority, the role is ON-TARGET. None of the retired-track or level-mismatch caps in steps 1-3 apply to it — they describe families this lane is not hunting. Go straight to step 4.
 1. ROLE FAMILY: TRACK 1 — senior IT / digital / technology leadership (Head of IT/Digital & Technology, ICT/IT/Technology Manager, IT Operations Manager) with platform, vendor, budget, or team ownership; strongest in mid-sized operational, manufacturing, agtech, energy, or design-led businesses where structure is being built. TRACK 2 — embedded / power electronics / mechatronics / firmware / product engineering where the resume's engineering evidence matches the ad's scope. Business systems / transformation / delivery / technical BA roles qualify ONLY at genuine senior-ownership level. If clearly outside (sales, marketing, finance, clinical, trades, legal, HR, customer support L1/L2), score <= 35. Coordinator / project-officer / BA-only / administration roles below senior level are a RETIRED track -> cap at 40.
 2. SENIORITY: Is the level credible given a senior-leaning resume? Junior, graduate, intern, or coordinator roles -> cap at 40 (retired track). Executive C-suite roles the resume cannot evidence -> cap at 45.
 3. SALARY/LEVEL SIGNAL: A Track 1-shaped title with an advertised band clearly below ~AUD $120k signals coordinator-level scope wearing a manager title -> cap at 55 unless the duties evidence genuine Head-of ownership.
@@ -191,10 +256,13 @@ Report this even when you raise no seniority flag: it selects which document str
 EXAMPLES (shape only)
 {"match_score":72,"reason":"Adjacent program-delivery role with credible senior overlap; recruiter ad so end client is unclear.","keep":true,"flags":[{"type":"evidence_gap","requirement":"Hands-on Dynamics 365 F&O administration.","detail":"Resume shows Salesforce CPQ delivery instead.","confidence":"high"}],"seniority_direction":"aligned","flag_summary":"Named platform gap the application should address directly."}
 {"match_score":28,"reason":"Clinical practice manager role outside target families; no transferable evidence in resume summary.","keep":false,"flags":[{"type":"credential_gate","requirement":"Current AHPRA registration is mandatory.","detail":"Resume evidences technology leadership only; no clinical registration.","confidence":"high"},{"type":"domain_mismatch","requirement":"Lead a clinical services team across three sites.","detail":"Clinical service delivery is not a domain this resume practises.","confidence":"high"}],"seniority_direction":"aligned","flag_summary":"Mandatory AHPRA registration the candidate does not hold, in a clinical domain outside the resume."}
-{"match_score":88,"reason":"Head of Technology at a mid-sized manufacturer; squarely Track 1.","keep":true,"flags":[],"seniority_direction":"aligned","flag_summary":"Nothing stood out; ordinary tailoring should be enough."}""" + "\n\n" + POSITIONING_DOCTRINE
+{"match_score":88,"reason":"Head of Technology at a mid-sized manufacturer; squarely Track 1.","keep":true,"flags":[],"seniority_direction":"aligned","flag_summary":"Nothing stood out; ordinary tailoring should be enough."}"""
 
 
-DEEP_GATEKEEPER_SYSTEM_PROMPT = """You are a strict Australian job-search gatekeeper for the candidate. Roles arriving at this stage already scored >=78 in a permissive first analysis. Your only job is to catch false positives before a real application slot is committed.
+TRIAGE_SYSTEM_PROMPT = with_doctrine(TRIAGE_SYSTEM_PROMPT_BASE)
+
+
+DEEP_GATEKEEPER_SYSTEM_PROMPT_BASE = """You are a strict Australian job-search gatekeeper for the candidate. Roles arriving at this stage already scored >=78 in a permissive first analysis. Your only job is to catch false positives before a real application slot is committed.
 
 OUTPUT CONTRACT
 - Return exactly ONE minified JSON object. Nothing before, after, or around it. No <think> tags, no markdown.
@@ -211,6 +279,8 @@ TARGET ROLE FAMILIES (anything else is adjacent at best)
 - Business systems, enterprise systems, transformation, service management ONLY with genuine senior delivery ownership.
 - TRACK 2: mechatronics, embedded, power electronics, firmware, automation, or product engineering ONLY when the resume's engineering evidence is directly relevant to the ad's engineering scope.
 - RETIRED (reject or treat as adjacent): coordinator, project officer, BA-only, or administration roles scoped or priced materially below the resume's demonstrated leadership ceiling — regardless of how attractive the employer is.
+
+LANE OVERRIDE: when an ACTIVE LANE BRIEF is supplied, its stated titles, domains and seniority ARE a target family for this pass, and the RETIRED clause plus the sub-target-seniority knockout below do not apply to roles matching it. Every other knockout and cap still applies in full.
 
 HARD REJECT OR CAP AT 49 (any one of these)
 - Primarily helpdesk, service desk, desktop support, L1/L2 support, field tech, installation, generic support analyst, or hands-on break/fix.
@@ -268,7 +338,10 @@ REQUIRED JSON SHAPE
   "evidence_matches": ["3-6 items: 'resume artefact -> ad requirement'"],
   "missing_or_weak_evidence": ["2-5 items naming what the ad asks for that the resume does not credibly provide"],
   "one_line_reason": "single sentence justifying the final decision and score"
-}""" + "\n\n" + POSITIONING_DOCTRINE
+}"""
+
+
+DEEP_GATEKEEPER_SYSTEM_PROMPT = with_doctrine(DEEP_GATEKEEPER_SYSTEM_PROMPT_BASE)
 
 
 APPLICATION_DOCUMENT_SYSTEM_PROMPT = """You are a senior Australian application writer producing structured content for one targeted application. The app renders your JSON into DOCX templates — you write content, the app owns layout.

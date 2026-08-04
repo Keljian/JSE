@@ -25,6 +25,7 @@ from .constants import (
 )
 from .text import (
     _clean,
+    _clean_block,
     _split_csv,
 )
 
@@ -51,7 +52,8 @@ def _settings_from_profile(row):
                 "doc_ai_model", "openai_api_key", "openai_base_url", "claude_api_key",
                 "claude_model", "gemini_api_key", "gemini_model", "local_model",
                 "resume_template_path", "cover_letter_template_path", "lane_intent", "target_titles",
-                "target_domains", "seniority", "must_have_terms", "avoid_terms", "document_strategy"):
+                "target_domains", "seniority", "must_have_terms", "avoid_terms", "document_strategy",
+                "positioning_doctrine"):
         if key in row.keys():
             settings[key] = row[key] or settings[key]
     if "active" in row.keys():
@@ -216,6 +218,7 @@ def update_profile_settings(profile_id, settings):
                 must_have_terms = ?,
                 avoid_terms = ?,
                 document_strategy = ?,
+                positioning_doctrine = ?,
                 active = ?
             WHERE id = ?
             """,
@@ -246,6 +249,7 @@ def update_profile_settings(profile_id, settings):
                 _clean(merged.get("must_have_terms")),
                 _clean(merged.get("avoid_terms")),
                 _clean(merged.get("document_strategy")),
+                _clean_block(merged.get("positioning_doctrine")),
                 1 if merged.get("active", 1) else 0,
                 profile_id,
             ),

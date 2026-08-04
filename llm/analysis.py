@@ -21,12 +21,21 @@ from .parsing import (
     _strip_image_references,
 )
 from .prompts import (
-    ANALYSIS_SYSTEM_PROMPT,
-    DEEP_GATEKEEPER_SYSTEM_PROMPT,
+    ANALYSIS_SYSTEM_PROMPT_BASE,
+    DEEP_GATEKEEPER_SYSTEM_PROMPT_BASE,
     FULL_ANALYSIS_TRIAGE_THRESHOLD,
     TRIAGE_KEEP_THRESHOLD,
-    TRIAGE_SYSTEM_PROMPT,
+    TRIAGE_SYSTEM_PROMPT_BASE,
+    lane_brief,
+    with_doctrine,
 )
+
+# A triage score below this is a genuine no, not a borderline call, and the
+# lane-title rescue leaves it alone. Set under TRIAGE_KEEP_THRESHOLD on purpose:
+# the retired-track cap the rescue exists to second-guess lands at 40, i.e.
+# already below the keep floor, so a rescue gated on the keep floor could never
+# fire for the only case that needed it.
+TRIAGE_RESCUE_FLOOR = 30
 
 def _format_gatekeeper_section(data, original_score, enforced_score=None):
     score = (max(0, min(100, int(enforced_score))) if enforced_score is not None
@@ -54,8 +63,11 @@ def _format_gatekeeper_section(data, original_score, enforced_score=None):
     return "\n".join(sections), score
 
 
-def _run_deep_gatekeeper(resume_summary, resume_text, full_description, analysis_data, original_score, profile_id, log):
+def _run_deep_gatekeeper(resume_summary, resume_text, full_description, analysis_data, original_score,
+                         profile_id, log, lane_settings=None):
     preference_context = _analysis_preferences(profile_id)
+    if lane_settings is None:
+        lane_settings = db.get_lane_settings(profile_id)
     user_prompt = f"""Run a strict third-pass gatekeeper review.
 
 Do not simply validate the prior score. Look for false positives and apply score caps aggressively.
@@ -69,6 +81,7 @@ PROFILE PREFERENCE WEIGHTING:
 ---
 {preference_context}
 ---
+{_lane_brief_block(lane_brief(lane_settings))}
 
 FULL ANALYSIS JSON:
 ---
@@ -86,7 +99,7 @@ JOB DESCRIPTION:
 ---"""
     response = _call_scoring_ai(
         messages=[
-            {"role": "system", "content": DEEP_GATEKEEPER_SYSTEM_PROMPT},
+            {"role": "system", "content": with_doctrine(DEEP_GATEKEEPER_SYSTEM_PROMPT_BASE, lane_settings)},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.05,
@@ -242,7 +255,7 @@ RESUME:
     return summary
 
 
-def _triage_job(resume_summary, full_description, job_title, profile_id, log):
+def _triage_job(resume_summary, full_description, job_title, profile_id, log, lane_settings=None):
     """Score the role and raise flags on it, in one call.
 
     Flagging used to be a second LLM pass. It was folded in here because flags
@@ -253,11 +266,15 @@ def _triage_job(resume_summary, full_description, job_title, profile_id, log):
 
     Triage gets the FULL advertisement rather than an extract, plus the ad's
     mandatory-requirement lines pulled out deterministically, so a credential
-    gate stated in the small print at the bottom is still visible.
+    gate stated in the small print at the bottom is still visible. It also gets
+    the lane's own brief: without it the model judges level against the global
+    doctrine's primary track and retires roles a secondary lane exists to find.
 
     Returns (score, reason, keep, flags) where flags is the normalised dict, or
     None when the model gave nothing usable.
     """
+    if lane_settings is None:
+        lane_settings = db.get_lane_settings(profile_id)
     mandatory, credential_gates = _extract_mandatory_requirements(full_description)
     stated_requirements = (
         "\n".join(f"- {line}" for line in mandatory)
@@ -285,7 +302,7 @@ PROFILE PREFERENCE WEIGHTING:
 ---
 {_analysis_preferences(profile_id)}
 ---
-
+{_lane_brief_block(lane_brief(lane_settings))}
 COMPACT RESUME SUMMARY:
 ---
 {resume_summary[:2200]}
@@ -297,7 +314,7 @@ FULL JOB ADVERTISEMENT:
 ---"""
     response = _call_scoring_ai(
         messages=[
-            {"role": "system", "content": TRIAGE_SYSTEM_PROMPT},
+            {"role": "system", "content": with_doctrine(TRIAGE_SYSTEM_PROMPT_BASE, lane_settings)},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.05,
@@ -488,29 +505,102 @@ def _format_flags_section(result):
     return "\n".join(lines)
 
 
+_TITLE_STOPWORDS = {"and", "the", "for", "of", "a", "an", "to", "in", "with"}
+
+# Shortest shared prefix that counts two tokens as the same word. Exact matching
+# missed the obvious cases the rescue exists for — "Technician" against a lane
+# hunting "Technical Officer", "Teacher" against "teaching" — because the lane
+# states a family and ads state a job title. Five characters is long enough that
+# unrelated words rarely collide, and the rescue only ever escalates to full
+# analysis, which can demote again.
+_TITLE_STEM_CHARS = 5
+
+
+def _title_tokens(value):
+    return {
+        token for token in re.findall(r"[a-z0-9]{2,}", str(value or "").lower())
+        if token not in _TITLE_STOPWORDS
+    }
+
+
+def _tokens_match(left, right):
+    if left == right:
+        return True
+    if min(len(left), len(right)) < _TITLE_STEM_CHARS:
+        return False
+    return left[:_TITLE_STEM_CHARS] == right[:_TITLE_STEM_CHARS]
+
+
 def _lane_title_overlap(title, lane_target_text):
-    """Token overlap between a job title and the lane's stated targets.
+    """How many words of a job title the lane's stated targets also use.
 
     Used by the borderline-rescue path: a single noisy triage number should not
-    kill a role whose title plainly matches what the lane is hunting for."""
-    stop = {"and", "the", "for", "of", "a", "an", "to", "in"}
-    tokenize = lambda value: {
-        token for token in re.findall(r"[a-z0-9]{2,}", str(value or "").lower())
-        if token not in stop
-    }
-    return len(tokenize(title) & tokenize(lane_target_text))
+    kill a role whose title plainly matches what the lane is hunting for.
+    Matching is prefix-based rather than exact so ordinary word forms of the same
+    term (technician/technical, teacher/teaching, officer/officers) count."""
+    target_tokens = _title_tokens(lane_target_text)
+    return sum(
+        1 for token in _title_tokens(title)
+        if any(_tokens_match(token, target) for target in target_tokens)
+    )
+
+
+def _title_matches_lane(title, lane_target_text):
+    """Does this title read as one of the lane's own targets?
+
+    Short titles must match in full: a one-word title like "Technician" carries
+    its whole meaning in that word, and demanding two overlaps made the rescue
+    unreachable for exactly those roles. Longer titles need two, so a stray
+    shared word ("Senior", "Engineer") is not enough on its own.
+    """
+    tokens = _title_tokens(title)
+    if not tokens:
+        return False
+    needed = 2 if len(tokens) >= 3 else len(tokens)
+    return _lane_title_overlap(title, lane_target_text) >= needed
+
+
+def _has_hard_knockout(flags):
+    """True when triage found a stated credential the resume cannot evidence.
+
+    The rescue second-guesses level judgements, which are a matter of strategy.
+    A mandatory registration or clearance is not: no lane brief makes the
+    candidate eligible, so those roles stay rejected."""
+    return any(
+        item.get("type") == "credential_gate" and item.get("confidence") == "high"
+        for item in (flags or {}).get("flags") or []
+    )
+
+
+# Lane weighting terms are free text. Users separate them with semicolons at
+# least as often as commas, and the settings fields sit next to other
+# semicolon-delimited lists, so accept every separator rather than silently
+# treating the whole field as one term that can never match.
+_PREFERENCE_SPLIT_RE = re.compile(r"[;,\n]")
+
+
+def _preference_terms(value):
+    """Split a lane weighting field into individual terms."""
+    return [term.strip(" -\t") for term in _PREFERENCE_SPLIT_RE.split(str(value or "")) if term.strip(" -\t")]
+
+
+def _lane_brief_block(brief_text):
+    """Wrap the lane brief for a user prompt, or return nothing when there is none."""
+    if not brief_text:
+        return ""
+    return f"\nACTIVE LANE BRIEF:\n---\n{brief_text}\n---\n"
 
 
 def _analysis_preferences(profile_id):
     settings = db.get_lane_settings(profile_id)
-    boost_terms = settings.get("boost_terms") or ""
-    penalty_terms = settings.get("penalty_terms") or ""
+    boost_terms = _preference_terms(settings.get("boost_terms"))
+    penalty_terms = _preference_terms(settings.get("penalty_terms"))
     if not boost_terms and not penalty_terms:
         return "No extra lane weighting terms have been set."
     return (
         "Extra lane weighting terms:\n"
-        f"- Add weight when present: {boost_terms or 'None'}\n"
-        f"- Subtract weight when present: {penalty_terms or 'None'}\n"
+        f"- Add weight when present: {'; '.join(boost_terms) or 'None'}\n"
+        f"- Subtract weight when present: {'; '.join(penalty_terms) or 'None'}\n"
         "Treat these as preference signals, not absolute rules. Mention any strong effect in the rationale."
     )
 
@@ -518,8 +608,8 @@ def _analysis_preferences(profile_id):
 def _apply_preference_weight(score, text, profile_id):
     settings = db.get_lane_settings(profile_id)
     haystack = str(text or "").lower()
-    boost_hits = [term for term in _coerce_list((settings.get("boost_terms") or "").replace(",", "\n")) if term.lower() in haystack]
-    penalty_hits = [term for term in _coerce_list((settings.get("penalty_terms") or "").replace(",", "\n")) if term.lower() in haystack]
+    boost_hits = [term for term in _preference_terms(settings.get("boost_terms")) if term.lower() in haystack]
+    penalty_hits = [term for term in _preference_terms(settings.get("penalty_terms")) if term.lower() in haystack]
     adjusted = score + min(10, 3 * len(boost_hits)) - min(15, 5 * len(penalty_hits))
     return max(0, min(100, adjusted)), boost_hits, penalty_hits
 
@@ -841,6 +931,8 @@ def _analyze_single_job(job, ctx):
     resume_summary = ctx["resume_summary"]
     preference_context = ctx["preference_context"]
     lane_target_text = ctx["lane_target_text"]
+    lane_settings = ctx["lane_settings"]
+    lane_brief_text = ctx["lane_brief"]
     fragment_context = ctx["fragment_context"]
     system_prompt = ctx["system_prompt"]
     profile_id = ctx["profile_id"]
@@ -871,6 +963,7 @@ def _analyze_single_job(job, ctx):
             job_title,
             profile_id,
             log,
+            lane_settings,
         )
         triage_score, boost_hits, penalty_hits = _apply_preference_weight(triage_score, full_description_for_analysis, profile_id)
         if boost_hits or penalty_hits:
@@ -893,10 +986,17 @@ def _analyze_single_job(job, ctx):
             # role whose title plainly matches the lane's stated targets.
             # Those get the evidence-anchored full analysis instead — the
             # only stage equipped to promote as well as demote.
+            #
+            # Deliberately not gated on keep or the keep threshold. The caps
+            # this exists to second-guess are level judgements, and those land
+            # at 40 with keep=false, i.e. below both gates: a rescue that
+            # required either could never reach the roles that needed it. A
+            # stated credential the resume cannot meet is a different kind of
+            # no, so that one still stands.
             rescued = (
-                keep
-                and triage_score >= TRIAGE_KEEP_THRESHOLD
-                and _lane_title_overlap(job_title, lane_target_text) >= 2
+                triage_score >= TRIAGE_RESCUE_FLOOR
+                and not _has_hard_knockout(flags)
+                and _title_matches_lane(job_title, lane_target_text)
             )
             if rescued:
                 log(
@@ -963,7 +1063,8 @@ CANDIDATE RESUME:
 PROFILE PREFERENCE WEIGHTING:
 ---
 {preference_context}
----{fragment_block}{flag_block}
+---
+{_lane_brief_block(lane_brief_text)}{fragment_block}{flag_block}
 
 JOB ADVERTISEMENT:
 ---
@@ -998,6 +1099,7 @@ JOB ADVERTISEMENT:
                     score,
                     profile_id,
                     log,
+                    lane_settings,
                 )
                 if gatekeeper_text:
                     analysis_text = f"{analysis_text}\n\n{gatekeeper_text}"
@@ -1072,8 +1174,12 @@ def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_call
     lane_settings = db.get_lane_settings(profile_id)
     lane_target_text = " ".join([
         lane_settings.get("target_titles") or "",
+        lane_settings.get("target_domains") or "",
         lane_settings.get("lane_intent") or "",
     ])
+    # The caller hands in a doctrine-free base prompt; the lane's own doctrine
+    # is resolved here because this is the only layer that knows the lane.
+    system_prompt = with_doctrine(system_prompt, lane_settings)
     if fragments is None:
         try:
             fragments = [dict(row) for row in db.get_lane_fragments(profile_id, limit=40)]
@@ -1087,6 +1193,8 @@ def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_call
         "resume_summary": resume_summary,
         "preference_context": preference_context,
         "lane_target_text": lane_target_text,
+        "lane_settings": lane_settings,
+        "lane_brief": lane_brief(lane_settings),
         "fragment_context": fragment_context,
         "system_prompt": system_prompt,
         "profile_id": profile_id,
@@ -1148,7 +1256,7 @@ def analyze_jobs(log_callback=None, resume_text: str = "", re_analyze: bool = Fa
     jobs_to_analyze = db.get_jobs_to_analyze(status_filter, re_analyze, profile_id, resume_text)
     log(f"Found {len(jobs_to_analyze)} jobs to analyze in the '{status_filter}' view.")
 
-    _perform_analysis_loop(jobs_to_analyze, resume_text, ANALYSIS_SYSTEM_PROMPT, log_callback, profile_id)
+    _perform_analysis_loop(jobs_to_analyze, resume_text, ANALYSIS_SYSTEM_PROMPT_BASE, log_callback, profile_id)
     log("Analysis complete.")
 
 
@@ -1168,5 +1276,5 @@ def analyze_specific_jobs(job_ids, log_callback=None, resume_text: str = "", pro
     jobs_to_analyze = db.get_jobs_to_analyze_by_ids(job_ids)
     log(f"Found {len(jobs_to_analyze)} jobs in DB from the provided list of IDs.")
 
-    _perform_analysis_loop(jobs_to_analyze, resume_text, ANALYSIS_SYSTEM_PROMPT, log_callback, profile_id)
+    _perform_analysis_loop(jobs_to_analyze, resume_text, ANALYSIS_SYSTEM_PROMPT_BASE, log_callback, profile_id)
     log("Specific analysis complete.")

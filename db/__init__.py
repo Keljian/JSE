@@ -66,6 +66,7 @@ from .text import (  # noqa: F401
     _ROLE_SIG_TOKEN_CAP,
     _advertiser_key,
     _clean,
+    _clean_block,
     _closing_date_is_expired,
     _company_key,
     _date_is_past,

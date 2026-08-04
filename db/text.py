@@ -18,6 +18,17 @@ def _clean(value):
     return re.sub(r"\s+", " ", value or "").strip()
 
 
+def _clean_block(value):
+    """_clean for fields whose line breaks carry meaning.
+
+    Trims each line and collapses runs of blank lines, but keeps the paragraph
+    structure. Used for settings a model reads as a document (the per-lane
+    positioning doctrine), where _clean would flatten it to one long line.
+    """
+    lines = [line.rstrip() for line in str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def make_analysis_signature(resume_text, description, pdf_text="", position_description_text=""):
     payload = "\n\n".join([
         str(resume_text or ""),

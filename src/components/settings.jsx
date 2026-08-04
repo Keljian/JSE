@@ -715,7 +715,9 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
             <label><span>Seniority</span><input value={form.seniority || ""} placeholder="manager, senior manager, lead" onChange={(event) => update("seniority", event.target.value)} /></label>
             <label><span>Must-have signals</span><textarea value={form.must_have_terms || ""} placeholder="stakeholder leadership, vendor governance, systems delivery" onChange={(event) => update("must_have_terms", event.target.value)} /></label>
             <label><span>Avoid signals</span><textarea value={form.avoid_terms || ""} placeholder="junior support, shift work, pure coding" onChange={(event) => update("avoid_terms", event.target.value)} /></label>
+            <label className="full"><span>Positioning doctrine</span><textarea rows={8} value={form.positioning_doctrine || ""} placeholder="Leave blank to score this lane against the default doctrine. Set it when this lane hunts a different role family or level to your primary market — otherwise the default retires roles this lane exists to find." onChange={(event) => update("positioning_doctrine", event.target.value)} /></label>
           </div>
+          <p className="settings-hint">The positioning doctrine is the market view every scoring pass is judged against: which role families are on target, which level, which salary band. Blank uses the app default.</p>
           <div className="section-actions">
             <button className="secondary" onClick={chooseResume}><FolderOpen size={16} /> Choose resume</button>
             <button disabled={!profile || !profileForm.name.trim() || !profileForm.resume_path.trim()} onClick={() => onSaveProfile(profileForm)}><Check size={16} /> Save lane</button>
@@ -789,9 +791,10 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
         <section className="settings-section full-settings">
           <h3>Match Weighting Flags</h3>
           <div className="form-grid compact">
-            <label><span>Add weight when present</span><input value={form.boost_terms || ""} placeholder="robotics, product strategy, transformation" onChange={(event) => update("boost_terms", event.target.value)} /></label>
-            <label><span>Subtract weight when present</span><input value={form.penalty_terms || ""} placeholder="shift work, on call, weekend work" onChange={(event) => update("penalty_terms", event.target.value)} /></label>
+            <label><span>Add weight when present</span><input value={form.boost_terms || ""} placeholder="robotics; product strategy; transformation" onChange={(event) => update("boost_terms", event.target.value)} /></label>
+            <label><span>Subtract weight when present</span><input value={form.penalty_terms || ""} placeholder="shift work; on call; weekend work" onChange={(event) => update("penalty_terms", event.target.value)} /></label>
           </div>
+          <p className="settings-hint">Separate terms with semicolons, commas, or new lines. Each term found in the ad shifts the triage score by up to +10 / -15 in total.</p>
         </section>
         </>
         ) : null}

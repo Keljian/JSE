@@ -181,6 +181,11 @@ def setup_database():
     _add_column(cursor, "profiles", "must_have_terms", "TEXT")
     _add_column(cursor, "profiles", "avoid_terms", "TEXT")
     _add_column(cursor, "profiles", "document_strategy", "TEXT")
+    # Per-lane override for llm.prompts.POSITIONING_DOCTRINE. Empty means "use
+    # the global default"; a lane hunting a different family or level than the
+    # candidate's primary market needs its own, or the default doctrine's
+    # retired-track clause caps the roles that lane exists to find.
+    _add_column(cursor, "profiles", "positioning_doctrine", "TEXT")
     _add_column(cursor, "profiles", "active", "INTEGER DEFAULT 1")
     # Composite scoring on jobs: match_score is the resume-vs-ad analysis,
     # fragment_score is the lane-fragment-bank alignment, composite_score is
