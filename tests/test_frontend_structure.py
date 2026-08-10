@@ -101,6 +101,54 @@ class NoNativeDialogTests(unittest.TestCase):
                          "use appConfirm/appNotice/appPrompt; native dialogs freeze input")
 
 
+class TaskStatusIndicatorTests(unittest.TestCase):
+    """The running-task indicator, which fails silently when it regresses.
+
+    A dropped `progress` handler or a missed cleanup leaves a bar frozen on
+    screen rather than throwing, so these assert the wiring stays in place.
+    """
+
+    def test_the_renderer_consumes_progress_frames(self):
+        source = (SRC / "main.jsx").read_text(encoding="utf-8")
+        self.assertIn('event.type === "progress"', source)
+        self.assertIn("recordProgress", source)
+
+    def test_finished_and_cancelled_tasks_clear_their_progress(self):
+        source = (SRC / "main.jsx").read_text(encoding="utf-8")
+        # stopAllTasks must reset the map, or a cancelled run leaves a bar
+        # stuck at whatever fraction it had reached.
+        self.assertRegex(source, r"stopAllTasks[\s\S]{0,600}setTaskProgress\(\{\}\)")
+        # Every task teardown goes through finishTask, which clears both maps.
+        self.assertIn("const finishTask", source)
+        self.assertNotIn("delete next.docs;", source)
+
+    def test_the_progress_bar_lives_in_primitives_not_the_composition_root(self):
+        primitives = (COMPONENTS / "primitives.jsx").read_text(encoding="utf-8")
+        self.assertIn("function TaskProgressBar", primitives)
+        self.assertIn("TaskProgressBar", primitives.rsplit("export {", 1)[-1])
+        self.assertIn("TaskProgressBar", (SRC / "main.jsx").read_text(encoding="utf-8"))
+
+    def test_an_unknown_total_renders_indeterminate_rather_than_a_guess(self):
+        primitives = (COMPONENTS / "primitives.jsx").read_text(encoding="utf-8")
+        self.assertIn("indeterminate", primitives)
+        css = (SRC / "styles.css").read_text(encoding="utf-8")
+        self.assertIn(".task-progress-track.indeterminate", css)
+
+    def test_the_strip_height_is_reserved_through_one_variable(self):
+        # The strip is position:fixed and grows while tasks run; if the two
+        # reservations drift apart the bottom of a scrolling view goes under it.
+        css = (SRC / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("--status-strip-height", css)
+        self.assertIn("height: calc(100vh - var(--status-strip-height", css)
+        self.assertNotIn("height: calc(100vh - 34px)", css)
+
+    def test_perpetual_animations_respect_reduced_motion(self):
+        css = (SRC / "styles.css").read_text(encoding="utf-8")
+        reduced = css.rsplit("prefers-reduced-motion", 1)[-1]
+        for selector in (".spin", ".nav-busy-dot", ".task-progress-track.indeterminate"):
+            self.assertIn(selector, reduced)
+
+
 class LintConfigTests(unittest.TestCase):
     def test_lint_and_build_scripts_exist(self):
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))

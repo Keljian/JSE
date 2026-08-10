@@ -253,10 +253,18 @@ h3 {
 }
 
 .ats-shell {
+  /* The status strip is fixed, so its height has to be reserved here and in
+     .ats-main below. It grows while tasks run to fit their progress bars;
+     the variable keeps both reservations in step with the one class toggle. */
+  --status-strip-height: 34px;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
-  padding-bottom: 34px;
+  padding-bottom: var(--status-strip-height);
+}
+
+.ats-shell.tasks-running {
+  --status-strip-height: 62px;
 }
 
 .nav-rail {
@@ -467,7 +475,7 @@ h3 {
   flex-direction: column;
   /* Leave room for the fixed status strip so the bottom of scrollable views
      is never hidden (and unclickable) underneath it. */
-  height: calc(100vh - 34px);
+  height: calc(100vh - var(--status-strip-height, 34px));
   overflow: hidden;
 }
 
@@ -3903,6 +3911,139 @@ h3 {
 
 .status-strip a:hover {
   text-decoration: underline;
+}
+
+.status-strip.busy {
+  height: 62px;
+  /* The 160px floor keeps the latest-log column readable when three tasks run
+     at once at the 1080px minimum window width. */
+  grid-template-columns: minmax(0, 2fr) minmax(160px, 1fr) auto auto;
+  background: #e9f2ec;
+  border-top-color: #bcd3c4;
+}
+
+.status-strip-tasks {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.status-strip-stop {
+  /* min-height too: the base button rule sets 34px, which would otherwise
+     win over height alone and leave a chunky button in a 62px strip. */
+  height: 26px;
+  min-height: 26px;
+  padding: 0 10px;
+  gap: 5px;
+  font-size: 11px;
+}
+
+.task-progress {
+  min-width: 0;
+  flex: 1 1 0;
+  max-width: 320px;
+}
+
+.task-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #174a3f;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.task-progress-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-progress-count {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-progress-failed {
+  color: #9a5b12;
+  font-weight: 700;
+}
+
+.task-elapsed {
+  margin-left: auto;
+  color: #5b6d66;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-progress-track {
+  height: 5px;
+  margin: 4px 0 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #d3e2d8;
+}
+
+.task-progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2f7d63, #45a37f);
+  transition: width 240ms ease-out;
+}
+
+/* No honest total yet (a scrape before its fan-out is queued), so sweep a
+   partial bar rather than show a percentage the task cannot support. */
+.task-progress-track.indeterminate > span {
+  width: 38%;
+  animation: task-progress-sweep 1.3s ease-in-out infinite;
+}
+
+@keyframes task-progress-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(365%); }
+}
+
+.task-progress-detail {
+  display: block;
+  color: #52635c;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-busy-dot {
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: #2f7d63;
+  animation: nav-busy-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes nav-busy-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.75); }
+}
+
+/* A spinner and a sweeping bar that never stop are the worst case for motion
+   sensitivity, and a scrape can run for twenty minutes. */
+@media (prefers-reduced-motion: reduce) {
+  .spin,
+  .nav-busy-dot,
+  .task-progress-track.indeterminate > span {
+    animation: none;
+  }
+
+  .task-progress-track.indeterminate > span {
+    width: 100%;
+    opacity: .45;
+  }
+
+  .task-progress-track > span {
+    transition: none;
+  }
 }
 
 .update-toast {

@@ -98,10 +98,18 @@ def _run_scraper_task(source, keyword, resume_text, status_callback, log_callbac
     # The retry logic is now handled in the main thread after the futures complete.
     return {'source': source, 'keyword': keyword, 'success': success}
 
-def execute_scraping_and_analysis(keywords, sources, resume_text, status_callback, log_callback, update_keywords_callback=None, live_analysis_stop_event=None, profile_id=1, search_settings=None):
+def execute_scraping_and_analysis(keywords, sources, resume_text, status_callback, log_callback, update_keywords_callback=None, live_analysis_stop_event=None, profile_id=1, search_settings=None, progress_callback=None):
     """
     Runs scrapers concurrently for multiple sources and handles retries.
+
+    `progress_callback(current, total, phase=…, detail=…)` reports countable
+    progress for the UI. The unit is one (source, keyword) scraper task. Total
+    is unknown until the fan-out is submitted, so the first call passes
+    total=None and the UI shows an indeterminate state rather than a
+    percentage it would have to invent.
     """
+    report = progress_callback or (lambda *args, **kwargs: None)
+    report(0, None, phase="preparing", detail="Cleaning up duplicates…")
     db.dedupe_database(log_callback)
     
     keyword_independent_scrapers = {
@@ -142,12 +150,22 @@ def execute_scraping_and_analysis(keywords, sources, resume_text, status_callbac
                     futures.append(future)
                     total_tasks += 1
 
+        # Every task is queued by now, so the total is final and the UI can
+        # switch from indeterminate to a real bar.
+        report(0, total_tasks, phase="scraping", detail=f"Searching {len(sources)} source(s)…")
+
         # --- Process results as they complete ---
         for future in concurrent.futures.as_completed(futures):
             if cancel_event.is_set(): break
             try:
                 result = future.result()
                 completed_tasks += 1
+                report(
+                    completed_tasks,
+                    total_tasks,
+                    phase="scraping",
+                    detail=f"{result['source']}: '{result['keyword']}'" if result else None,
+                )
                 if result and not result['success']:
                     # Don't retry keyword-independent scrapers
                     if result['source'] not in keyword_independent_scrapers:
@@ -162,6 +180,12 @@ def execute_scraping_and_analysis(keywords, sources, resume_text, status_callbac
     # serialize the whole retry pass. The shared keyword list is lock-guarded.
     if failed_tasks and not cancel_event.is_set() and resume_text:
         log_callback(f"\n--- Retrying {len(failed_tasks)} failed searches with new keywords... ---")
+
+        # Retries are extra units of work, so grow the total rather than
+        # letting the bar sit at 100% while the retry pass still runs.
+        total_tasks += len(failed_tasks)
+        report(completed_tasks, total_tasks, phase="retrying",
+               detail=f"Retrying {len(failed_tasks)} empty search(es) with new terms…")
 
         current_keywords = list(keywords)
         keywords_lock = threading.Lock()
@@ -200,9 +224,12 @@ def execute_scraping_and_analysis(keywords, sources, resume_text, status_callbac
                          completed_sweep_sources.add(result['source'])
                  except Exception as e:
                      log_callback(f"A retry scraper thread generated an exception: {e}")
+                 completed_tasks += 1
+                 report(completed_tasks, total_tasks, phase="retrying")
                  log_callback("Retry task finished.")
 
     log_callback("\n--- Main scraping tasks complete. ---")
+    report(completed_tasks, total_tasks, phase="finishing", detail="Tidying up the sweep…")
     if completed_sweep_sources and not cancel_event.is_set():
         retired = db.mark_missing_new_jobs_after_sweep(
             profile_id,
@@ -261,17 +288,19 @@ def execute_live_analysis(stop_event, resume_text, log_callback, profile_id=1):
     
     log_callback("Live analysis thread finished.")
 
-def run_analysis_on_existing(resume_text, re_analyze, status_filter, log_callback, profile_id=1):
+def run_analysis_on_existing(resume_text, re_analyze, status_filter, log_callback, profile_id=1, progress_callback=None):
     """Analyzes existing jobs in the database based on a filter."""
     llm_handler.analyze_jobs(
         log_callback=log_callback, resume_text=resume_text,
-        re_analyze=re_analyze, status_filter=status_filter, profile_id=profile_id
+        re_analyze=re_analyze, status_filter=status_filter, profile_id=profile_id,
+        progress_callback=progress_callback,
     )
 
-def run_analysis_on_specific_jobs(job_ids, resume_text, log_callback, profile_id=1):
+def run_analysis_on_specific_jobs(job_ids, resume_text, log_callback, profile_id=1, progress_callback=None):
     """Analyzes a specific list of jobs by their IDs."""
     llm_handler.analyze_specific_jobs(
-        job_ids=job_ids, log_callback=log_callback, resume_text=resume_text, profile_id=profile_id
+        job_ids=job_ids, log_callback=log_callback, resume_text=resume_text, profile_id=profile_id,
+        progress_callback=progress_callback,
     )
 
 def run_application_engine_prep(

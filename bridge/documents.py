@@ -673,7 +673,7 @@ def command_docs_generate_interested_batch(payload):
     failed = 0
     skipped = 0
     results = []
-    emit("progress", current=0, total=total, succeeded=0, failed=0, skipped=0,
+    emit("progress", kind="docs", current=0, total=total, succeeded=0, failed=0, skipped=0,
          status="starting", message=f"Preparing {total} Interested job(s)…")
 
     for index, job_id in enumerate(job_ids, start=1):
@@ -681,12 +681,12 @@ def command_docs_generate_interested_batch(payload):
         if not job:
             failed += 1
             results.append({"job_id": job_id, "ok": False, "error": "Job not found."})
-            emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+            emit("progress", kind="docs", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
                  job_id=job_id, status="failed", message=f"Skipped missing job {job_id}.")
             continue
 
         title = str(job["title"] or f"Job {job_id}")
-        emit("progress", current=index - 1, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+        emit("progress", kind="docs", current=index - 1, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
              job_id=job_id, title=title, status="generating",
              message=f"Generating {index} of {total}: {title}")
         try:
@@ -703,7 +703,7 @@ def command_docs_generate_interested_batch(payload):
                 "resume_path": result.get("resume_path"),
                 "cover_letter_path": result.get("cover_letter_path"),
             })
-            emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+            emit("progress", kind="docs", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
                  job_id=job_id, title=title, status="completed",
                  message=f"Completed {index} of {total}: {title}")
         except JobNotLiveError as exc:
@@ -711,7 +711,7 @@ def command_docs_generate_interested_batch(payload):
             reason = str(exc)
             results.append({"job_id": job_id, "title": title, "ok": False, "skipped": True, "error": reason})
             emit("log", message=reason)
-            emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+            emit("progress", kind="docs", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
                  job_id=job_id, title=title, status="skipped",
                  message=f"Skipped closed job {index} of {total}: {title}")
         except Exception as exc:
@@ -727,7 +727,7 @@ def command_docs_generate_interested_batch(payload):
                 )
             results.append({"job_id": job_id, "title": title, "ok": False, "error": error})
             emit("log", message=f"Document generation failed for {title}: {error}")
-            emit("progress", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
+            emit("progress", kind="docs", current=index, total=total, succeeded=succeeded, failed=failed, skipped=skipped,
                  job_id=job_id, title=title, status="failed",
                  message=f"Failed {index} of {total}: {title}")
 

@@ -7,6 +7,7 @@ import json
 import database_manager as db
 import scraper_plugins
 from .runtime import (
+    ProgressReporter,
     emit,
     import_app_logic,
 )
@@ -153,13 +154,19 @@ def command_scrape_run(payload):
         raise ValueError("No active lane is available for search. Add or select a lane before running search.")
     run_id = db.record_scraper_run(payload.get("profile_id"), "all_profiles" if include_all else "profile", sources, "running")
     try:
-        for profile in profiles:
+        for index, profile in enumerate(profiles, start=1):
             profile_id = profile["id"]
             emit("status", message=f"Scraping profile: {profile['name']}")
+            reporter = ProgressReporter("search", extra={
+                "lane": profile["name"],
+                "lane_index": index,
+                "lane_count": len(profiles),
+            })
             terms = db.get_profile_terms(profile_id)
             resume_text = read_resume_text(profile_id)
             if not terms:
                 emit("log", message=f"No saved terms for {profile['name']}. Generating terms first.")
+                reporter(0, None, phase="terms", detail="Generating search terms…")
                 terms = app_logic.execute_keyword_generation(
                     payload.get("optimism", 3),
                     resume_text,
@@ -176,6 +183,7 @@ def command_scrape_run(payload):
                 None,
                 profile_id,
                 db.get_lane_settings(profile_id),
+                progress_callback=reporter,
             )
         db.dedupe_database(lambda message: emit("log", message=message))
         db.record_scraper_run(status="complete", summary="Scrape completed.", run_id=run_id)

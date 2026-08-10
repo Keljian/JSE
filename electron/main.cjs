@@ -401,8 +401,41 @@ function spawnBridgeProcess(command) {
   return child;
 }
 
+// Windows taskbar progress. A search or a full analysis pass runs for many
+// minutes and the window is usually minimised while it does, so determinate
+// task progress is mirrored onto the app icon. Indeterminate phases are left
+// off the icon rather than shown as a guess.
+const taskbarProgress = new Map();
+
+function applyTaskbarProgress(sender) {
+  if (!sender || sender.isDestroyed()) return;
+  const win = BrowserWindow.fromWebContents(sender);
+  if (!win || win.isDestroyed()) return;
+  const fractions = [...taskbarProgress.values()];
+  // The least-complete task: the icon should reflect work outstanding, not the
+  // most flattering of several concurrent runs.
+  win.setProgressBar(fractions.length ? Math.min(...fractions) : -1);
+}
+
+function trackTaskbarProgress(sender, taskId, message) {
+  if (message?.type !== "progress") return;
+  const total = Number(message.total || 0);
+  if (total > 0) {
+    taskbarProgress.set(taskId, Math.min(1, Math.max(0, Number(message.current || 0) / total)));
+  } else {
+    taskbarProgress.delete(taskId);
+  }
+  applyTaskbarProgress(sender);
+}
+
+function clearTaskbarProgress(sender, taskId) {
+  if (!taskbarProgress.delete(taskId)) return;
+  applyTaskbarProgress(sender);
+}
+
 function sendTaskEvent(sender, taskId, message) {
   if (!sender || sender.isDestroyed()) return;
+  trackTaskbarProgress(sender, taskId, message);
   sender.send(`task:event:${taskId}`, message);
 }
 
@@ -861,12 +894,14 @@ ipcMain.on("task:start", (event, taskId, command, payload) => {
 
   child.on("error", (error) => {
     clearInactivityTimer();
+    clearTaskbarProgress(event.sender, taskId);
     sendTaskEvent(event.sender, taskId, { type: "error", message: error.message });
   });
 
   child.on("close", (code, signal) => {
     clearInactivityTimer();
     runningTasks.delete(taskId);
+    clearTaskbarProgress(event.sender, taskId);
     if (stdoutBuffer.trim()) {
       try {
         sendTaskEvent(event.sender, taskId, JSON.parse(stdoutBuffer.trim()));

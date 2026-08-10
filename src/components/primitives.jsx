@@ -243,4 +243,54 @@ function ModelSelect({ value, options, loading, placeholder, onChange, onRefresh
   );
 }
 
-export { ClosingDateSourceBadge, Score, ScoreStack, Modal, DialogModal, DropZone, DocumentTextModal, LinkedText, ValueList, StatDelta, StatBars, ModelSelect };
+// Live elapsed time for a running task. Its own component so the one-second
+// tick re-renders a single <span> rather than the whole status strip.
+function ElapsedTime({ since }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!since) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [since]);
+  if (!since) return null;
+  const seconds = Math.max(0, Math.round((now - since) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return <span className="task-elapsed">{minutes ? `${minutes}m ` : ""}{seconds % 60}s</span>;
+}
+
+// One running task in the status strip. `total` of null means the task cannot
+// honestly state a total yet (a scrape has none until its keyword x source
+// fan-out is queued), so the bar runs indeterminate instead of inventing a
+// percentage that would later jump.
+function TaskProgressBar({ label, progress }) {
+  const total = Number(progress?.total || 0);
+  const current = Number(progress?.current || 0);
+  const determinate = total > 0;
+  const percent = determinate ? Math.min(100, Math.round((current / total) * 100)) : 0;
+  const lanes = progress?.laneCount > 1
+    ? `Lane ${progress.laneIndex}/${progress.laneCount}`
+    : "";
+  const detail = [lanes, progress?.detail].filter(Boolean).join(" · ");
+  return (
+    <div className="task-progress" title={detail || label}>
+      <div className="task-progress-head">
+        <Loader2 className="spin" size={12} />
+        <strong>{label}</strong>
+        {determinate ? <span className="task-progress-count">{current}/{total}</span> : null}
+        {progress?.failed ? <span className="task-progress-failed">{progress.failed} failed</span> : null}
+        <ElapsedTime since={progress?.startedAt} />
+      </div>
+      <div
+        className={`task-progress-track ${determinate ? "" : "indeterminate"}`}
+        role="progressbar"
+        aria-label={label}
+        {...(determinate ? { "aria-valuemin": 0, "aria-valuemax": total, "aria-valuenow": current } : {})}
+      >
+        <span style={determinate ? { width: `${percent}%` } : undefined} />
+      </div>
+      {detail ? <small className="task-progress-detail">{detail}</small> : null}
+    </div>
+  );
+}
+
+export { ClosingDateSourceBadge, Score, ScoreStack, Modal, DialogModal, DropZone, DocumentTextModal, LinkedText, ValueList, StatDelta, StatBars, ModelSelect, TaskProgressBar, ElapsedTime };

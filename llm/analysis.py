@@ -1156,7 +1156,15 @@ JOB ADVERTISEMENT:
         log(f"Error analysing job ID {job_id}: {e} — skipping (will retry).")
 
 
-def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_callback, profile_id=1, fragments=None):
+def _perform_analysis_loop(
+    jobs_to_analyze,
+    resume_text,
+    system_prompt,
+    log_callback,
+    profile_id=1,
+    fragments=None,
+    progress_callback=None,
+):
     """Run the core analysis pipeline over a batch of jobs.
 
     Shared context (resume triage summary, lane preferences, fragment bank)
@@ -1165,8 +1173,14 @@ def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_call
     supplied, the analysis prompt includes them as additional evidence so the
     model can lean on validated reusable claims, not just the raw resume;
     if not supplied, composite scoring falls back to match_score.
+
+    `progress_callback(current, total, failed=…)` reports countable progress
+    for the UI. It is called once per completed job in both the serial and the
+    parallel branch; the bridge throttles the resulting protocol frames, so
+    this layer does not need to.
     """
     log = log_callback or print
+    report = progress_callback or (lambda *args, **kwargs: None)
     if not jobs_to_analyze:
         return
     resume_summary = _get_resume_triage_summary(resume_text, profile_id, log)
@@ -1202,16 +1216,31 @@ def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_call
 
     workers = _analysis_worker_count()
     total = len(jobs_to_analyze)
+    report(0, total, failed=0)
     if workers <= 1 or total <= 1:
+        done = 0
+        failed = 0
         for job in jobs_to_analyze:
             if concurrency.cancel_event.is_set():
                 log("Analysis cancelled by user.")
                 raise concurrency.OperationCancelledError("Analysis cancelled by user.")
-            _analyze_single_job(job, ctx)
+            try:
+                _analyze_single_job(job, ctx)
+            except concurrency.OperationCancelledError:
+                raise
+            except Exception as exc:
+                # Matches the parallel branch: per-job failures are handled
+                # inside the worker, so anything landing here is unexpected.
+                # Log it, count it, and keep the batch moving.
+                failed += 1
+                log(f"Analysis raised unexpectedly: {exc}")
+            done += 1
+            report(done, total, failed=failed)
         return
 
     log(f"Analyzing {total} job(s) with {workers} parallel workers...")
     done = 0
+    failed = 0
     cancelled = False
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job-analysis") as executor:
         futures = [executor.submit(_analyze_single_job, job, ctx) for job in jobs_to_analyze]
@@ -1225,8 +1254,10 @@ def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_call
                 except Exception as exc:
                     # Per-job failures are already handled inside the worker;
                     # anything surfacing here is unexpected. Log and continue.
+                    failed += 1
                     log(f"Analysis worker raised unexpectedly: {exc}")
                 done += 1
+                report(done, total, failed=failed)
                 if done % 5 == 0 or done == total:
                     log(f"Analysis progress: {done}/{total} job(s) processed.")
         finally:
@@ -1240,7 +1271,7 @@ def _perform_analysis_loop(jobs_to_analyze, resume_text, system_prompt, log_call
         raise concurrency.OperationCancelledError("Analysis cancelled by user.")
 
 
-def analyze_jobs(log_callback=None, resume_text: str = "", re_analyze: bool = False, status_filter: str = 'new', profile_id=1):
+def analyze_jobs(log_callback=None, resume_text: str = "", re_analyze: bool = False, status_filter: str = 'new', profile_id=1, progress_callback=None):
     """Analyze jobs using the configured local endpoint."""
     log = log_callback or print
     local = _local_ai_settings()
@@ -1256,11 +1287,18 @@ def analyze_jobs(log_callback=None, resume_text: str = "", re_analyze: bool = Fa
     jobs_to_analyze = db.get_jobs_to_analyze(status_filter, re_analyze, profile_id, resume_text)
     log(f"Found {len(jobs_to_analyze)} jobs to analyze in the '{status_filter}' view.")
 
-    _perform_analysis_loop(jobs_to_analyze, resume_text, ANALYSIS_SYSTEM_PROMPT_BASE, log_callback, profile_id)
+    _perform_analysis_loop(
+        jobs_to_analyze,
+        resume_text,
+        ANALYSIS_SYSTEM_PROMPT_BASE,
+        log_callback,
+        profile_id,
+        progress_callback=progress_callback,
+    )
     log("Analysis complete.")
 
 
-def analyze_specific_jobs(job_ids, log_callback=None, resume_text: str = "", profile_id=1):
+def analyze_specific_jobs(job_ids, log_callback=None, resume_text: str = "", profile_id=1, progress_callback=None):
     """Analyzes a specific list of jobs by their IDs using the local endpoint."""
     log = log_callback or print
     local = _local_ai_settings()
@@ -1276,5 +1314,12 @@ def analyze_specific_jobs(job_ids, log_callback=None, resume_text: str = "", pro
     jobs_to_analyze = db.get_jobs_to_analyze_by_ids(job_ids)
     log(f"Found {len(jobs_to_analyze)} jobs in DB from the provided list of IDs.")
 
-    _perform_analysis_loop(jobs_to_analyze, resume_text, ANALYSIS_SYSTEM_PROMPT_BASE, log_callback, profile_id)
+    _perform_analysis_loop(
+        jobs_to_analyze,
+        resume_text,
+        ANALYSIS_SYSTEM_PROMPT_BASE,
+        log_callback,
+        profile_id,
+        progress_callback=progress_callback,
+    )
     log("Specific analysis complete.")

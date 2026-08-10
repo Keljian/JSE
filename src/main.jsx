@@ -18,7 +18,7 @@ import jseIcon from "../assets/jse-icon.png";
 import { KANBAN_COLUMN_RENDER_CAP, PIPELINE, SUPPORT_MESSAGE, SUPPORT_URL, WORK_MODES } from "./lib/constants";
 import { documentAiLabel, formatBytes, hasCompanyResearch, normalizeStage, openSupportLink, jobFlagTypesOf, primaryScore, toErrorMessage, todayPlus } from "./lib/format";
 import { appConfirm, appNotice, dialogBridge } from "./lib/dialogs";
-import { DialogModal, DocumentTextModal } from "./components/primitives";
+import { DialogModal, DocumentTextModal, TaskProgressBar } from "./components/primitives";
 import { JobCard } from "./components/chips";
 import { AddJobModal, AnalysisModal, CleanupModal, CreateLaneModal, LogExternalModal, OnboardingWizard, QuickStageForm, RejectJobModal, RunSearchModal } from "./components/modals";
 import { WorkspaceModal } from "./components/workspace";
@@ -58,6 +58,10 @@ function App() {
   const [filters, setFilters] = useState({ query: "", stage: "", source: "", company: "", location: "", work_modes: [], min_score: "", max_score: "", date_from: "", has_interview: false, has_feedback: false });
   const [interestedSort, setInterestedSort] = useState("match");
   const [activeTasks, setActiveTasks] = useState({});
+  // Countable progress per running task kind, fed by `progress` frames from the
+  // bridge. Separate from activeTasks because that holds task handles (cancel /
+  // unsubscribe) and must not churn identity on every progress tick.
+  const [taskProgress, setTaskProgress] = useState({});
   const [docsBatchProgress, setDocsBatchProgress] = useState(null);
   const [exportingShortlist, setExportingShortlist] = useState(false);
   const [runSearchOpen, setRunSearchOpen] = useState(false);
@@ -311,6 +315,48 @@ function App() {
     learnings: "Mining interview fragments",
   }[kind] || kind);
 
+  // Drop a finished task from both the handle map and the progress map, and
+  // recompute the coarse status word. Shared by runTask and the docs batch so
+  // a cancelled or failed run can never leave a stale bar on screen.
+  const finishTask = useCallback((taskKind) => {
+    setActiveTasks((current) => {
+      const next = { ...current };
+      delete next[taskKind];
+      setStatus(Object.keys(next).length ? "Running" : "Idle");
+      return next;
+    });
+    setTaskProgress((current) => {
+      if (!(taskKind in current)) return current;
+      const next = { ...current };
+      delete next[taskKind];
+      return next;
+    });
+  }, []);
+
+  const recordProgress = useCallback((taskKind, event) => {
+    setTaskProgress((current) => ({
+      ...current,
+      [taskKind]: {
+        ...(current[taskKind] || {}),
+        current: event.current ?? 0,
+        total: event.total ?? null,
+        phase: event.phase || null,
+        detail: event.detail || event.message || null,
+        failed: event.failed || 0,
+        lane: event.lane || null,
+        laneIndex: event.lane_index || null,
+        laneCount: event.lane_count || null,
+      },
+    }));
+  }, []);
+
+  // " 12/48" for a button label, or "" while the task has no honest total yet.
+  const taskCountLabel = (kind) => {
+    const progress = taskProgress[kind];
+    if (!progress?.total) return "";
+    return ` ${progress.current || 0}/${progress.total}`;
+  };
+
   const runTask = useCallback((command, payload, doneMessage, refreshProfileId = null, onComplete = null) => {
     const taskKind = taskKindForCommand(command);
     if (activeTasks[taskKind]) {
@@ -319,9 +365,14 @@ function App() {
     }
     setStatus("Running");
     appendLog(`Started: ${taskLabel(taskKind)}`);
+    setTaskProgress((current) => ({
+      ...current,
+      [taskKind]: { current: 0, total: null, phase: "starting", startedAt: Date.now() },
+    }));
     const task = window.jobAssistant.startTask(command, payload, (event) => {
       if (event.type === "log") appendLog(event.message);
       if (event.type === "status") setStatus(event.message || "Running");
+      if (event.type === "progress") recordProgress(taskKind, event);
       if (event.type === "result") {
         appendLog(doneMessage || "Task complete");
         if (command.startsWith("docs:") && event.data) {
@@ -347,12 +398,7 @@ function App() {
             });
           }
         }
-        setActiveTasks((current) => {
-          const next = { ...current };
-          delete next[taskKind];
-          setStatus(Object.keys(next).length ? "Running" : "Idle");
-          return next;
-        });
+        finishTask(taskKind);
         task.unsubscribe();
         if (onComplete) onComplete();
         refresh(refreshProfileId)
@@ -366,12 +412,7 @@ function App() {
       }
       if (event.type === "error") {
         appendLog(`Error: ${event.message}`);
-        setActiveTasks((current) => {
-          const next = { ...current };
-          delete next[taskKind];
-          setStatus(Object.keys(next).length ? "Running" : "Idle");
-          return next;
-        });
+        finishTask(taskKind);
         task.unsubscribe();
         if (command.startsWith("scrape:")) {
           refresh(refreshProfileId).catch((error) => appendLog(toErrorMessage(error)));
@@ -379,7 +420,7 @@ function App() {
       }
     });
     setActiveTasks((current) => ({ ...current, [taskKind]: task }));
-  }, [activeTasks, appendLog, refresh]);
+  }, [activeTasks, appendLog, refresh, finishTask, recordProgress]);
 
   const stopAllTasks = () => {
     for (const task of Object.values(activeTasks)) {
@@ -388,6 +429,7 @@ function App() {
     }
     window.jobAssistant.stopAllTasks?.();
     setActiveTasks({});
+    setTaskProgress({});
     setDocsBatchProgress((current) => current?.running
       ? { ...current, running: false, status: "cancelled", message: "Batch cancelled." }
       : current);
@@ -648,6 +690,10 @@ function App() {
     };
     setDocsBatchProgress(initial);
     setStatus("Generating Interested docs");
+    setTaskProgress((current) => ({
+      ...current,
+      docs: { current: 0, total: candidates.length, phase: "starting", startedAt: Date.now() },
+    }));
     appendLog(`Started document batch for ${candidates.length} Interested job${candidates.length === 1 ? "" : "s"}.`);
 
     let task;
@@ -659,6 +705,7 @@ function App() {
         if (event.type === "status") setStatus(event.message || "Generating Interested docs");
         if (event.type === "progress") {
           setDocsBatchProgress({ ...event, running: true });
+          recordProgress("docs", { ...event, phase: event.status, detail: event.message });
           setStatus(event.message || "Generating Interested docs");
         }
         if (event.type === "result") {
@@ -674,12 +721,7 @@ function App() {
             message: `Finished: ${result.succeeded || 0} generated${result.skipped ? `, ${result.skipped} skipped (closed or gated)` : ""}${result.failed ? `, ${result.failed} failed` : ""}.`
           });
           appendLog(`Interested document batch complete: ${result.succeeded || 0} generated, ${result.skipped || 0} skipped (closed or gated), ${result.failed || 0} failed.`);
-          setActiveTasks((current) => {
-            const next = { ...current };
-            delete next.docs;
-            setStatus(Object.keys(next).length ? "Running" : "Idle");
-            return next;
-          });
+          finishTask("docs");
           task.unsubscribe();
           refresh().catch((error) => appendLog(toErrorMessage(error)));
         }
@@ -692,12 +734,7 @@ function App() {
             message: cancelled ? "Batch cancelled." : `Batch stopped: ${event.message}`
           }));
           appendLog(cancelled ? "Interested document batch cancelled." : `Interested document batch failed: ${event.message}`);
-          setActiveTasks((current) => {
-            const next = { ...current };
-            delete next.docs;
-            setStatus(Object.keys(next).length ? "Running" : "Idle");
-            return next;
-          });
+          finishTask("docs");
           task.unsubscribe();
         }
       }
@@ -1486,7 +1523,7 @@ function App() {
   const showPipelineFilters = ["dashboard", "campaign", "hiddenMarket", "pipeline"].includes(view);
 
   return (
-    <main className="ats-shell">
+    <main className={busy ? "ats-shell tasks-running" : "ats-shell"}>
       {onboardingOpen ? <OnboardingWizard prerequisites={prerequisites} profile={activeProfile} busy={onboardingBusy} onComplete={finishOnboarding} onSkip={skipOnboarding} /> : null}
       <aside className="nav-rail">
         <div className="brand">
@@ -1499,7 +1536,10 @@ function App() {
         <button className={view === "pipeline" ? "active nav-btn" : "nav-btn"} onClick={() => setView("pipeline")}><KanbanSquare size={18} /> Pipeline</button>
         <button className={view === "stats" ? "active nav-btn" : "nav-btn"} onClick={() => setView("stats")}><TrendingUp size={18} /> Stats</button>
         <button className={view === "learnings" ? "active nav-btn" : "nav-btn"} onClick={() => setView("learnings")}><GraduationCap size={18} /> Learnings</button>
-        <button className={view === "activity" ? "active nav-btn" : "nav-btn"} onClick={() => setView("activity")}><NotebookTabs size={18} /> Activity</button>
+        <button className={view === "activity" ? "active nav-btn" : "nav-btn"} onClick={() => setView("activity")}>
+          <NotebookTabs size={18} /> Activity
+          {busy ? <span className="nav-busy-dot" title={runningTaskKeys.map(taskLabel).join(" + ")} /> : null}
+        </button>
         <button className={view === "settings" ? "active nav-btn" : "nav-btn"} onClick={() => setView("settings")}><Settings size={18} /> Settings</button>
         <div className="nav-spacer" />
         <button className={view === "about" ? "active nav-btn" : "nav-btn"} onClick={() => setView("about")}><Info size={18} /> About</button>
@@ -1520,9 +1560,9 @@ function App() {
           </div>
           {view !== "about" ? <div className="toolbar-actions">
             <button
-              disabled={!hasActiveProfile}
-              data-tooltip={hasActiveProfile ? "Search enabled sources for new roles" : "Add a lane before running search"}
-              aria-description={hasActiveProfile ? "Search enabled sources for new roles" : "Add a lane before running search"}
+              disabled={!hasActiveProfile || searchBusy}
+              data-tooltip={searchBusy ? "A search is already running" : hasActiveProfile ? "Search enabled sources for new roles" : "Add a lane before running search"}
+              aria-description={searchBusy ? "A search is already running" : hasActiveProfile ? "Search enabled sources for new roles" : "Add a lane before running search"}
               onClick={() => {
                 if (!hasActiveProfile) {
                   appendLog("Add a lane before running search.");
@@ -1530,10 +1570,22 @@ function App() {
                 }
                 setRunSearchOpen(true);
               }}
-            ><Play size={16} /> Run Search</button>
+            >
+              {searchBusy ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
+              {searchBusy ? `Searching${taskCountLabel("search")}` : "Run Search"}
+            </button>
             <button className="secondary" data-tooltip="Add a job listing manually" aria-description="Add a job listing manually" onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add Job</button>
             {view === "pipeline" ? <button className="secondary" data-tooltip="Log an application you made outside JSE" aria-description="Log an application you made outside JSE" onClick={() => setAddExternalOpen(true)}><ClipboardCheck size={16} /> Log External</button> : null}
-            <button className="secondary" data-tooltip="Analyse unreviewed jobs for fit" aria-description="Analyse unreviewed jobs for fit" onClick={() => setAnalysisOpen(true)}><Sparkles size={16} /> Run Analysis</button>
+            <button
+              className="secondary"
+              disabled={analysisBusy}
+              data-tooltip={analysisBusy ? "Analysis is already running" : "Analyse unreviewed jobs for fit"}
+              aria-description={analysisBusy ? "Analysis is already running" : "Analyse unreviewed jobs for fit"}
+              onClick={() => setAnalysisOpen(true)}
+            >
+              {analysisBusy ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
+              {analysisBusy ? `Analysing${taskCountLabel("analysis")}` : "Run Analysis"}
+            </button>
             <button className="secondary" data-tooltip="Reload jobs and dashboard data" aria-description="Reload jobs and dashboard data" onClick={() => refresh()}><RefreshCw size={16} /> Refresh</button>
             <button className="danger" data-tooltip="Stop all running searches and tasks" aria-description="Stop all running searches and tasks" onClick={stopAllTasks}><CircleStop size={16} /> Stop</button>
           </div> : null}
@@ -1822,9 +1874,20 @@ function App() {
       ) : null}
       {dialog ? <DialogModal dialog={dialog} onClose={closeDialog} /> : null}
       {updateToastVisible ? <UpdateToast update={appUpdate} onDismiss={() => setUpdateToastVisible(false)} /> : null}
-      <footer className="status-strip">
-        <strong>{busy ? runningTaskKeys.map(taskLabel).join(" + ") : "Idle"}</strong>
+      <footer className={busy ? "status-strip busy" : "status-strip"}>
+        {busy ? (
+          <div className="status-strip-tasks">
+            {runningTaskKeys.map((kind) => (
+              <TaskProgressBar key={kind} label={taskLabel(kind)} progress={taskProgress[kind]} />
+            ))}
+          </div>
+        ) : <strong>Idle</strong>}
         <span>{latestLog || "Ready"}</span>
+        {busy ? (
+          <button className="danger status-strip-stop" onClick={stopAllTasks}>
+            <CircleStop size={14} /> Stop
+          </button>
+        ) : null}
         <a href={SUPPORT_URL} onClick={openSupportLink} title={SUPPORT_MESSAGE}>☕ ko-fi.com/keljian</a>
       </footer>
     </main>

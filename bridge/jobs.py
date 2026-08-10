@@ -7,6 +7,7 @@ from pathlib import Path
 
 import database_manager as db
 from .runtime import (
+    ProgressReporter,
     _ad_signals_cache,
     _clean_text,
     compact_job_dict,
@@ -464,17 +465,26 @@ def command_analysis_run(payload):
     include_all = bool(payload.get("include_all_profiles"))
     profiles = db.get_all_profiles() if include_all else [db.get_profile_by_id(payload.get("profile_id", 1))]
     stage = payload.get("stage") or payload.get("status") or "new"
-    for profile in profiles:
-        if not profile:
-            continue
+    lanes = [profile for profile in profiles if profile]
+    for index, profile in enumerate(lanes, start=1):
         emit("status", message=f"Analyzing profile: {profile['name']}")
         resume_text = read_resume_text(profile["id"])
+        # Per-lane totals are only known once analyze_jobs has queried, so
+        # progress is scoped to the lane being analysed and the frame carries
+        # which lane that is. A single bar across lanes would have to grow its
+        # own total mid-run and jump backwards.
+        reporter = ProgressReporter("analysis", extra={
+            "lane": profile["name"],
+            "lane_index": index,
+            "lane_count": len(lanes),
+        })
         app_logic.run_analysis_on_existing(
             resume_text,
             False,
             stage,
             lambda message: emit("log", message=f"[{profile['name']}] {message}"),
             profile["id"],
+            progress_callback=reporter,
         )
     return {"ok": True}
 
@@ -490,6 +500,7 @@ def command_analysis_job(payload):
         resume_text,
         lambda message: emit("log", message=message),
         job["profile_id"],
+        progress_callback=ProgressReporter("analysis", extra={"job_id": payload["job_id"]}),
     )
     return {"job": row_to_dict(db.get_job_details(payload["job_id"]))}
 

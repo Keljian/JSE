@@ -49,6 +49,49 @@ def emit(event_type, **payload):
         stream.flush()
 
 
+class ProgressReporter:
+    """Rate-limited `progress` frame emitter for long task loops.
+
+    Analysis and search call their progress callbacks once per unit of work,
+    which on a large board is hundreds of calls a minute. Every frame is a
+    JSON line over the task pipe plus a React state update in the renderer, so
+    intermediate frames are coalesced to `min_interval`. The first frame, any
+    change of `phase`, and the final frame (current == total) always go out:
+    those are the ones that change what the UI is showing rather than just
+    nudging a number.
+    """
+
+    def __init__(self, kind, min_interval=0.4, extra=None):
+        self.kind = kind
+        self.min_interval = min_interval
+        self.extra = dict(extra or {})
+        self._last_sent = 0.0
+        self._last_phase = None
+        self._lock = threading.Lock()
+
+    def __call__(self, current, total, phase=None, detail=None, failed=0, **fields):
+        now = time.monotonic()
+        with self._lock:
+            final = total is not None and current is not None and current >= total
+            forced = phase != self._last_phase or self._last_sent == 0.0 or final
+            if not forced and now - self._last_sent < self.min_interval:
+                return
+            self._last_sent = now
+            self._last_phase = phase
+        payload = dict(self.extra)
+        payload.update(fields)
+        emit(
+            "progress",
+            kind=self.kind,
+            current=current,
+            total=total,
+            phase=phase,
+            detail=detail,
+            failed=failed,
+            **payload,
+        )
+
+
 def use_protocol_stream(stream):
     """Pin protocol output to `stream` (the real stdout) for worker mode.
 
