@@ -4,6 +4,8 @@ import io
 import os
 import requests
 import pdfplumber
+import shutil
+import tempfile
 import time
 from urllib.parse import urljoin
 
@@ -23,8 +25,14 @@ JOB_DETAIL_TIMEOUT_SECONDS = 120
 DESCRIPTION_PROBE_TIMEOUT_SECONDS = 3
 
 # --- Helper Functions ---
-def _build_chrome_options():
-    """Create a background-only Chrome session for Selenium scrapers."""
+def _build_chrome_options(download_dir):
+    """Create a background-only Chrome session for Selenium scrapers.
+
+    Downloads are pointed at a scratch directory: scrapers only ever read
+    attachments through _get_pdf_text_from_url, so anything Chrome saves on its
+    own (position description PDFs served as attachments, `a[download]` links)
+    is a by-product and must not land in the user's Downloads folder.
+    """
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -46,7 +54,30 @@ def _build_chrome_options():
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option("useAutomationExtension", False)
+    options.add_experimental_option("prefs", {
+        "download.default_directory": download_dir,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "savefile.default_directory": download_dir,
+        # Render PDFs in the tab instead of handing them to the OS handler.
+        "plugins.always_open_pdf_externally": False,
+    })
     return options
+
+
+def _confine_downloads(driver, download_dir):
+    """Belt-and-braces on the download prefs: headless Chrome ignores them in
+    some builds, so pin the behaviour over CDP as well. Best effort — an old
+    driver without the command must not stop a scrape."""
+    for command, params in (
+        ("Browser.setDownloadBehavior", {"behavior": "allow", "downloadPath": download_dir}),
+        ("Page.setDownloadBehavior", {"behavior": "allow", "downloadPath": download_dir}),
+    ):
+        try:
+            driver.execute_cdp_cmd(command, params)
+            return
+        except Exception:
+            continue
 
 
 def open_background_tab(driver):
@@ -100,14 +131,16 @@ def scraper_resource_manager(wait_timeout=10):
     def decorator(scraper_func):
         @functools.wraps(scraper_func)
         def wrapper(keyword, status_callback=None, log_callback=None, location=None, max_pages=30, **kwargs):
-            options = _build_chrome_options()
-            
+            download_dir = tempfile.mkdtemp(prefix="jse-scrape-downloads-")
+            options = _build_chrome_options(download_dir)
+
             driver = None
             try:
                 driver = webdriver.Chrome(options=options)
                 driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
                 driver.set_script_timeout(SCRIPT_TIMEOUT_SECONDS)
-                
+                _confine_downloads(driver, download_dir)
+
                 # Centralized browser stealth configurations
                 driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
                 driver.execute_script("Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]})")
@@ -123,6 +156,7 @@ def scraper_resource_manager(wait_timeout=10):
                         driver.quit()
                     except Exception:
                         pass
+                shutil.rmtree(download_dir, ignore_errors=True)
         return wrapper
     return decorator
 

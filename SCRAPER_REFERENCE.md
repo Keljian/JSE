@@ -31,7 +31,9 @@ def scrape(keyword, status_callback=None, log_callback=None, profile_id=1,
 
 ### `scraper_resource_manager(wait_timeout=20)`
 
-Decorator that creates and destroys a headless Chrome driver with stealth settings. The
+Decorator that creates and destroys a headless Chrome driver with stealth settings. Browser
+downloads are redirected to a scratch directory that is deleted when the scrape finishes, so
+never rely on Chrome saving a file — read attachments with `_get_pdf_text_from_url` instead. The
 **decorated** function receives extra leading args `(driver, wait, ...)`. The outer `scrape()`
 entry point is produced by the decorator automatically. Assign the decorated function to
 the name `scrape` at module level:
