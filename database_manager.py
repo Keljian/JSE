@@ -25,7 +25,6 @@ repoint the database.
 """
 import facade
 from db import (
-    save_job_screening,
     campaign as _campaign,
     companies as _companies,
     connection as _connection,
@@ -387,6 +386,7 @@ from db.jobs import (  # noqa: F401
     route_job_to_lane,
     save_application_kit_review,
     save_job_intelligence,
+    save_job_screening,
     sync_legacy_job_to_lane_model,
     update_interview,
     update_job_analysis,

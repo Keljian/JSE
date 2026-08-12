@@ -13,7 +13,6 @@ location string the provider cannot resolve is retried on every sweep forever.
 """
 
 import json
-import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
