@@ -156,6 +156,15 @@ class ShortlistExportTests(unittest.TestCase):
             self._add(f"Bulk {n}", f"C{n}", f"https://example.com/s10{n}", match_score=70)
         self.assertEqual(self._export(limit=3)["count"], 3)
 
+    def test_the_packet_is_unbounded_by_default(self):
+        # The packet is the whole sweep. A default cap would quietly drop roles
+        # the human pass never learns existed, which is the failure the export
+        # exists to prevent.
+        for n in range(45):
+            self._add(f"Bulk {n}", f"C{n}", f"https://example.com/bulk{n}", match_score=70)
+        self.assertEqual(self._export()["count"], 45)
+        self.assertEqual(self._export(limit=None)["count"], 45)
+
     def test_only_the_requested_stages_are_included(self):
         new_job = self._add("New role", "A", "https://example.com/s11")
         applied = self._add("Applied role", "B", "https://example.com/s12", pipeline_stage="applied")

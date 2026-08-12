@@ -44,6 +44,51 @@ def sanitize_claude_model(value):
     return model
 
 
+SECTOR_CODES = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+def _screening_values(merged):
+    """Normalise the commute and pay settings on the way into the database.
+
+    Kept lenient on purpose. A radius the user cannot express, or a currency
+    they leave blank, must degrade to "screen nothing" rather than to a filter
+    nobody asked for: a job silently set aside by a mistyped setting is the
+    failure this whole feature is meant to avoid.
+    """
+    def number(key, default, low, high):
+        try:
+            value = int(float(merged.get(key)))
+        except (TypeError, ValueError):
+            value = int(default)
+        return max(low, min(high, value))
+
+    sectors = ",".join(
+        code for code in SECTOR_CODES
+        if code in {
+            part.strip().upper()
+            for part in str(merged.get("accepted_sectors") or "").replace(";", ",").split(",")
+        }
+    )
+    unit = str(merged.get("distance_unit") or "km").strip().lower()
+    home = _clean(merged.get("home_location"))
+    preferred = number("preferred_commute_km", DEFAULT_PROFILE_SETTINGS["preferred_commute_km"], 1, 20000)
+    maximum = number("max_commute_km", DEFAULT_PROFILE_SETTINGS["max_commute_km"], 1, 20000)
+    return {
+        # Blank means "same as the search location", resolved on read. Storing
+        # the fallback here would freeze it, so a later change to the search
+        # location would silently stop moving the commute anchor with it.
+        "home_location": home,
+        "search_radius_km": number("search_radius_km", DEFAULT_PROFILE_SETTINGS["search_radius_km"], 0, 20000),
+        "preferred_commute_km": min(preferred, maximum),
+        "max_commute_km": maximum,
+        "accepted_sectors": sectors,
+        "distance_unit": unit if unit in ("km", "mi") else "km",
+        "commute_screening_enabled": 1 if merged.get("commute_screening_enabled", True) else 0,
+        "salary_floor": number("salary_floor", 0, 0, 100000000),
+        "salary_currency": _clean(merged.get("salary_currency")).upper()[:3],
+    }
+
+
 def _settings_from_profile(row):
     if not row:
         return dict(DEFAULT_PROFILE_SETTINGS)
@@ -63,6 +108,25 @@ def _settings_from_profile(row):
     settings["default_min_score"] = int(row["default_min_score"] or DEFAULT_PROFILE_SETTINGS["default_min_score"])
     settings["boost_terms"] = row["boost_terms"] or ""
     settings["penalty_terms"] = row["penalty_terms"] or ""
+    for key in ("home_location", "accepted_sectors", "distance_unit",
+                "geocode_provider", "salary_currency"):
+        if key in row.keys() and row[key] is not None:
+            settings[key] = row[key]
+    for key in ("preferred_commute_km", "max_commute_km", "salary_floor", "search_radius_km"):
+        if key in row.keys() and row[key] is not None:
+            try:
+                settings[key] = int(row[key])
+            except (TypeError, ValueError):
+                pass
+    if "commute_screening_enabled" in row.keys() and row["commute_screening_enabled"] is not None:
+        settings["commute_screening_enabled"] = bool(int(row["commute_screening_enabled"]))
+    # An existing profile has preferred_location set but no home_location, and
+    # the search location is the right default anchor rather than making
+    # everyone re-enter where they live. The fallback deliberately lives in
+    # screening.Screener rather than here: resolving it on read would send it
+    # straight back through update_profile_settings on the next save and freeze
+    # a copy, so a later change to the search location would stop moving the
+    # commute anchor with it. The settings UI shows it as a placeholder.
     settings["gemini_model"] = sanitize_gemini_model(settings.get("gemini_model"))
     settings["claude_model"] = sanitize_claude_model(settings.get("claude_model"))
     return settings
@@ -95,6 +159,8 @@ GLOBAL_AI_SETTING_FIELDS = (
     "compat_api_key",
     "compat_model",
     "analysis_workers",
+    "local_context_target",
+    "local_context_autoload",
 )
 
 
@@ -187,6 +253,7 @@ def update_profile_settings(profile_id, settings):
         work_modes = list(DEFAULT_PROFILE_SETTINGS["work_modes"])
     max_pages = max(1, min(100, int(merged.get("max_pages") or DEFAULT_PROFILE_SETTINGS["max_pages"])))
     default_min_score = max(0, min(100, int(merged.get("default_min_score") or 0)))
+    screening = _screening_values(merged)
     with get_db_connection() as conn:
         _execute_with_retry(
             conn,
@@ -219,6 +286,15 @@ def update_profile_settings(profile_id, settings):
                 avoid_terms = ?,
                 document_strategy = ?,
                 positioning_doctrine = ?,
+                home_location = ?,
+                search_radius_km = ?,
+                preferred_commute_km = ?,
+                max_commute_km = ?,
+                accepted_sectors = ?,
+                distance_unit = ?,
+                commute_screening_enabled = ?,
+                salary_floor = ?,
+                salary_currency = ?,
                 active = ?
             WHERE id = ?
             """,
@@ -250,6 +326,15 @@ def update_profile_settings(profile_id, settings):
                 _clean(merged.get("avoid_terms")),
                 _clean(merged.get("document_strategy")),
                 _clean_block(merged.get("positioning_doctrine")),
+                screening["home_location"],
+                screening["search_radius_km"],
+                screening["preferred_commute_km"],
+                screening["max_commute_km"],
+                screening["accepted_sectors"],
+                screening["distance_unit"],
+                screening["commute_screening_enabled"],
+                screening["salary_floor"],
+                screening["salary_currency"],
                 1 if merged.get("active", 1) else 0,
                 profile_id,
             ),
@@ -323,6 +408,20 @@ def update_app_settings(settings):
                 sanitized[key] = max(0, int(value or 0))
             except (TypeError, ValueError):
                 sanitized[key] = 0
+            continue
+        if key == "local_context_autoload":
+            # A checkbox sends a boolean, and the blank-falls-back-to-default
+            # rule below would turn False back into the default "1".
+            sanitized[key] = "1" if value in (True, 1) or str(value).strip().lower() in {"1", "true", "yes", "on"} else "0"
+            continue
+        if key == "local_context_target":
+            try:
+                # 0 means "leave the window alone"; anything else is clamped to
+                # a window a local runtime could plausibly serve.
+                target = int(str(value or "0").strip())
+            except (TypeError, ValueError):
+                target = int(defaults.get(key, "0") or 0)
+            sanitized[key] = str(0 if target <= 0 else min(max(target, 2048), 1048576))
             continue
         text = str(value or "").strip()
         if not text:

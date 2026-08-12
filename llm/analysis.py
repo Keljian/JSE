@@ -5,6 +5,7 @@ Split out of llm_handler.py, which re-exports everything here.
 import json
 import concurrent.futures
 import re
+import screening
 import hashlib
 import concurrency
 import database_manager as db
@@ -1213,6 +1214,32 @@ def _perform_analysis_loop(
         "system_prompt": system_prompt,
         "profile_id": profile_id,
     }
+    # Deterministic screen before any LLM call. Commute and pay are facts about
+    # the posting, not judgements, so resolving them in Python is both cheaper
+    # and more reliable than asking a model. Blocked jobs keep their row and
+    # their reason; they are skipped here and omitted from the shortlist.
+    try:
+        screener = screening.build(lane_settings, log=log)
+        kept, set_aside = [], 0
+        for job in jobs_to_analyze:
+            verdict = screener.screen(job)
+            db.save_job_screening(job["id"], verdict)
+            if verdict["verdict"] == "blocked":
+                set_aside += 1
+            else:
+                kept.append(job)
+        if set_aside:
+            log(f"Screened out {set_aside} job(s) on commute or pay before analysis; "
+                f"they remain visible with a reason.")
+        jobs_to_analyze = kept
+    except Exception as exc:
+        # Screening is an optimisation. If it breaks, analyse everything rather
+        # than silently dropping roles the user would have wanted to see.
+        log(f"Screening skipped ({exc}); analysing all jobs.")
+
+    if not jobs_to_analyze:
+        report(0, 0, failed=0)
+        return
 
     workers = _analysis_worker_count()
     total = len(jobs_to_analyze)

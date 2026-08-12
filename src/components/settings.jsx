@@ -1,7 +1,7 @@
 /** Settings and the scraper plugin builder. */
 import React, { useEffect, useState } from "react";
 import { BriefcaseBusiness, Check, ChevronRight, ExternalLink, FileText, Filter, FolderOpen, Loader2, NotebookTabs, Play, Plus, Radar, RefreshCw, Settings, Sparkles, Trash2, Wrench, X } from "lucide-react";
-import { COMPAT_PRESETS, DOCUMENT_AI_PROVIDERS, LOCAL_AI_RUNTIMES, SETTINGS_SECTIONS, WORK_MODES } from "../lib/constants";
+import { COMPASS_SECTORS, COMPAT_PRESETS, DOCUMENT_AI_PROVIDERS, LOCAL_AI_RUNTIMES, SETTINGS_SECTIONS, WORK_MODES } from "../lib/constants";
 import { formatBytes, toErrorMessage } from "../lib/format";
 import { appConfirm } from "../lib/dialogs";
 import { ModelSelect } from "../components/primitives";
@@ -161,6 +161,7 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
   const [resetRejectedResult, setResetRejectedResult] = useState(null);
   const [compactResult, setCompactResult] = useState(null);
   const [providerTests, setProviderTests] = useState({});
+  const [contextReload, setContextReload] = useState({});
   const [modelOptions, setModelOptions] = useState({});
   const [scraperActionId, setScraperActionId] = useState("");
   const [scraperActionMessage, setScraperActionMessage] = useState("");
@@ -206,6 +207,14 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
     update("work_modes", checked
       ? [...new Set([...(form.work_modes || []), mode])]
       : (form.work_modes || []).filter((item) => item !== mode));
+  };
+  const selectedSectors = String(form.accepted_sectors || "")
+    .split(",").map((part) => part.trim().toUpperCase()).filter(Boolean);
+  const toggleSector = (sector, checked) => {
+    const next = checked
+      ? [...new Set([...selectedSectors, sector])]
+      : selectedSectors.filter((item) => item !== sector);
+    update("accepted_sectors", COMPASS_SECTORS.filter((item) => next.includes(item)).join(","));
   };
   const chooseResume = async () => {
     const resumePath = await window.jobAssistant.chooseResume();
@@ -395,10 +404,16 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
       if (provider === "local" && result.model) {
         updateGlobal("local_model", result.model);
       }
+      const context = result.context_length ? ` (${result.context_length.toLocaleString()}-token context)` : "";
+      const passed = `${result.label} responded in ${(result.elapsed_ms / 1000).toFixed(1)}s${context}`;
       setProviderTests((current) => ({
         ...current,
+        // A reachable endpoint whose model was loaded with too small a context
+        // window is not a pass: the one-line test fits anywhere, JSE's real
+        // prompts do not, and the server reports the difference as a truncated
+        // answer rather than an error.
         [provider]: result.ok
-          ? { ok: true, message: `${result.label} responded in ${(result.elapsed_ms / 1000).toFixed(1)}s` }
+          ? { ok: !result.warning, warning: Boolean(result.warning), message: result.warning || passed }
           : { ok: false, warning: Boolean(result.reachable), message: result.message || "Provider test failed." }
       }));
     } catch (error) {
@@ -406,6 +421,41 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
         ...current,
         [provider]: { ok: false, message: toErrorMessage(error) }
       }));
+    }
+  };
+
+  const applyContextWindow = async () => {
+    setContextReload({ running: true });
+    try {
+      const result = await new Promise((resolve, reject) => {
+        let task;
+        task = window.jobAssistant.startTask(
+          "ai:localContextSet",
+          { settings: globalForm, context_target: globalForm.local_context_target },
+          (event) => {
+            if (event.type === "result") {
+              task?.unsubscribe();
+              resolve(event.data);
+            } else if (event.type === "error") {
+              task?.unsubscribe();
+              reject(new Error(event.message || "The reload failed."));
+            }
+          }
+        );
+      });
+      const served = Number(result.context_length || 0);
+      const seconds = (result.elapsed_ms / 1000).toFixed(0);
+      // The fitter caps the request to what the hardware holds, so report what
+      // is being served rather than what was asked for.
+      setContextReload({
+        ok: !result.capped,
+        warning: Boolean(result.capped),
+        message: result.capped
+          ? `Reloaded in ${seconds}s, but the hardware only fits ${served.toLocaleString()} tokens of the ${Number(result.requested).toLocaleString()} asked for. A smaller quantisation or more CPU offload would buy more.`
+          : `Now serving a ${served.toLocaleString()}-token context window (reloaded in ${seconds}s).`
+      });
+    } catch (error) {
+      setContextReload({ ok: false, message: toErrorMessage(error) });
     }
   };
 
@@ -584,7 +634,19 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
                 <label className="full"><span>Base URL</span><input value={globalForm.local_base_url || ""} placeholder="http://localhost:1234/v1" onChange={(event) => updateGlobal("local_base_url", event.target.value)} /></label>
                 <label><span>Model</span><input value={globalForm.local_model || ""} placeholder="Loaded model name" onChange={(event) => updateGlobal("local_model", event.target.value)} /></label>
                 <label><span>API key</span><input type="password" value={globalForm.local_api_key || ""} placeholder="Optional" onChange={(event) => updateGlobal("local_api_key", event.target.value)} /></label>
+                <label><span>Context window</span><input type="number" min="0" step="1024" value={globalForm.local_context_target ?? ""} placeholder="32768" onChange={(event) => updateGlobal("local_context_target", event.target.value)} /></label>
+                <label className="checkbox-field"><input type="checkbox" checked={String(globalForm.local_context_autoload ?? "1") !== "0"} onChange={(event) => updateGlobal("local_context_autoload", event.target.checked ? "1" : "0")} /><span>Reload the model automatically when a request needs a bigger window</span></label>
               </div>
+              <div className="local-ai-quickstart">
+                <span>A local server loads a model at the model file's default window, often far below what it supports. JSE can set it over the API — the reload takes as long as the weights take to page in.</span>
+                <div>
+                  <button type="button" className="secondary ai-test-button" disabled={contextReload.running} onClick={applyContextWindow}>
+                    {contextReload.running ? <Loader2 className="spin" size={12} /> : <Play size={12} />}
+                    {contextReload.running ? "Reloading model…" : "Apply context window"}
+                  </button>
+                </div>
+              </div>
+              {contextReload.message ? <div className={`ai-test-result ${contextReload.ok ? "ok" : contextReload.warning ? "warning" : "bad"}`}>{contextReload.message}</div> : null}
               <div className="local-ai-quickstart">
                 <span>Choose one local model server:</span>
                 {Object.entries(LOCAL_AI_RUNTIMES).map(([id, runtime]) => (
@@ -732,12 +794,48 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
         </section>
         ) : null}
         {section === "search" ? (
+        <>
         <section className="settings-section full-settings">
           <h3>Locations</h3>
           <div className="form-grid compact">
             <label><span>Default job location</span><input value={form.preferred_location || ""} placeholder="Melbourne VIC" onChange={(event) => update("preferred_location", event.target.value)} /></label>
             <label><span>Scraper page limit</span><input type="number" min="1" max="100" value={form.max_pages || 30} onChange={(event) => update("max_pages", event.target.value)} /></label>
+            <label><span>Search radius ({form.distance_unit === "mi" ? "mi" : "km"}, 0 = any)</span><input type="number" min="0" max="1000" value={form.search_radius_km ?? 50} onChange={(event) => update("search_radius_km", event.target.value)} /></label>
           </div>
+          <p className="settings-hint">Search radius is how wide to cast the net at scrape time, and is normally wider than your commute limit — a fully remote role advertised in another city is still worth returning. Sources that support it (Seek, LinkedIn, HiringCafe) convert this to whatever unit they speak.</p>
+        </section>
+        <section className="settings-section full-settings">
+          <h3>Commute &amp; Pay Screening</h3>
+          <p className="settings-hint">Commute and pay are facts about a posting, not judgements, so they are worked out in plain Python before any model sees the job. A screened-out role is never deleted or hidden: it keeps its row and a written reason, and is only skipped for analysis and left out of the shortlist. Anything that cannot be resolved — an unreachable geocoder, an unparseable location, no stated salary — always passes.</p>
+          <label className="check-row">
+            <input type="checkbox" checked={form.commute_screening_enabled !== false} onChange={(event) => update("commute_screening_enabled", event.target.checked)} />
+            Screen jobs on commute before analysing them
+          </label>
+          <div className="form-grid compact">
+            <label><span>Home location</span><input value={form.home_location || ""} placeholder={form.preferred_location || "Melbourne VIC"} onChange={(event) => update("home_location", event.target.value)} /></label>
+            <label><span>Distance unit</span><select value={form.distance_unit || "km"} onChange={(event) => update("distance_unit", event.target.value)}><option value="km">Kilometres</option><option value="mi">Miles</option></select></label>
+            <label><span>Comfortable commute</span><input type="number" min="1" max="500" value={form.preferred_commute_km ?? 25} onChange={(event) => update("preferred_commute_km", event.target.value)} /></label>
+            <label><span>Maximum commute</span><input type="number" min="1" max="500" value={form.max_commute_km ?? 45} onChange={(event) => update("max_commute_km", event.target.value)} /></label>
+          </div>
+          <p className="settings-hint">Leave home location blank to use your default job location. Roles inside the comfortable distance gain a small score bonus; only roles past the maximum are set aside, and then only when the location is precise enough to be sure.</p>
+          <h4>Preferred directions</h4>
+          <div className="mode-grid">
+            {COMPASS_SECTORS.map((sector) => (
+              <label key={sector} className="check-row">
+                <input type="checkbox" checked={selectedSectors.includes(sector)} onChange={(event) => toggleSector(sector, event.target.checked)} />
+                {sector}
+              </label>
+            ))}
+          </div>
+          <p className="settings-hint">Measured as a compass bearing from your nearest city centre, which is worked out from your home location — you never have to name it. Select none for no directional preference. Direction is a tie-breaker rather than a veto: it only applies past your comfortable distance, and never sets a role aside on its own.</p>
+          <div className="form-grid compact">
+            <label><span>Pay floor (0 = none)</span><input type="number" min="0" value={form.salary_floor ?? 0} onChange={(event) => update("salary_floor", event.target.value)} /></label>
+            <label><span>Currency (blank = infer)</span><input value={form.salary_currency || ""} placeholder="AUD" maxLength={3} onChange={(event) => update("salary_currency", event.target.value.toUpperCase())} /></label>
+          </div>
+          <p className="settings-hint">The floor is compared against the annualised top of the advertised package, including superannuation where an ad puts it on top. Only a confidently read, same-currency figure can set a role aside; a guess about money raises a question instead.</p>
+        </section>
+        <section className="settings-section full-settings">
+          <h3>Sources</h3>
           <div className="lane-source-list">
             {(scrapers || []).filter((plugin) => plugin.enabled).map((plugin) => (
               <label key={plugin.id} className="check-row">
@@ -769,6 +867,7 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
             ))}
           </div>
         </section>
+        </>
         ) : null}
         {section === "matching" ? (
         <>

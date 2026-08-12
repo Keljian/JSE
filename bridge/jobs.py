@@ -217,6 +217,18 @@ def _shortlist_entry(job, warm_index):
         "employer_type": job.get("employer_type"),
         "location": job.get("location"),
         "salary": job.get("salary"),
+        # Deterministic screening results. Carried into the packet so the human
+        # pass can see the commute and the parsed pay without reopening the ad,
+        # and so a "review" verdict is visible rather than silently absorbed.
+        "commute_km": job.get("commute_km"),
+        "commute_sector": job.get("commute_sector"),
+        "commute_verdict": job.get("commute_verdict"),
+        "commute_reason": job.get("commute_reason"),
+        "salary_min": job.get("salary_min"),
+        "salary_max": job.get("salary_max"),
+        "salary_currency": job.get("salary_currency"),
+        "salary_period": job.get("salary_period"),
+        "salary_confidence": job.get("salary_confidence"),
         "source": job.get("source"),
         "url": job.get("url"),
         "closing_date": job.get("closing_date"),
@@ -239,6 +251,35 @@ def _shortlist_entry(job, warm_index):
         "description": job.get("description") or "",
         "position_description_text": job.get("position_description_text") or "",
     }
+
+
+def _shortlist_salary_line(entry):
+    """The raw ad text plus what the parser made of it.
+
+    Both, never one: the parsed reading is what the pay floor was applied to, so
+    a wrong reading has to be visible next to the words it came from.
+    """
+    raw = entry.get("salary") or "Not disclosed"
+    low, high = entry.get("salary_min"), entry.get("salary_max")
+    if low is None:
+        return f"- **Salary:** {raw}"
+    band = f"{low:,}" if low == high else f"{low:,}-{high:,}"
+    period = entry.get("salary_period") or "year"
+    confidence = entry.get("salary_confidence")
+    read = f"{entry.get('salary_currency') or ''} {band} per {period}".strip()
+    if confidence is not None:
+        read += f", confidence {confidence:.0%}"
+    return f"- **Salary:** {raw} · read as {read}"
+
+
+def _shortlist_commute_line(entry):
+    distance = entry.get("commute_km")
+    verdict = entry.get("commute_verdict") or "unknown"
+    if distance is None:
+        return f"- **Commute:** not measured ({entry.get('commute_reason') or verdict})"
+    sector = f" {entry['commute_sector']}" if entry.get("commute_sector") else ""
+    return (f"- **Commute:** {distance:g}km{sector} · {verdict}"
+            + (f" — {entry['commute_reason']}" if entry.get("commute_reason") else ""))
 
 
 def _shortlist_markdown(entries, generated_at, window_label):
@@ -276,7 +317,8 @@ def _shortlist_markdown(entries, generated_at, window_label):
             f"- **Employer:** {entry['company'] or 'Unknown'}"
             + (f" (advertised by {entry['advertiser']})" if entry.get("advertiser") else ""),
             f"- **Location:** {entry.get('location') or 'Not stated'}",
-            f"- **Salary:** {entry.get('salary') or 'Not disclosed'}",
+            _shortlist_commute_line(entry),
+            _shortlist_salary_line(entry),
             f"- **Source:** {entry.get('source') or 'Unknown'} · **Stage:** {entry.get('pipeline_stage') or 'new'}",
             f"- **Closes:** {entry.get('closing_date') or 'Not stated'}",
             f"- **Scores:** match {entry.get('match_score')} · fragment {entry.get('fragment_score')} · composite {entry.get('composite_score')}",
@@ -322,7 +364,11 @@ def command_jobs_export_shortlist(payload):
     """
     profile_id = payload.get("profile_id", 1)
     include_all = bool(payload.get("include_all_profiles"))
-    limit = max(1, min(200, int(payload.get("limit") or 40)))
+    # No cap by default: the packet is the whole sweep, and truncating it would
+    # silently drop roles the human pass never gets to see. Callers who want a
+    # sample can ask for one.
+    limit = payload.get("limit")
+    limit = max(1, int(limit)) if limit not in (None, "", 0) else None
     min_score = payload.get("min_score")
     stages = [db.normalize_stage(stage) for stage in (payload.get("stages") or SHORTLIST_DEFAULT_STAGES)]
     fmt = str(payload.get("format") or "both").lower()
@@ -330,6 +376,11 @@ def command_jobs_export_shortlist(payload):
     # call, and pre-filtering it would make that call on their behalf. Callers
     # may narrow it explicitly by flag type.
     exclude_flags = {str(value).strip().lower() for value in (payload.get("exclude_flags") or []) if value}
+    # Screening blocks are the one exception, and a different kind of thing from
+    # a flag: a blocked role was never analysed, so it has no score, no analysis
+    # and nothing to offer a go/no-go pass. It keeps its row and its reason in
+    # the app; callers who want it in the packet anyway can ask.
+    include_screened_out = bool(payload.get("include_screened_out"))
 
     filters = {
         "profile_id": profile_id,
@@ -342,6 +393,8 @@ def command_jobs_export_shortlist(payload):
 
     jobs = [row_to_dict(row) for row in rows]
     jobs = [job for job in jobs if db.normalize_stage(job.get("pipeline_stage") or job.get("status")) in stages]
+    if not include_screened_out:
+        jobs = [job for job in jobs if (job.get("commute_verdict") or "") != "blocked"]
     db.annotate_channel_warmth(jobs, warm_index)
     if exclude_flags:
         jobs = [
@@ -355,7 +408,8 @@ def command_jobs_export_shortlist(payload):
         -int(job.get("composite_score") or job.get("match_score") or 0),
         str(job.get("closing_date") or "9999-12-31"),
     ))
-    jobs = jobs[:limit]
+    if limit is not None:
+        jobs = jobs[:limit]
 
     from datetime import datetime
 

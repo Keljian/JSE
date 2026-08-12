@@ -34,3 +34,5 @@ job_applications.db
 /scraper_plugins/
 external_scrapers/
 *.scraper-plugin.zip
+# Generated shortlist packets: real adverts, scores and candidate analysis.
+shortlists/

@@ -49,6 +49,29 @@ DEFAULT_PROFILE_SETTINGS = {
     "work_modes": ["hybrid", "remote", "wfh", "onsite"],
     "max_pages": 30,
     "default_min_score": 60,
+    # Commute screening. `home_location` is the anchor the commute model
+    # measures from; blank falls back to preferred_location, which every
+    # existing profile already has set. Distances are in `distance_unit`.
+    # `accepted_sectors` is a comma list of compass points as seen from the
+    # metro centre (e.g. "E,NE,N"); blank means no directional preference.
+    # The metro centre itself is discovered by reverse-geocoding home, so the
+    # user never has to name their nearest city.
+    # How wide to cast the net at SEARCH time, for sources that accept a
+    # radius. Deliberately separate from max_commute_km, and normally larger:
+    # a fully-remote role advertised in another city is worth returning, and a
+    # search clamped to the commute radius would never surface it. 0 = no limit.
+    "search_radius_km": 50,
+    "home_location": "",
+    "preferred_commute_km": 25,
+    "max_commute_km": 45,
+    "accepted_sectors": "",
+    "distance_unit": "km",
+    "geocode_provider": "nominatim",
+    "commute_screening_enabled": True,
+    # Pay screening. Currency blank means infer from the job's country, so a
+    # single profile still reads a foreign posting correctly.
+    "salary_floor": 0,
+    "salary_currency": "",
     "boost_terms": "",
     "penalty_terms": "",
     "doc_ai_provider": "local",
@@ -117,6 +140,16 @@ DEFAULT_APP_SETTINGS.update({
     # single-slot local server is never sent overlapping requests (it answers
     # HTTP 429). Stored as text like every other app setting.
     "analysis_workers": "1",
+    # Context window JSE asks the local server to serve. A local runtime loads a
+    # GGUF at the file's default window unless told otherwise — 4096 on models
+    # whose native context is 262144 — and then truncates any answer that
+    # overruns it instead of erroring. Unsloth Studio can be reloaded over its
+    # API (POST /v1/load), so JSE asks for a window its own prompts fit in
+    # rather than leaving it to be discovered through mangled output.
+    "local_context_target": "32768",
+    # Whether JSE may perform that reload itself when a request will not fit.
+    # Off means it reports the too-small window and stops instead.
+    "local_context_autoload": "1",
 })
 
 

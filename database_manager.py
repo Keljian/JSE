@@ -25,6 +25,7 @@ repoint the database.
 """
 import facade
 from db import (
+    save_job_screening,
     campaign as _campaign,
     companies as _companies,
     connection as _connection,
@@ -122,7 +123,9 @@ from db.companies import (  # noqa: F401
 from db.settings import (  # noqa: F401
     GLOBAL_AI_SETTING_FIELDS,
     LOCAL_LLM_SETTING_FIELDS,
+    SECTOR_CODES,
     _app_setting_defaults,
+    _screening_values,
     _get_global_ai_settings,
     _get_global_credentials,
     _load_local_llm_settings,
@@ -324,6 +327,8 @@ from db.outcomes import (  # noqa: F401
     warm_path_for_job,
 )
 from db.jobs import (  # noqa: F401
+    _ANALYSIS_COLUMNS,
+    _SCREENING_COLUMNS,
     _flag_summary_types,
     JOB_FLAG_TYPES,
     JOB_FLAG_LABELS,

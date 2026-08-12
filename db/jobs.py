@@ -1337,9 +1337,21 @@ def get_job_counts(profile_id=None):
         return new_count, approved_count
 
 
+# Location, salary and the two company columns are here for the deterministic
+# screen that runs at the top of the analysis loop, not for the model. Without
+# them the screener reads None for every field, resolves nothing, and passes
+# every job — silently, because "unresolved always passes" is exactly what it is
+# supposed to do when the data really is missing.
+_ANALYSIS_COLUMNS = (
+    "id, title, description, pdf_text, position_description_text, "
+    "analysis_signature, ai_analysis, location, salary, company, "
+    "actual_company, advertiser_company"
+)
+
+
 def get_jobs_to_analyze(status_filter, re_analyze, profile_id=None, resume_text=""):
     """Fetches jobs that need AI analysis."""
-    base_query = "SELECT id, title, description, pdf_text, position_description_text, analysis_signature, ai_analysis FROM jobs WHERE status = ? AND description IS NOT NULL"
+    base_query = f"SELECT {_ANALYSIS_COLUMNS} FROM jobs WHERE status = ? AND description IS NOT NULL"
     params = [status_filter]
     if profile_id:
         base_query += " AND profile_id = ?"
@@ -1367,7 +1379,7 @@ def get_jobs_to_analyze_by_ids(job_ids, profile_id=None):
     if not job_ids:
         return []
     placeholders = ','.join('?' for _ in job_ids)
-    query = f"SELECT id, title, description, pdf_text, position_description_text, analysis_signature, ai_analysis FROM jobs WHERE id IN ({placeholders})"
+    query = f"SELECT {_ANALYSIS_COLUMNS} FROM jobs WHERE id IN ({placeholders})"
     params = list(job_ids)
     if profile_id:
         query += " AND profile_id = ?"
@@ -1579,6 +1591,12 @@ PIPELINE_SUMMARY_COLUMNS = (
     "last_interaction_at", "date_scraped", "updated_at",
     "employer_type", "actual_company", "advertiser_company", "company_confidence",
     "job_flags_types", "job_flags_json", "channel",
+    # Screening results travel with the summary because a set-aside job must
+    # still be able to say why. A blocked role keeps its row and its reason;
+    # hiding the reason from the list would make it look like a disappearance.
+    "commute_km", "commute_sector", "commute_verdict", "commute_reason",
+    "salary_min", "salary_max", "salary_currency", "salary_period",
+    "salary_confidence", "screen_score_delta", "screened_at",
 )
 
 
@@ -2310,3 +2328,40 @@ def dedupe_database(log_callback=None):
     if log_callback:
         log_callback(f"Deduping complete. Removed {deleted} duplicates.")
     return deleted
+
+
+# Verdict key -> column. A screening pass supplies every key; a salary-only
+# backfill supplies a subset, and only the keys present are written, so
+# re-parsing pay does not erase a commute result computed against a geocoder
+# that may not be reachable right now.
+_SCREENING_COLUMNS = (
+    ("commute_km", "commute_km"),
+    ("commute_sector", "commute_sector"),
+    ("verdict", "commute_verdict"),
+    ("reason", "commute_reason"),
+    ("score_delta", "screen_score_delta"),
+    ("salary_min", "salary_min"),
+    ("salary_max", "salary_max"),
+    ("salary_currency", "salary_currency"),
+    ("salary_period", "salary_period"),
+    ("salary_confidence", "salary_confidence"),
+)
+
+
+def save_job_screening(job_id, verdict):
+    """Persist a deterministic screening result against a job.
+
+    Written even when the verdict is "blocked": the row stays in the pipeline
+    with a readable reason so the user can see why a role was set aside and
+    overrule it. Nothing here deletes or hides a job.
+    """
+    pairs = [(column, verdict[key]) for key, column in _SCREENING_COLUMNS if key in verdict]
+    if not pairs:
+        return
+    assignments = ", ".join(f"{column} = ?" for column, _ in pairs)
+    with get_db_connection() as conn:
+        conn.execute(
+            f"UPDATE jobs SET {assignments}, screened_at = datetime('now') WHERE id = ?",
+            [value for _, value in pairs] + [job_id],
+        )
+        conn.commit()

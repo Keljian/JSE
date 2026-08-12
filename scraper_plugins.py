@@ -171,6 +171,17 @@ def resolve_run_sources(sources, profile_id=None):
     return resolved
 
 
+def _km_to_miles(value):
+    return max(1, int(round(float(value) / 1.609344)))
+
+
+# A manifest declares the unit its source actually speaks, and a converter
+# bridges from the single lane setting. Without this, one search radius could
+# not drive both SEEK (kilometres) and HiringCafe (miles) without the user
+# entering the same distance twice in two units.
+CONFIG_CONVERTERS = {"km_to_miles": _km_to_miles}
+
+
 def build_config(plugin, search_settings=None):
     search_settings = search_settings or {}
     manifest = plugin.get("manifest") or {}
@@ -181,7 +192,14 @@ def build_config(plugin, search_settings=None):
         legacy_key = item.get("legacy_key")
         key = item.get("key")
         if legacy_key and key and search_settings.get(legacy_key) not in (None, ""):
-            config[key] = search_settings.get(legacy_key)
+            value = search_settings.get(legacy_key)
+            converter = CONFIG_CONVERTERS.get(item.get("convert"))
+            if converter:
+                try:
+                    value = converter(value)
+                except (TypeError, ValueError):
+                    continue
+            config[key] = value
     if "max_pages" in config:
         try:
             config["max_pages"] = int(config["max_pages"])

@@ -88,3 +88,10 @@ removed.
 See `ARCHITECTURE.md` for workflows and dataflows, `CODE_REFERENCE.md` for the
 app-owned source map, and `JSE_FUNCTIONALITY_BRIEF.md` for the product/workflow
 summary.
+
+## Active work: commute & pay screening
+
+Deterministic commute/pay screening runs before any LLM call. Before touching
+`geo.py`, `salary.py`, `screening.py`, `db/geocode.py` or the screening block in
+`_perform_analysis_loop`, read **docs/screening-integration.md** — it records the
+design constraints, the bugs already found and fixed, and what is still to do.

@@ -4,6 +4,62 @@ All notable changes to JSE are documented here.
 
 ## Unreleased
 
+### Added
+
+- **JSE sets the local context window itself.** Unsloth Studio takes the window
+  as a load parameter on its own API, so the fix for a too-small window no
+  longer means leaving the app. Settings → AI & Credentials gains a **Context
+  window** field and an **Apply context window** button that reloads the live
+  model at that size, plus a toggle for doing it automatically the first time a
+  request will not fit.
+  - The reload preserves how the model is currently loaded — quantisation, KV
+    cache type, speculative decoding, GPU offload — so setting the window does
+    not silently undo the user's tuning.
+  - It asks for a single decode slot. llama-server divides its KV budget across
+    `--parallel` slots, and JSE holds the local endpoint to one in-flight
+    request by design, so the other slots were costing window for nothing. On
+    the setup this was built against, 4 slots at 4,096 became 1 at 32,768 on the
+    same hardware and the same quantisation, in 30 seconds.
+  - It never cancels an in-flight generation. A Studio chat mid-answer gets a
+    clear "busy, try again" rather than having its request killed.
+  - What it reports is the window being *served*, not the one requested: the
+    fitter caps the ask to what the hardware holds, and only the served number
+    is worth acting on.
+  - Auto-reload is attempted once per endpoint per run. A window that comes back
+    still too small is a hardware answer, not a transient one.
+- **Prompt sizes now come from the server's own tokeniser** (`/v1/chat/count_tokens`)
+  where the endpoint offers one, falling back to the character estimate. The
+  estimate can be out by a factor of two on repetitive text, and it decides
+  whether a request is refused as too large.
+
+### Fixed
+
+- **Local requests are now sized to the context window the model was actually
+  loaded with.** A local server serves whatever window it was started with,
+  which is often far below the model's native context — Unsloth Studio was
+  serving a Qwen3 with a 262,144-token native context at 4,096. Nothing in the
+  OpenAI protocol announces that: the server accepts an oversized `max_tokens`,
+  stops generating at the window, and returns `finish_reason="length"`. JSE took
+  the fragment as a complete answer, so structured calls came back as
+  unparseable half-objects and the JSON-repair path invented the rest. What
+  looked like a model that could not follow instructions was a model that was
+  never given room to finish.
+  - `_local_context_length` reads the live `/models` entry's `context_length`
+    (cached briefly) and `_fit_output_budget` trims each request's output budget
+    to fit around the prompt. Endpoints that do not report a window are
+    unaffected.
+  - A request whose prompt cannot fit at all now fails with the window size and
+    what to do about it, instead of being sent and silently cut in half.
+  - A `finish_reason="length"` reply raises `LLMTruncatedError` for JSON calls;
+    free-text calls keep what arrived and log a warning.
+  - **Test connection** reports the window it found and warns when it is too
+    small for JSE's prompts. A one-line test reply fits in any window, so the
+    old test passed against an endpoint that could not serve a single real
+    analysis.
+  - The live model is now identified by the `loaded` flag rather than by
+    catalogue order, and a Model setting holding the load path matches its API
+    id. Unsloth Studio lists every model it *could* load next to the one it has.
+
 ## 1.0.0-beta.2 - 2026-07-31
 
 ### Added

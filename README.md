@@ -251,6 +251,16 @@ Notes:
 - The model must support chat-style prompts.
 - JSON-mode support is strongly recommended, because JSE asks for structured outputs in several workflows.
 - Larger context windows improve analysis and document quality. A practical target is 16k–32k context or higher.
+- Check the context the model was **loaded** with, not the context the model supports. Runtimes commonly
+  default to a small window (Unsloth Studio will load a 262k-native model at 4096), and a server does not
+  report that as an error — it truncates the answer mid-sentence. **Test connection** shows the window it
+  found and warns when it is too small for JSE's prompts.
+- With Unsloth Studio, JSE can set the window for you: put the size in **Context window** and press
+  **Apply context window**, which reloads the live model at that size over the Studio's API, keeping its
+  quantisation and offload settings. Leave *Reload the model automatically…* ticked to have JSE do it the
+  first time a request does not fit. The reload asks for a single decode slot, because llama-server divides
+  its KV budget across parallel slots and JSE only ever uses one — that alone is usually worth several times
+  the window. Other runtimes are unaffected; JSE only reports their window.
 
 ---
 

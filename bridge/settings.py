@@ -36,6 +36,12 @@ from .corpus import (
     command_memory_status,
 )
 
+# Smallest local context window JSE's own prompts fit in comfortably. Below
+# this the connection test still passes — a one-line reply fits anywhere — while
+# every real analysis comes back truncated.
+LOCAL_CONTEXT_ADVISORY_MINIMUM = 32768
+
+
 def command_app_init(_payload):
     global _startup_maintenance_started
     with contextlib.redirect_stdout(sys.stderr):
@@ -143,6 +149,7 @@ def command_ai_test_provider(payload):
 
     started = time.monotonic()
     discovered_model = ""
+    context_length = None
     if provider == "local":
         local = llm_handler._local_ai_settings(settings)
         try:
@@ -169,9 +176,13 @@ def command_ai_test_provider(payload):
                         "(Inference > Load), then test again. The Model field is the API model ID, not a folder path."
                     ),
                 }
-            discovered_model = model_ids[0]
+            # The catalogue lists every model the server *could* load, so the
+            # first entry is not necessarily the one answering requests.
+            loaded = llm_handler._loaded_model_row(model_rows or [], local.get("model"))
+            discovered_model = str((loaded or {}).get("id") or model_ids[0]).strip()
             if local.get("model") not in model_ids:
                 settings["local_model"] = discovered_model
+            context_length = llm_handler._local_context_length(local)
         except Exception:
             # Some OpenAI-compatible servers do not expose /models. In that
             # case, fall through to the chat-completions health check.
@@ -193,12 +204,64 @@ def command_ai_test_provider(payload):
     elapsed_ms = int((time.monotonic() - started) * 1000)
     if not str(response or "").strip():
         raise RuntimeError(f"{label} returned an empty response.")
-    return {
+    result = {
         "ok": True,
         "provider": provider,
         "label": label,
         "elapsed_ms": elapsed_ms,
         "model": discovered_model,
+    }
+    if context_length:
+        # A connection that works for a one-line test still fails every real
+        # analysis if the model was loaded with a small window, and the server
+        # reports that as a truncated answer rather than an error. Say so here,
+        # where the user is already looking at the endpoint.
+        result["context_length"] = context_length
+        try:
+            wanted = int(str(settings.get("local_context_target") or LOCAL_CONTEXT_ADVISORY_MINIMUM).strip())
+        except (TypeError, ValueError):
+            wanted = LOCAL_CONTEXT_ADVISORY_MINIMUM
+        wanted = wanted or LOCAL_CONTEXT_ADVISORY_MINIMUM
+        if context_length < min(wanted, LOCAL_CONTEXT_ADVISORY_MINIMUM):
+            result["warning"] = (
+                f"The loaded model is serving only a {context_length}-token context window. JSE's "
+                f"analysis and document prompts are larger than that, so answers will be cut short. "
+                f"Use “Apply context window” to reload it at {wanted} tokens."
+            )
+    return result
+
+
+def command_ai_local_context_set(payload):
+    """Reload the local model so it serves a given context window.
+
+    Unsloth Studio's own API takes the window as a load parameter, so the fix
+    for a too-small window does not have to be a trip to another application.
+    The reload is heavy — it replaces the running server and re-pages the
+    weights — so it only ever happens because someone asked for it, either
+    through this command or through the auto-reload setting.
+    """
+    with contextlib.redirect_stdout(sys.stderr):
+        import llm_handler
+
+    supplied = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+    settings = {**db.get_app_settings(), **supplied}
+    target = payload.get("context_target") or settings.get("local_context_target")
+    before = llm_handler.local_status(llm_handler._local_ai_settings(settings))
+    started = time.monotonic()
+    status = llm_handler.set_local_context_window(target, settings=settings)
+    served = status.get("context_length")
+    asked = int(target or 0)
+    return {
+        "ok": True,
+        "model": status.get("active_model") or status.get("model_identifier") or "",
+        "context_length": served,
+        "previous_context_length": before.get("context_length"),
+        "native_context_length": status.get("native_context_length"),
+        "requested": asked,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+        # The fitter caps the request to what the hardware holds, so asked-for
+        # and served can differ and only the second one is worth acting on.
+        "capped": bool(served and asked and served < asked),
     }
 
 
@@ -216,6 +279,7 @@ COMMANDS = {
     "settings:globalGet": command_settings_global_get,
     "settings:globalUpdate": command_settings_global_update,
     "ai:testProvider": command_ai_test_provider,
+    "ai:localContextSet": command_ai_local_context_set,
     "ai:listModels": command_ai_list_models,
     "database:compact": command_database_compact,
 }

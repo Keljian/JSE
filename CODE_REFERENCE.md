@@ -123,17 +123,44 @@ caffeinated and the commits coming: https://ko-fi.com/keljian
   description, metadata, scores with the stored analysis, flags, and warm-path
   hits) via `_shortlist_entry` and `_shortlist_markdown` into `shortlists_dir()`,
   settable with the `shortlists_dir` app setting so it can be a watched folder.
-  Flagged roles stay in the packet by default; callers may narrow it with
-  `exclude_flags`. Bridge command: `jobs:exportShortlist`.
+  Flagged roles stay in the packet by default, and it is unbounded — every
+  survivor of the sweep is written. Callers may narrow it with `exclude_flags`
+  or cap it with `limit`. Bridge command: `jobs:exportShortlist`.
 
 ## LLM And Document Generation
 
 - `llm_handler.py` is the facade over the `llm/` package, which talks to local
   OpenAI-compatible servers and optional cloud providers. Layer order:
-  `providers` (the concurrency gate, HTTP transport, the `_call_*` family),
+  `providers` (the concurrency gates, HTTP transport, the `_call_*` family),
   `parsing` (reasoning-block stripping, JSON recovery), `prompts`, `analysis`
   (triage, full analysis, deep gatekeeping), `documents`, `memory`, `research`.
   Import `llm_handler`, not `llm`.
+  Two gates, not one. `_llm_slot` bounds all outbound LLM requests to
+  `analysis_workers`; `_local_slot` additionally holds the *local* endpoint to a
+  single in-flight request, via an in-process semaphore plus a heartbeat lock
+  file in the data dir so the bridge worker and every task process share one
+  slot. Local request timeouts scale with the output budget
+  (`LOCAL_TIMEOUT_FLOOR` + per-1K allowance, capped), because abandoning a
+  generation the server is still running is what stacks requests on it; a
+  timeout then backs off on `LOCAL_TIMEOUT_COOLDOWN` rather than the ordinary
+  retry delay.
+  The local output budget is sized from the window the model was *loaded* with,
+  not its native context: `_local_context_length` reads `context_length` off the
+  live `/models` entry (cached for `LOCAL_CONTEXT_TTL`), `_fit_output_budget`
+  trims `max_tokens` to fit around the prompt, and a `finish_reason="length"`
+  reply raises `LLMTruncatedError` for JSON calls instead of returning half an
+  object. A server can be loaded far below the model's native context — an
+  Unsloth Studio Qwen3 with a 262K native window served 4096 — and it reports
+  that only by silently cutting the answer short.
+  `set_local_context_window` fixes that from inside JSE rather than reporting
+  it: it reloads the live model over Unsloth Studio's `POST /v1/load` with
+  `max_seq_length`, replaying the current load's shape (`LOCAL_LOAD_PASSTHROUGH`)
+  so quantisation and offload survive, and asking for one decode slot because
+  llama-server splits its KV budget across `--parallel` slots that JSE's
+  single-slot gate never uses. `_ensure_local_context` calls it at most once per
+  endpoint per process when `local_context_autoload` is on; `ai:localContextSet`
+  is the explicit Settings button. Prompt sizes come from the server's
+  `/v1/chat/count_tokens` when it has one, `_estimate_prompt_tokens` otherwise.
   Flagging lives inside triage: `_triage_job` scores the role and raises flags in
   one call, `_extract_mandatory_requirements` is the deterministic pre-pass that
   hands it the ad's own "must have" lines, `_normalise_job_flags` drops any flag

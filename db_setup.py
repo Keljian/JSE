@@ -195,6 +195,52 @@ def setup_database():
     _add_column(cursor, "jobs", "fragment_alignment_json", "TEXT")
     _add_column(cursor, "jobs", "fragment_alignment_updated_at", "TEXT")
 
+    # Deterministic screening results (commute + pay), computed in plain Python
+    # before any LLM call. Stored rather than recomputed so the UI can explain
+    # why a role was set aside, and so a blocked role stays inspectable rather
+    # than silently vanishing from the pipeline.
+    # Commute/pay preferences live on the profile so each lane can screen
+    # differently: a remote-first lane and a local lane want different radii.
+    _add_column(cursor, "profiles", "home_location", "TEXT")
+    _add_column(cursor, "profiles", "search_radius_km", "INTEGER DEFAULT 50")
+    _add_column(cursor, "profiles", "preferred_commute_km", "INTEGER DEFAULT 25")
+    _add_column(cursor, "profiles", "max_commute_km", "INTEGER DEFAULT 45")
+    _add_column(cursor, "profiles", "accepted_sectors", "TEXT")
+    _add_column(cursor, "profiles", "distance_unit", "TEXT DEFAULT 'km'")
+    _add_column(cursor, "profiles", "geocode_provider", "TEXT DEFAULT 'nominatim'")
+    _add_column(cursor, "profiles", "commute_screening_enabled", "INTEGER DEFAULT 1")
+    _add_column(cursor, "profiles", "salary_floor", "INTEGER DEFAULT 0")
+    _add_column(cursor, "profiles", "salary_currency", "TEXT")
+
+    _add_column(cursor, "jobs", "commute_km", "REAL")
+    _add_column(cursor, "jobs", "commute_sector", "TEXT")
+    _add_column(cursor, "jobs", "commute_verdict", "TEXT")
+    _add_column(cursor, "jobs", "commute_reason", "TEXT")
+    _add_column(cursor, "jobs", "screen_score_delta", "INTEGER")
+    # Raw `salary` text stays untouched; these hold the parsed interpretation.
+    _add_column(cursor, "jobs", "salary_min", "INTEGER")
+    _add_column(cursor, "jobs", "salary_max", "INTEGER")
+    _add_column(cursor, "jobs", "salary_currency", "TEXT")
+    _add_column(cursor, "jobs", "salary_period", "TEXT")
+    _add_column(cursor, "jobs", "salary_confidence", "REAL")
+    _add_column(cursor, "jobs", "screened_at", "TEXT")
+
+    # Geocode results keyed by normalised query string. Rows with NULL lat are
+    # cached negatives: without them an unresolvable location is re-requested
+    # every sweep, forever, against a 1-request-per-second public endpoint.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS geocode_cache (
+            query TEXT PRIMARY KEY,
+            lat REAL,
+            lon REAL,
+            precision TEXT,
+            country_code TEXT,
+            display_name TEXT,
+            provider TEXT,
+            fetched_at TEXT
+        )
+    """)
+
     cursor.execute(
         """
         UPDATE profiles
