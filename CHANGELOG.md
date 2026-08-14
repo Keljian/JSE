@@ -6,6 +6,27 @@ All notable changes to JSE are documented here.
 
 ### Added
 
+- **Position descriptions can be fetched straight off the advertisement.** Most
+  ads park the real selection criteria in a linked PD and paraphrase them in the
+  ad body, and the scrapers keep only the ad text — so the link was gone by the
+  time a role reached the workspace, and the PD could only be attached by
+  downloading it by hand. The job workspace now offers **Fetch from ad** (on the
+  Details tab where the analysis is, and on the Application tab's Position
+  description drop zone): JSE re-opens the ad, finds the document link, and
+  attaches it exactly where an upload would land.
+  - Link discovery is scored, not pattern-matched. PD links are named
+    inconsistently ("PD - Solutions Architect.pdf", "Success Profile") and the
+    href is often an opaque handler with no filename, so anchor text and href
+    each get a say and navigation/boilerplate links are pushed out.
+  - Only document types JSE can read are accepted, with a size cap, so a
+    mis-scored link that lands on an HTML page fails with a readable message
+    instead of storing a web page as the position description.
+  - When the ad hides the link behind JavaScript, or has none, JSE asks for the
+    document link to be pasted instead of failing outright.
+  - The attached PD flows into analysis through the existing
+    `position_description_text` path and is part of the analysis signature, so
+    re-analysing a role scores it against the PD rather than the ad alone.
+
 - **JSE sets the local context window itself.** Unsloth Studio takes the window
   as a load parameter on its own API, so the fix for a too-small window no
   longer means leaving the app. Settings → AI & Credentials gains a **Context

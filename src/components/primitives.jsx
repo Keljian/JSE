@@ -92,9 +92,10 @@ function DialogModal({ dialog, onClose }) {
   );
 }
 
-function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal, onConvertPdf }) {
+function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal, onConvertPdf, onFetch, fetchLabel = "From ad" }) {
   const inputRef = useRef(null);
   const [converting, setConverting] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const uploadFile = (file) => {
     if (file) onDrop(file);
   };
@@ -115,6 +116,15 @@ function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal, on
       await onConvertPdf();
     } finally {
       setConverting(false);
+    }
+  };
+  const fetchFromAd = async () => {
+    if (!onFetch || fetching) return;
+    setFetching(true);
+    try {
+      await onFetch();
+    } finally {
+      setFetching(false);
     }
   };
 
@@ -143,6 +153,16 @@ function DropZone({ label, value, text, onDrop, onView, onDownload, onReveal, on
           }}
         />
         <button className="secondary" onClick={browseForFile}><FolderOpen size={16} /> Upload</button>
+        {onFetch ? (
+          <button
+            className="secondary"
+            disabled={fetching}
+            title="Re-open the advertisement, find the linked document, and attach it"
+            onClick={fetchFromAd}
+          >
+            {fetching ? <Loader2 className="spin" size={16} /> : <Download size={16} />} {fetchLabel}
+          </button>
+        ) : null}
         <button className="secondary" disabled={!text} onClick={onView}><FileText size={16} /> Open text</button>
         <button className="secondary" disabled={!canConvertPdf || converting} onClick={convertPdf}>{converting ? <Loader2 className="spin" size={16} /> : <FileText size={16} />} PDF</button>
         <button className="secondary" disabled={!value} onClick={onDownload}><Download size={16} /> Download</button>

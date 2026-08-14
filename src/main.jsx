@@ -17,7 +17,7 @@ import jseIcon from "../assets/jse-icon.png";
 
 import { KANBAN_COLUMN_RENDER_CAP, PIPELINE, SUPPORT_MESSAGE, SUPPORT_URL, WORK_MODES } from "./lib/constants";
 import { documentAiLabel, formatBytes, hasCompanyResearch, normalizeStage, openSupportLink, jobFlagTypesOf, primaryScore, toErrorMessage, todayPlus } from "./lib/format";
-import { appConfirm, appNotice, dialogBridge } from "./lib/dialogs";
+import { appConfirm, appNotice, appPrompt, dialogBridge } from "./lib/dialogs";
 import { DialogModal, DocumentTextModal, TaskProgressBar } from "./components/primitives";
 import { JobCard } from "./components/chips";
 import { AddJobModal, AnalysisModal, CleanupModal, CreateLaneModal, LogExternalModal, OnboardingWizard, QuickStageForm, RejectJobModal, RunSearchModal } from "./components/modals";
@@ -1182,6 +1182,40 @@ function App() {
     }
   };
 
+  // Most ads keep the real selection criteria in a linked PD rather than the ad
+  // body, and the scrapers only keep the ad text, so the link is gone by the
+  // time a role is open here. Re-read the ad, attach the document, and fall back
+  // to a pasted link when the ad hides it behind JavaScript.
+  const fetchPositionDescription = async (job, url = "") => {
+    const target = job || workspace.job;
+    if (!target) return;
+    try {
+      const data = await invoke("document:fetchPositionDescription", { job_id: target.id, url });
+      const detail = await invoke("jobs:detail", { job_id: target.id });
+      setWorkspace((current) => ({ ...current, job: detail.job, events: detail.events, interviews: detail.interviews || current.interviews }));
+      if (!data.text || !data.text.trim()) {
+        appendLog(`Attached ${data.label}, but no text could be extracted (scanned PDF?). It won't contribute to analysis.`);
+      } else {
+        appendLog(`Attached "${data.label}" from the advertisement; extracted ${data.text.length} characters. Re-analyse the job to score against it.`);
+      }
+      await refresh();
+    } catch (error) {
+      const message = toErrorMessage(error);
+      if (url) {
+        appendLog(`Could not attach the position description: ${message}`);
+        return;
+      }
+      const pasted = await appPrompt({
+        title: "Position description not found",
+        message: `${message}`,
+        label: "Document link",
+        placeholder: "https://…/position-description.pdf",
+        confirmLabel: "Fetch",
+      });
+      if (pasted) await fetchPositionDescription(target, pasted);
+    }
+  };
+
   const createLane = async (setup) => {
     setAddLaneBusy(true);
     try {
@@ -1841,6 +1875,7 @@ function App() {
           onAddInterview={addInterview}
           onUpdateInterview={updateInterview}
           onDocumentDrop={extractDroppedDocument}
+          onFetchPositionDescription={fetchPositionDescription}
           onViewDocument={(title, text) => setDocumentViewer({ title, text })}
           onDownloadDocument={downloadDocument}
           onRevealDocument={revealDocument}

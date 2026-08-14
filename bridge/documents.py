@@ -5,6 +5,7 @@ Split out of python_bridge.py, which re-exports everything here.
 import contextlib
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 import database_manager as db
@@ -256,6 +257,244 @@ def command_document_extract(payload):
         updates = {"position_description_path": stored_path, "position_description_text": text}
         db.update_job_application(payload["job_id"], updates)
     return {"path": stored_path, "text": text, "updates": updates}
+
+
+# --- Position description fetched from the advertisement ---------------------
+# Ads on PageUp, Mercury, Workday and most government boards carry the real
+# selection criteria in a linked PD document, not in the ad body. The scrapers
+# keep the ad as plain text, so by the time a role reaches the workspace the
+# link is gone and the PD can only be attached by hand. These helpers re-open
+# the ad, find that link, and store the file exactly where a manual upload
+# would land, so position_description_text reaches analysis unchanged.
+
+PD_MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
+PD_DOCUMENT_SUFFIXES = {".pdf", ".docx", ".doc", ".txt", ".md"}
+PD_CONTENT_TYPE_SUFFIXES = {
+    "application/pdf": ".pdf",
+    "application/x-pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/msword": ".doc",
+    "text/plain": ".txt",
+}
+PD_TEXT_HINTS = (
+    "position description", "position_description", "position doc", "position profile",
+    "role description", "role profile", "role statement", "job description",
+    "duty statement", "duties statement", "success profile", "candidate information",
+    "candidate pack", "information pack", "info pack", "pd -", "pd–", "pd—", "pd_", "(pd)",
+)
+PD_HREF_HINTS = (
+    "positiondescription", "position-description", "position_description",
+    "transferrichtextfile", "jobdescription", "job-description",
+    "attachment", "getfile", "getdocument", "download", "/documents/",
+)
+PD_NEGATIVE_HINTS = (
+    "apply now", "privacy", "cookie", "terms of use", "contact us", "sign in", "log in",
+    "linkedin", "facebook", "twitter", "instagram", "youtube", "share this",
+)
+PD_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+def _pd_link_score(text, url):
+    """How strongly one anchor looks like the position description document.
+
+    Scored rather than matched: PD links are named inconsistently ("PD - Solutions
+    Architect.pdf", "Position Description", "Success Profile"), and the href is
+    often an opaque handler with no filename at all, so text and href each only
+    half-identify the link.
+    """
+    from urllib.parse import urlparse
+
+    haystack = (text or "").casefold()
+    parsed = urlparse(url)
+    path = parsed.path.casefold()
+    query = parsed.query.casefold()
+
+    score = 0
+    if any(hint in haystack for hint in PD_TEXT_HINTS):
+        score += 5
+    if Path(path).suffix in PD_DOCUMENT_SUFFIXES:
+        score += 3
+    if any(hint in haystack for hint in (".pdf", ".docx", ".doc")):
+        score += 2
+    if any(hint in path or hint in query for hint in PD_HREF_HINTS):
+        score += 2
+    if any(hint in haystack for hint in PD_NEGATIVE_HINTS):
+        score -= 6
+    return score
+
+
+def _pd_link_candidates(html, base_url):
+    from urllib.parse import urljoin
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    candidates = []
+    seen = set()
+    for anchor in soup.find_all("a", href=True):
+        href = (anchor["href"] or "").strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        url = urljoin(base_url, href)
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        text = " ".join(anchor.get_text(" ", strip=True).split())
+        score = _pd_link_score(text, url)
+        if score <= 0 or url in seen:
+            continue
+        seen.add(url)
+        candidates.append({"url": url, "text": text, "score": score})
+    candidates.sort(key=lambda item: (-item["score"], item["text"]))
+    return candidates
+
+
+def _pd_filename_from_disposition(disposition):
+    import re
+    from urllib.parse import unquote
+
+    if not disposition:
+        return ""
+    match = re.search(r"filename\*=(?:UTF-8'')?([^;]+)", disposition, re.I)
+    if not match:
+        match = re.search(r'filename="?([^";]+)"?', disposition, re.I)
+    return unquote(match.group(1).strip().strip('"')) if match else ""
+
+
+def _download_pd_document(url, target_dir):
+    """Fetch one document link into target_dir, or explain why it is not one.
+
+    Only the document types extract_document_text can read are accepted, and the
+    body is capped: a mis-scored link usually lands on an HTML page, and that
+    must fail with a readable message rather than being stored as a PD.
+    """
+    import requests
+    from urllib.parse import urlparse
+
+    response = requests.get(
+        url,
+        headers={"User-Agent": PD_USER_AGENT},
+        timeout=30,
+        allow_redirects=True,
+        stream=True,
+    )
+    response.raise_for_status()
+
+    content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    name = _pd_filename_from_disposition(response.headers.get("Content-Disposition"))
+    if not name:
+        name = Path(urlparse(response.url).path).name
+    suffix = Path(name).suffix.lower()
+    if suffix not in PD_DOCUMENT_SUFFIXES:
+        suffix = PD_CONTENT_TYPE_SUFFIXES.get(content_type, "")
+        name = f"position_description{suffix}"
+    if suffix not in PD_DOCUMENT_SUFFIXES:
+        raise ValueError(
+            f"That link returned {content_type or 'an unrecognised file type'}, not a document "
+            "JSE can read (PDF, DOCX, DOC, TXT, MD). Open the ad, copy the document link itself, "
+            "and pass it in — or upload the file."
+        )
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    destination = target_dir / f"{safe_filename(Path(name).stem)}{suffix}"
+    written = 0
+    with open(destination, "wb") as handle:
+        for chunk in response.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            written += len(chunk)
+            if written > PD_MAX_DOCUMENT_BYTES:
+                handle.close()
+                destination.unlink(missing_ok=True)
+                raise ValueError(
+                    f"The linked document is larger than {PD_MAX_DOCUMENT_BYTES // (1024 * 1024)}MB; "
+                    "download it yourself and upload it if it really is the position description."
+                )
+            handle.write(chunk)
+    if not written:
+        destination.unlink(missing_ok=True)
+        raise ValueError("The linked document was empty.")
+    return destination
+
+
+def _fetch_ad_html(page_url):
+    import requests
+
+    response = requests.get(
+        page_url,
+        headers={"User-Agent": PD_USER_AGENT, "Accept": "text/html,application/xhtml+xml"},
+        timeout=30,
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    return response.text, response.url
+
+
+def command_document_fetch_position_description(payload):
+    """Attach the PD linked from a job ad, without a manual download round-trip.
+
+    Writes the same two columns a dropped file would, so the fetched PD flows
+    into analysis (which prefixes position_description_text to the ad and folds
+    it into the analysis signature) with no special-casing downstream.
+    """
+    job_id = payload["job_id"]
+    job = db.get_job_details(job_id)
+    if not job:
+        raise ValueError(f"Job {job_id} was not found.")
+
+    def field(name):
+        return (job[name] if name in job.keys() else "") or ""
+
+    explicit_url = str(payload.get("url") or "").strip()
+    page_url = str(payload.get("page_url") or "").strip() or field("url") or field("application_url")
+
+    candidates = []
+    if explicit_url:
+        document_url, label = explicit_url, explicit_url
+    else:
+        if not page_url:
+            raise ValueError(
+                "This job has no advertisement URL to read, so the position description "
+                "link cannot be found. Upload the file instead."
+            )
+        html, page_url = _fetch_ad_html(page_url)
+        candidates = _pd_link_candidates(html, page_url)
+        if not candidates:
+            raise ValueError(
+                "No position description link was found on the advertisement. The ad may have "
+                "closed, or it may load its links with JavaScript — open the ad, copy the "
+                "document link, and paste it in, or upload the file."
+            )
+        document_url = candidates[0]["url"]
+        label = candidates[0]["text"] or candidates[0]["url"]
+
+    target_dir = applications_dir() / "uploaded_documents" / str(job_id)
+    with tempfile.TemporaryDirectory(prefix="jse-pd-") as scratch:
+        # Downloaded to scratch first so the file reaches its final home through
+        # copy_into_workspace, the same collision-safe naming an upload gets.
+        downloaded = _download_pd_document(document_url, Path(scratch))
+        stored_path = copy_into_workspace(downloaded, target_dir, "position_description")
+    text = extract_document_text(stored_path)
+    stored_path = str(stored_path)
+    updates = {"position_description_path": stored_path, "position_description_text": text}
+    db.update_job_application(job_id, updates)
+    db.add_application_event(
+        job_id,
+        "documents",
+        "Position description attached from the advertisement",
+        f"{label}\n{document_url}\nStored at: {stored_path}\nExtracted {len(text)} characters.",
+    )
+    return {
+        "path": str(stored_path),
+        "text": text,
+        "url": document_url,
+        "page_url": page_url,
+        "label": label,
+        "candidates": candidates[:5],
+        "updates": updates,
+    }
 
 
 def resolve_additional_candidate_context(payload, job):
@@ -744,6 +983,7 @@ def command_docs_generate_interested_batch(payload):
 # python_bridge.py merges these; adding a command here needs no edit there.
 COMMANDS = {
     "document:extract": command_document_extract,
+    "document:fetchPositionDescription": command_document_fetch_position_description,
     "docs:generate": command_docs_generate,
     "docs:generateRich": command_docs_generate_rich,
     "docs:generateInterestedBatch": command_docs_generate_interested_batch,

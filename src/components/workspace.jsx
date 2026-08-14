@@ -8,12 +8,13 @@ import { ClosingDateSourceBadge, DropZone, LinkedText, Modal, ScoreStack } from 
 import { AdSignalsBlock } from "../components/chips";
 import { AnalysisReport, ChannelBlock, CompanyPanel, DocumentTrackBlock, JobFlagsBlock } from "../components/panels";
 
-function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiveTab, onClose, onSave, onApplicationDateApplied, onGenerateDocs, onGeneratePrompt, onCompanyResearch, onAddEvent, onAddInterview, onUpdateInterview, onDocumentDrop, onViewDocument, onDownloadDocument, onRevealDocument, onConvertDocumentPdf, onAnalyzeJob, onMoveProfile, analyzing, generatingDocs, researchingCompany, documentAiName, onRejectJob, onMoveInterested, onAddFlag, onDismissFlag, onClearFlags, onSetChannel, onSetDocumentTrack }) {
+function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiveTab, onClose, onSave, onApplicationDateApplied, onGenerateDocs, onGeneratePrompt, onCompanyResearch, onAddEvent, onAddInterview, onUpdateInterview, onDocumentDrop, onFetchPositionDescription, onViewDocument, onDownloadDocument, onRevealDocument, onConvertDocumentPdf, onAnalyzeJob, onMoveProfile, analyzing, generatingDocs, researchingCompany, documentAiName, onRejectJob, onMoveInterested, onAddFlag, onDismissFlag, onClearFlags, onSetChannel, onSetDocumentTrack }) {
   const [form, setForm] = useState(job || {});
   const [targetProfileId, setTargetProfileId] = useState(job?.profile_id || "");
   const [profileMoving, setProfileMoving] = useState(false);
   const [eventText, setEventText] = useState("");
   const [selectedInterviewId, setSelectedInterviewId] = useState(null);
+  const [fetchingPd, setFetchingPd] = useState(false);
   const applicationDatePromptedRef = useRef(false);
   const [interviewForm, setInterviewForm] = useState({
     title: "",
@@ -25,6 +26,16 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
     next_action: "Follow up",
     next_action_date: ""
   });
+
+  const fetchPd = async () => {
+    if (!onFetchPositionDescription || fetchingPd) return;
+    setFetchingPd(true);
+    try {
+      await onFetchPositionDescription(job);
+    } finally {
+      setFetchingPd(false);
+    }
+  };
 
   useEffect(() => setForm(job || {}), [job]);
   useEffect(() => setTargetProfileId(job?.profile_id || ""), [job?.id, job?.profile_id]);
@@ -196,7 +207,23 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
                   </div>
                   <p className="description"><LinkedText text={job.position_description_text} /></p>
                 </section>
-              ) : null}
+              ) : (
+                // The ad text alone is what got scored. Most ads park the real
+                // criteria in a linked PD, so offer to go and get it from here,
+                // next to the analysis it would change.
+                <section className="role-source-text position-description-text">
+                  <div className="role-source-heading">
+                    <span>Position description</span>
+                    <small>Not attached</small>
+                  </div>
+                  <p className="description muted">The analysis above used the advertisement only. If the ad links a position description, fetch it and re-analyse.</p>
+                  {onFetchPositionDescription ? (
+                    <button className="secondary" disabled={fetchingPd} onClick={fetchPd}>
+                      {fetchingPd ? <Loader2 className="spin" size={16} /> : <FileText size={16} />} Fetch from ad
+                    </button>
+                  ) : null}
+                </section>
+              )}
             </div>
           </section>
           <section className="form-grid stacked">
@@ -273,6 +300,7 @@ function WorkspaceModal({ job, events, interviews, profiles, activeTab, setActiv
               value={form.position_description_path}
               text={form.position_description_text}
               onDrop={(file) => onDocumentDrop("position_description", file)}
+              onFetch={onFetchPositionDescription ? () => onFetchPositionDescription(job) : null}
               onView={() => onViewDocument("Position description text", form.position_description_text)}
               onDownload={() => onDownloadDocument(form.position_description_path)}
               onReveal={() => onRevealDocument(form.position_description_path)}
