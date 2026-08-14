@@ -2,7 +2,7 @@
 import React, { useState } from "react";
 import { BriefcaseBusiness, Check, ChevronRight, ExternalLink, AlertTriangle, ArrowRightLeft, CalendarClock, Lightbulb, ListTodo, Loader2, Plus, Radar, RefreshCw, Send, Target, Trash2 } from "lucide-react";
 import { HM_OUTCOME_LABELS, HM_STATUS_LABELS, HM_TYPE_LABELS } from "../lib/constants";
-import { formatDate } from "../lib/format";
+import { formatDate, tidyJobTitle } from "../lib/format";
 import { LinkedText } from "../components/primitives";
 import { CampaignSection } from "../components/campaign";
 
@@ -61,7 +61,34 @@ function IntelligenceContactResearch({ research, onSelect, busy }) {
   );
 }
 
+const titleKey = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+// The evidence rows all belong to one target, so repeating its name on every
+// line is noise. Only keep the company when it names a different organisation.
+function sameOrganisation(company, name) {
+  const left = titleKey(company);
+  const right = titleKey(name);
+  if (!left || !right) return true;
+  // Compare on whole words so "Chisholm" matches "Chisholm Institute" but not
+  // an unrelated employer that merely shares a prefix.
+  return `${left} `.startsWith(`${right} `) || `${right} `.startsWith(`${left} `);
+}
+
+function uniqueTitles(titles, company) {
+  const seen = new Set();
+  const kept = [];
+  (titles || []).forEach((title) => {
+    const clean = tidyJobTitle(title, company);
+    const key = titleKey(clean);
+    if (!clean || seen.has(key)) return;
+    seen.add(key);
+    kept.push(clean);
+  });
+  return kept;
+}
+
 function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack, onStrategy, strategy, strategyBusy, target, onOpenJob, contactResearch, onSelectContact }) {
+  const sampleTitles = uniqueTitles(titles, name);
   return (
     <article className="hidden-target">
       <div>
@@ -73,7 +100,7 @@ function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack
       </div>
       {detail ? <p><LinkedText text={detail} /></p> : null}
       {target?.recommended_action ? <p className="intelligence-next"><strong>Next:</strong> {target.recommended_action}</p> : null}
-      {titles?.length ? <small>{titles.join(" · ")}</small> : null}
+      {sampleTitles.length ? <small className="intelligence-titles">{sampleTitles.map((title) => <span key={title} title={title}>{title}</span>)}</small> : null}
       {(target?.score_reasons || []).length ? <small className="intelligence-why">Why {target.opportunity_score}: {target.score_reasons.join(" · ")}</small> : null}
       {(target?.evidence || []).length ? (
         <details className="intelligence-evidence">
@@ -81,7 +108,16 @@ function HiddenMarketTarget({ name, meta, detail, titles, chip, tracked, onTrack
           <div>
             {(target.classification_reasons || []).map((reason) => <p key={reason}><Check size={12} /> {reason}</p>)}
             {(target.counter_evidence || []).map((reason) => <p key={reason} className="counter"><AlertTriangle size={12} /> {reason}</p>)}
-            <ul>{target.evidence.map((item) => <li key={item.job_id}><button className="link-button" onClick={() => onOpenJob(item.job_id)}>{item.title}</button><span>{item.company} · {item.score || 0}% · {formatDate(item.seen)} · {item.source}</span></li>)}</ul>
+            <ul>{target.evidence.map((item) => {
+              const title = tidyJobTitle(item.title, item.company) || "Untitled role";
+              const rowMeta = [sameOrganisation(item.company, name) ? "" : item.company, `${item.score || 0}%`, formatDate(item.seen), item.source].filter(Boolean).join(" · ");
+              return (
+                <li key={item.job_id}>
+                  <button className="link-button" title={item.title || title} onClick={() => onOpenJob(item.job_id)}>{title}</button>
+                  <span>{rowMeta}</span>
+                </li>
+              );
+            })}</ul>
           </div>
         </details>
       ) : null}

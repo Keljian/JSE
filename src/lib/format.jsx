@@ -104,6 +104,39 @@ function displayFileName(value) {
   return text.split(/[\\/]/).filter(Boolean).pop() || text;
 }
 
+// Tokens that must stay upper case when a shouted title is de-shouted.
+const TITLE_ACRONYMS = new Set(["it", "ict", "ai", "ml", "hr", "qa", "ux", "ui", "erp", "crm", "saas", "aws", "gcp", "sap", "sql", "api", "soc", "iam", "grc", "pmo", "cio", "cto", "ciso", "coo", "ceo", "cfo", "ba", "pm", "dba", "devops", "sre", "eoi", "anz", "apac", "emea", "vic", "nsw", "qld", "wa", "sa", "nt", "act", "tafe", "nfp", "r&d", "l1", "l2", "l3"]);
+const TITLE_MINOR_WORDS = new Set(["a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to", "with"]);
+const COMPANY_SUFFIX = "(?:\\s+(?:pty|ltd|ltd\\.|limited|inc|inc\\.|llc|plc|group|holdings|australia|au|nz))*";
+
+// Scraped advert titles carry board noise: requisition codes, trailing
+// location/employer tails, shouted casing and stray separators. Tidy for
+// display only — the stored title stays untouched for matching and prompts.
+function tidyJobTitle(value, company = "") {
+  let text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  text = text.replace(/[([{]\s*(?:job\s*)?(?:ref|reference|req|requisition|id|vacancy)[.:#\s-]*[\w/-]+\s*[)\]}]/gi, " ");
+  text = text.replace(/\b(?:ref|req|requisition|job\s*id|vacancy)\s*(?:no\.?|number|#|:)?\s*[\w/-]*\d[\w/-]*/gi, " ");
+  const name = String(company || "").replace(/\s+/g, " ").trim();
+  if (name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    text = text.replace(new RegExp(`\\s*[-–—|/]\\s*${escaped}\\b${COMPANY_SUFFIX}\\s*$`, "i"), "");
+    text = text.replace(new RegExp(`^\\s*${escaped}\\b${COMPANY_SUFFIX}\\s*[-–—|/:]\\s*`, "i"), "");
+  }
+  text = text.replace(/\s+/g, " ").replace(/^[\s\-–—|/,:·]+|[\s\-–—|/,:·]+$/g, "").trim();
+  // Shouted titles read as noise beside sentence-case ones; only de-shout when
+  // the whole title is upper case, so acronyms inside mixed titles survive.
+  if (text && text === text.toUpperCase() && /[A-Z]{4,}/.test(text)) {
+    text = text.toLowerCase().replace(/[^\s(/-]+/g, (word, offset) => {
+      const bare = word.replace(/[^a-z0-9&]/g, "");
+      if (TITLE_ACRONYMS.has(bare)) return word.toUpperCase();
+      if (offset && TITLE_MINOR_WORDS.has(bare)) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    });
+  }
+  return text;
+}
+
 function isWordDocumentPath(value) {
   return /\.docx?$/i.test(String(value || "").trim());
 }
@@ -221,4 +254,4 @@ function countBy(items, key, fallback = "unknown") {
   }, {});
 }
 
-export { normalizeStage, canMoveToInterested, openSupportLink, documentAiLabel, todayPlus, formatDate, closingDateSourceMeta, formatBytes, toErrorMessage, scoreClass, primaryScore, jobFlagsOf, jobFlagTypesOf, displayFileName, isWordDocumentPath, parseJsonObject, isWeakCompanyName, parseAnalysisReport, actionMeta, gateDecisionMeta, hasCompanyResearch, toDateTimeInputValue, countBy };
+export { normalizeStage, canMoveToInterested, openSupportLink, documentAiLabel, todayPlus, formatDate, closingDateSourceMeta, formatBytes, toErrorMessage, scoreClass, primaryScore, jobFlagsOf, jobFlagTypesOf, displayFileName, tidyJobTitle, isWordDocumentPath, parseJsonObject, isWeakCompanyName, parseAnalysisReport, actionMeta, gateDecisionMeta, hasCompanyResearch, toDateTimeInputValue, countBy };

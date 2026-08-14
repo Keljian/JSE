@@ -4970,7 +4970,15 @@ button.update-toast-close:hover:not(:disabled) {
 .intelligence-evidence p { display: flex; align-items: center; gap: 5px; }
 .intelligence-evidence p.counter { color: #8a5a1b; }
 .intelligence-evidence ul { display: grid; gap: 5px; margin: 4px 0 0; padding: 0; list-style: none; }
-.intelligence-evidence li { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(220px, 1.2fr); gap: 8px; }
+.intelligence-evidence li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 10px; }
+/* Buttons are centred flex boxes by default, so a long role title used to sit
+   centred and spill over the meta column. Left-align and clip instead; the
+   full title stays available as the button's tooltip. */
+.intelligence-evidence li .link-button { display: block; width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.5; }
+.hidden-target .intelligence-evidence li span { white-space: nowrap; text-align: right; font-size: 11px; }
+.intelligence-titles { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.hidden-target small.intelligence-titles span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.intelligence-titles span + span { border-left: 1px solid var(--border); padding-left: 10px; }
 .link-button { padding: 0; min-height: auto; border: 0; color: var(--accent-strong); background: transparent; box-shadow: none; text-align: left; }
 .hidden-target .intelligence-strategy { display: grid; justify-content: stretch; }
 .intelligence-strategy-meta { display: flex; justify-content: flex-start !important; }
