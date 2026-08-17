@@ -1341,27 +1341,42 @@ def _analyze_single_job(job, ctx):
 # the *preceding* request, so the prompt ordering inside each template only pays
 # off if consecutive requests use the same template. Running triage, analysis and
 # gatekeeper per job alternates three prefixes and reuses none of them; batching
-# by phase turns that into one prefix switch per phase per chunk.
+# by phase turns that into one prefix switch per phase per batch.
 #
-# Chunked rather than whole-sweep so results still land steadily: nothing in a
-# chunk is finalised until its phases finish, and a thousand-job sweep should not
-# hold every result back to the end.
-ANALYSIS_PHASE_CHUNK = 10
+# Why a number and not the whole sweep: a job rejected at triage is written
+# during phase 1, so those land throughout, but a job that *survives* triage
+# holds its result in memory until its full analysis runs. Cancelling mid-batch
+# discards the triage work for every survivor still waiting, so the batch size is
+# the bound on what a cancel can throw away. 80 keeps the prefix switches down to
+# roughly one per phase per 80 jobs while capping that loss at one batch.
+#
+# None is honoured too, and means the whole sweep in one batch.
+ANALYSIS_PHASE_CHUNK = 80
 
 
 def _chunked(items, size):
+    if not items:
+        return
+    if not size or size >= len(items):
+        yield items
+        return
     for start in range(0, len(items), size):
         yield items[start:start + size]
 
 
-def _run_analysis_phase(states, phase_fn, ctx, workers):
-    """Run one phase across a chunk. Returns (states that advance, failure count).
+def _run_analysis_phase(states, phase_fn, ctx, workers, on_item=None):
+    """Run one phase across a batch. Returns (states that advance, failure count).
+
+    `on_item(advanced, failed)` fires as each job finishes, not when the phase
+    does. With an 80-job batch a phase runs for minutes, and reporting only at
+    the end would leave the status strip frozen for all of it.
 
     Workers > 1 fans the phase out, which is only useful for a hosted scoring
     provider: the local endpoint serialises on its own single slot regardless,
     and that serialisation is what makes the prefix reuse possible at all.
     """
     log = ctx["log"]
+    report_item = on_item or (lambda advanced, failed: None)
     if not states:
         return [], 0
 
@@ -1371,16 +1386,21 @@ def _run_analysis_phase(states, phase_fn, ctx, workers):
         for state in states:
             if concurrency.cancel_event.is_set():
                 raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+            item_advanced = False
+            item_failed = False
             try:
                 if phase_fn(state, ctx):
                     advanced.append(state)
+                    item_advanced = True
             except concurrency.OperationCancelledError:
                 raise
             except Exception as exc:
                 # Per-job failures are handled inside the phase, so anything
                 # landing here is unexpected. Log it and keep the batch moving.
                 failed += 1
+                item_failed = True
                 log(f"Analysis raised unexpectedly: {exc}")
+            report_item(item_advanced, item_failed)
         return advanced, failed
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job-analysis") as executor:
@@ -1388,15 +1408,20 @@ def _run_analysis_phase(states, phase_fn, ctx, workers):
         cancelled = False
         try:
             for future in concurrent.futures.as_completed(futures):
+                item_advanced = False
+                item_failed = False
                 try:
                     if future.result():
                         advanced.append(futures[future])
+                        item_advanced = True
                 except concurrency.OperationCancelledError:
                     cancelled = True
                     break
                 except Exception as exc:
                     failed += 1
+                    item_failed = True
                     log(f"Analysis worker raised unexpectedly: {exc}")
+                report_item(item_advanced, item_failed)
         finally:
             if cancelled or concurrency.cancel_event.is_set():
                 # Drop everything still queued; running workers notice the
@@ -1495,11 +1520,25 @@ def _perform_analysis_loop(
     workers = _analysis_worker_count()
     total = len(jobs_to_analyze)
     report(0, total, phase="triage", failed=0)
-    done = 0
-    failed = 0
     cancelled = False
     if workers > 1:
         log(f"Analyzing {total} job(s) with {workers} parallel workers...")
+
+    # Counters live here rather than in the loop body so the per-job callback
+    # below can advance them as each job lands, instead of the bar jumping once
+    # per phase — an 80-job phase runs for minutes.
+    counts = {"done": 0, "failed": 0}
+
+    def _phase_reporter(phase_name, detail=None):
+        def _on_item(advanced, item_failed):
+            if item_failed:
+                counts["failed"] += 1
+            if not advanced:
+                # The job has left the pipeline: finalised, skipped or failed.
+                # A survivor is not counted until the phase that finishes it.
+                counts["done"] += 1
+            report(counts["done"], total, phase=phase_name, failed=counts["failed"], detail=detail)
+        return _on_item
 
     for chunk in _chunked(jobs_to_analyze, ANALYSIS_PHASE_CHUNK):
         if concurrency.cancel_event.is_set():
@@ -1508,38 +1547,35 @@ def _perform_analysis_loop(
         try:
             states = [_prepare_job(job, ctx) for job in chunk]
 
-            # Phase 1: every triage prompt in the chunk, back to back.
-            survivors, phase_failed = _run_analysis_phase(states, _triage_phase, ctx, workers)
-            failed += phase_failed
-            done += len(states) - len(survivors)
-            report(done, total, phase="triage", failed=failed,
-                   detail=f"{len(survivors)} of {len(states)} through triage")
+            # Phase 1: every triage prompt in the batch, back to back.
+            report(counts["done"], total, phase="triage", failed=counts["failed"],
+                   detail=f"Triaging {len(states)} job(s)")
+            survivors, _ = _run_analysis_phase(
+                states, _triage_phase, ctx, workers, _phase_reporter("triage")
+            )
 
             # Phase 2: every full-analysis prompt for the survivors.
             if survivors:
-                report(done, total, phase="analysis", failed=failed,
+                report(counts["done"], total, phase="analysis", failed=counts["failed"],
                        detail=f"Analysing {len(survivors)} survivor(s)")
-                gated, phase_failed = _run_analysis_phase(survivors, _analysis_phase, ctx, workers)
-                failed += phase_failed
-                done += len(survivors) - len(gated)
-                report(done, total, phase="analysis", failed=failed)
+                gated, _ = _run_analysis_phase(
+                    survivors, _analysis_phase, ctx, workers, _phase_reporter("analysis")
+                )
 
                 # Phase 3: the third-pass gatekeeper for the high scorers.
                 if gated:
-                    report(done, total, phase="gatekeeper", failed=failed,
+                    report(counts["done"], total, phase="gatekeeper", failed=counts["failed"],
                            detail=f"Gatekeeping {len(gated)} high scorer(s)")
-                    _, phase_failed = _run_analysis_phase(gated, _gatekeeper_phase, ctx, workers)
-                    failed += phase_failed
-                    done += len(gated)
-                    report(done, total, phase="gatekeeper", failed=failed)
+                    _run_analysis_phase(
+                        gated, _gatekeeper_phase, ctx, workers, _phase_reporter("gatekeeper")
+                    )
         except concurrency.OperationCancelledError:
-            # Whatever the chunk finished is already persisted by its phases;
+            # Whatever the batch finished is already persisted by its phases;
             # the rest is dropped and re-analysed next run.
             cancelled = True
             break
 
-        if done % 50 < ANALYSIS_PHASE_CHUNK or done == total:
-            log(f"Analysis progress: {done}/{total} job(s) processed.")
+        log(f"Analysis progress: {counts['done']}/{total} job(s) processed.")
 
     if cancelled:
         log("Analysis cancelled by user.")

@@ -164,6 +164,27 @@ class AnalysisLoopProgressTests(unittest.TestCase):
         self.assertTrue(all(current <= total for current, total, _ in seen))
         self.assertEqual(seen[-1][:2], (25, 25))
 
+    def test_progress_advances_per_job_not_per_phase(self):
+        """A phase runs for minutes at this batch size; the bar must not sit still.
+
+        Reporting once per completed phase left the status strip frozen for the
+        whole of it, which is the exact thing the indicator exists to prevent.
+        """
+        seen = self._run(job_count=5, workers=1)
+        currents = [current for current, _, _ in seen]
+        self.assertEqual(sorted(set(currents)), [0, 1, 2, 3, 4, 5],
+                         "every job should move the bar, not just the phase boundary")
+
+    def test_the_batch_size_bounds_what_a_cancel_can_discard(self):
+        """Survivors hold their triage in memory until their analysis runs.
+
+        The batch size is therefore the cap on how much triage work a cancel
+        throws away, which is why this is a number and not the whole sweep.
+        """
+        self.assertIsNotNone(analysis.ANALYSIS_PHASE_CHUNK,
+                             "an unlimited batch would risk the whole sweep's triage on a cancel")
+        self.assertGreater(analysis.ANALYSIS_PHASE_CHUNK, 1)
+
     def test_parallel_phase_reports_every_job(self):
         seen = self._run(job_count=6, workers=4, triage_fn=lambda state, ctx: True)
         currents = [current for current, _, _ in seen]
