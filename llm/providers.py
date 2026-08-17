@@ -160,6 +160,12 @@ _local_context_cache = {}
 _local_context_lock = threading.Lock()
 
 
+# How the endpoint wants reasoning switched off, cached alongside the context
+# window and on the same TTL. Looking it up costs a /v1/status round trip, and
+# the answer only changes when a model is loaded or unloaded.
+_local_reasoning_cache = {}
+
+
 # --- Global LLM concurrency gate --------------------------------------------
 # A local inference server typically serves one request at a time and returns
 # HTTP 429 when a second arrives mid-flight (its queue depth is often zero).
@@ -532,6 +538,42 @@ def _local_context_length(local):
     return context
 
 
+def _local_reasoning_style(local):
+    """How this endpoint wants reasoning turned off, or None if it cannot be.
+
+    Qwen3.6 ignores the `/no_think` token that Qwen3 honoured: measured against
+    Unsloth Studio, a triage prompt spent its entire 700-token budget on
+    reasoning_content and returned an empty `content` with finish_reason
+    "length". The same prompt with enable_thinking=false answered in 40 tokens.
+    That is the difference between a triage that costs 25 seconds and truncates,
+    and one that costs under a second — and a truncated structured call does not
+    fail cheaply, it falls open to the full analysis it exists to avoid.
+
+    The endpoint advertises what it understands in /v1/status, so ask rather
+    than assume: a server that does not describe itself keeps the old token.
+    """
+    key = (local.get("base_url") or "", local.get("model") or "")
+    now = time.monotonic()
+    with _local_context_lock:
+        cached = _local_reasoning_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    style = None
+    try:
+        status = local_status(local)
+        if status.get("supports_reasoning") and not status.get("reasoning_always_on"):
+            style = str(status.get("reasoning_style") or "").strip() or None
+    except Exception:
+        # An endpoint that will not describe itself is not a reason to refuse to
+        # call it; the caller falls back to the token hint.
+        style = None
+
+    with _local_context_lock:
+        _local_reasoning_cache[key] = (now + LOCAL_CONTEXT_TTL, style)
+    return style
+
+
 def _local_root(local):
     """The server root, for the endpoints that sit outside /v1."""
     base = (local.get("base_url") or "").rstrip("/")
@@ -596,6 +638,9 @@ def set_local_context_window(target, settings=None, n_parallel=1, local=None):
 
     with _local_context_lock:
         _local_context_cache.clear()
+        # A reload can swap the model, and reasoning support is a property of
+        # the model, not the endpoint. Both caches are keyed on it.
+        _local_reasoning_cache.clear()
     return local_status(local)
 
 
@@ -804,10 +849,17 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
             {"type": "text"},
         ]
         payload["response_format"] = json_response_formats[0]
-        # Hint Qwen3 to skip its thinking mode for structured-output tasks.
-        # The /no_think token is honoured by Qwen3 chat templates; servers that
-        # ignore it simply pass the literal token through harmlessly.
-        if messages and messages[-1].get("role") == "user":
+        # Structured calls want an answer, not reasoning about one. Reasoning is
+        # not merely wasted here: it is generated into reasoning_content, counts
+        # against max_tokens, and on Qwen3.6 routinely consumes the entire budget
+        # before any JSON is emitted — so the call truncates and the caller is
+        # handed nothing. Free-text calls are left alone; they may benefit.
+        if _local_reasoning_style(local) == "enable_thinking":
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        elif messages and messages[-1].get("role") == "user":
+            # Fallback for endpoints that do not advertise the toggle. The
+            # /no_think token is honoured by Qwen3 chat templates; servers that
+            # ignore it simply pass the literal token through harmlessly.
             content = messages[-1].get("content", "")
             if "/no_think" not in content and "/think" not in content:
                 messages = list(messages)

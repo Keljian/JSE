@@ -315,6 +315,94 @@ class TruncationTests(unittest.TestCase):
         self.assertLess(seen["max_tokens"], 4096)
 
 
+class ReasoningToggleTests(unittest.TestCase):
+    """Structured calls must not spend their token budget on reasoning.
+
+    Qwen3.6 ignores the `/no_think` token Qwen3 honoured. Measured against
+    Unsloth Studio, a triage prompt put its whole 700-token budget into
+    reasoning_content and returned empty content with finish_reason "length";
+    the same prompt with enable_thinking=false answered in 40 tokens. A
+    truncated structured call is not a smaller answer — it raises, and the
+    triage handler falls open to the full analysis it exists to avoid.
+    """
+
+    def setUp(self):
+        providers._local_reasoning_cache.clear()
+        providers._local_context_cache.clear()
+        self.addCleanup(providers._local_reasoning_cache.clear)
+        self.addCleanup(providers._local_context_cache.clear)
+
+    def _send(self, status, json_mode=True):
+        """Return the payload _call_unsloth puts on the wire."""
+        seen = {}
+
+        def fake_post(_url, _headers, payload, timeout=None):
+            seen.update(payload)
+            return {"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]}
+
+        with mock.patch.object(providers, "_post_json", fake_post), \
+             mock.patch.object(providers, "local_status", return_value=status), \
+             mock.patch.object(providers, "_local_ai_settings", return_value=dict(LOCAL)), \
+             mock.patch.object(providers, "_local_prompt_tokens", return_value=30), \
+             mock.patch.object(providers, "_ensure_local_context", return_value=32768), \
+             mock.patch.object(providers, "_analysis_worker_count", return_value=1), \
+             mock.patch.object(providers, "_local_lock_path", return_value=None):
+            providers._call_unsloth([{"role": "user", "content": "score this"}],
+                                    max_tokens=500, json_mode=json_mode)
+        return seen
+
+    def _last_user(self, payload):
+        return [m for m in payload["messages"] if m["role"] == "user"][-1]["content"]
+
+    def test_an_endpoint_that_advertises_the_toggle_gets_it(self):
+        payload = self._send({"supports_reasoning": True, "reasoning_style": "enable_thinking"})
+        self.assertEqual(payload.get("chat_template_kwargs"), {"enable_thinking": False})
+        self.assertNotIn("/no_think", self._last_user(payload),
+                         "the token is redundant once the toggle is understood")
+
+    def test_an_endpoint_without_the_toggle_keeps_the_token(self):
+        payload = self._send({"supports_reasoning": False})
+        self.assertIsNone(payload.get("chat_template_kwargs"))
+        self.assertIn("/no_think", self._last_user(payload))
+
+    def test_an_endpoint_that_cannot_disable_reasoning_is_left_alone(self):
+        payload = self._send({
+            "supports_reasoning": True,
+            "reasoning_style": "enable_thinking",
+            "reasoning_always_on": True,
+        })
+        self.assertIsNone(payload.get("chat_template_kwargs"),
+                          "sending a toggle the server cannot honour just risks a 400")
+        self.assertIn("/no_think", self._last_user(payload))
+
+    def test_free_text_calls_keep_their_reasoning(self):
+        payload = self._send({"supports_reasoning": True, "reasoning_style": "enable_thinking"},
+                             json_mode=False)
+        self.assertIsNone(payload.get("chat_template_kwargs"))
+        self.assertNotIn("/no_think", self._last_user(payload))
+
+    def test_the_capability_is_cached_not_probed_per_request(self):
+        calls = []
+
+        def counting_status(local=None):
+            calls.append(local)
+            return {"supports_reasoning": True, "reasoning_style": "enable_thinking"}
+
+        with mock.patch.object(providers, "local_status", counting_status):
+            for _ in range(5):
+                providers._local_reasoning_style(dict(LOCAL))
+        self.assertEqual(len(calls), 1, "a /v1/status round trip per call would undo the saving")
+
+    def test_a_model_reload_invalidates_the_capability(self):
+        providers._local_reasoning_cache[("x", "y")] = (float("inf"), "enable_thinking")
+        with mock.patch.object(providers, "_post_json", return_value={}), \
+             mock.patch.object(providers, "local_status", return_value={}), \
+             mock.patch.object(providers, "_local_ai_settings", return_value=dict(LOCAL)):
+            providers.set_local_context_window(32768, local=dict(LOCAL))
+        self.assertEqual(providers._local_reasoning_cache, {},
+                         "reasoning support belongs to the model, which a reload can swap")
+
+
 class PromptTokenCountingTests(unittest.TestCase):
     """The exact count costs a round trip carrying the whole prompt.
 
