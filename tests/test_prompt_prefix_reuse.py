@@ -18,6 +18,7 @@ They assert relative position only — wording is free to change.
 """
 import inspect
 import re
+from unittest import mock
 
 import pytest
 
@@ -99,3 +100,60 @@ def test_full_analysis_keeps_the_resume_ahead_of_the_advertisement():
 def test_relevance_gate_keeps_the_resume_first():
     source = inspect.getsource(analysis.check_job_relevance)
     assert source.index("CANDIDATE RESUME:") < source.index("JOB ADVERTISEMENT:")
+
+
+LANE = {"boost_terms": "manufacturing; agtech", "penalty_terms": "helpdesk"}
+WEIGHTING = "Add weight when present: manufacturing; agtech"
+
+
+def _render_triage_prompt(**kwargs):
+    """Capture the user prompt _triage_job builds, without calling a model."""
+    captured = {}
+
+    def fake_call(messages, **_kwargs):
+        captured["user"] = next(m["content"] for m in messages if m["role"] == "user")
+        return '{"match_score": 50, "reason": "r", "keep": true, "flags": []}'
+
+    with mock.patch.object(analysis, "_call_scoring_ai", fake_call):
+        analysis._triage_job("TARGET ROLE FAMILIES: ops", "An advertisement.", "Ops Manager",
+                             1, lambda message: None, lane_settings=dict(LANE), **kwargs)
+    return captured["user"]
+
+
+def test_the_preference_block_appears_once_not_twice():
+    """It used to be rendered in its own block AND concatenated onto the summary.
+
+    The summary is capped at 2200 characters and a resume summary runs to about
+    that, so the duplicate was usually truncated mid-sentence as well as wasted.
+    """
+    with mock.patch.object(analysis.db, "get_lane_settings", return_value=dict(LANE)):
+        rendered_preferences = analysis._analysis_preferences(1)
+    assert WEIGHTING in rendered_preferences  # guards the fixture, not the code
+    prompt = _render_triage_prompt(preference_context=rendered_preferences)
+    assert prompt.count(WEIGHTING) == 1
+    summary_block = prompt.split("COMPACT RESUME SUMMARY:")[1].split("---")[1]
+    assert WEIGHTING not in summary_block, "preference text leaked back into the resume block"
+
+
+def test_a_supplied_preference_context_costs_no_database_read():
+    """The sweep resolves this once; re-reading lane settings per job is waste."""
+    with mock.patch.object(analysis.db, "get_lane_settings") as read:
+        _render_triage_prompt(preference_context="PREFS GO HERE")
+    assert not read.called, "_triage_job re-read lane settings despite being handed both"
+
+
+def test_a_standalone_caller_still_gets_its_preferences():
+    """Callers holding a single job pass nothing and must still work."""
+    with mock.patch.object(analysis, "_analysis_preferences", return_value="RESOLVED PREFS") as resolve:
+        prompt = _render_triage_prompt()
+    assert resolve.called
+    assert "RESOLVED PREFS" in prompt
+
+
+def test_the_triage_contract_asks_for_one_short_sentence():
+    """Triage output is read at a glance beside a number, not as a report."""
+    from llm.prompts import TRIAGE_SYSTEM_PROMPT_BASE
+    shape = TRIAGE_SYSTEM_PROMPT_BASE.split("REQUIRED JSON SHAPE")[1]
+    reason = next(line for line in shape.splitlines() if '"reason"' in line)
+    assert "25 words" in reason, "the reason field lost its length cap"
+    assert "1-2 sentences" not in reason

@@ -65,8 +65,10 @@ def _format_gatekeeper_section(data, original_score, enforced_score=None):
 
 
 def _run_deep_gatekeeper(resume_summary, resume_text, full_description, analysis_data, original_score,
-                         profile_id, log, lane_settings=None):
-    preference_context = _analysis_preferences(profile_id)
+                         profile_id, log, lane_settings=None, preference_context=None):
+    if preference_context is None:
+        # As in _triage_job: the sweep resolves this once and passes it in.
+        preference_context = _analysis_preferences(profile_id)
     if lane_settings is None:
         lane_settings = db.get_lane_settings(profile_id)
     # Same prefix-reuse rule as _triage_job: candidate-side blocks first and
@@ -263,7 +265,8 @@ RESUME:
     return summary
 
 
-def _triage_job(resume_summary, full_description, job_title, profile_id, log, lane_settings=None):
+def _triage_job(resume_summary, full_description, job_title, profile_id, log, lane_settings=None,
+                preference_context=None):
     """Score the role and raise flags on it, in one call.
 
     Flagging used to be a second LLM pass. It was folded in here because flags
@@ -283,6 +286,11 @@ def _triage_job(resume_summary, full_description, job_title, profile_id, log, la
     """
     if lane_settings is None:
         lane_settings = db.get_lane_settings(profile_id)
+    if preference_context is None:
+        # Only a caller holding one job pays for this. The sweep resolves it
+        # once into ctx and passes it in, rather than re-reading lane settings
+        # from SQLite for every job to rebuild an identical string.
+        preference_context = _analysis_preferences(profile_id)
     mandatory, credential_gates = _extract_mandatory_requirements(full_description)
     stated_requirements = (
         "\n".join(f"- {line}" for line in mandatory)
@@ -310,7 +318,7 @@ def _triage_job(resume_summary, full_description, job_title, profile_id, log, la
 
 PROFILE PREFERENCE WEIGHTING:
 ---
-{_analysis_preferences(profile_id)}
+{preference_context}
 ---
 {_lane_brief_block(lane_brief(lane_settings))}
 COMPACT RESUME SUMMARY:
@@ -342,6 +350,13 @@ FULL JOB ADVERTISEMENT:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.05,
+        # Do NOT lower this to match the tightened output contract. It was tried
+        # at 1000 and the local model truncated real triages mid-JSON, and a
+        # truncated triage does not fail cheaply: it raises, and the handler
+        # falls open to the FULL analysis — the expensive call triage exists to
+        # avoid. The contract asks for ~150 tokens of JSON, so anything near
+        # this ceiling is the model generating reasoning it was asked not to;
+        # the fix for that is upstream in the request, not a smaller budget.
         max_tokens=2000,
         json_mode=True,
     )
@@ -629,8 +644,11 @@ def _analysis_preferences(profile_id):
     )
 
 
-def _apply_preference_weight(score, text, profile_id):
-    settings = db.get_lane_settings(profile_id)
+def _apply_preference_weight(score, text, profile_id, lane_settings=None):
+    # lane_settings is threaded through by the sweep for the same reason as
+    # preference_context: this runs on every job and the terms do not change
+    # between them, so re-reading them from SQLite per job is pure waste.
+    settings = db.get_lane_settings(profile_id) if lane_settings is None else lane_settings
     haystack = str(text or "").lower()
     boost_hits = [term for term in _preference_terms(settings.get("boost_terms")) if term.lower() in haystack]
     penalty_hits = [term for term in _preference_terms(settings.get("penalty_terms")) if term.lower() in haystack]
@@ -1012,14 +1030,22 @@ def _triage_phase(state, ctx):
 
     try:
         triage_score, triage_reason, keep, flags = _triage_job(
-            f"{resume_summary}\n\n{preference_context}",
+            # The preference block used to be concatenated on here as well as
+            # rendered in its own section, so every triage prompt carried it
+            # twice — and since the summary is capped at 2200 characters and a
+            # resume summary runs to about that, the duplicate was usually
+            # truncated mid-sentence. It now appears once, in its own block.
+            resume_summary,
             full_description_for_analysis,
             job_title,
             profile_id,
             log,
             lane_settings,
+            preference_context=preference_context,
         )
-        triage_score, boost_hits, penalty_hits = _apply_preference_weight(triage_score, full_description_for_analysis, profile_id)
+        triage_score, boost_hits, penalty_hits = _apply_preference_weight(
+            triage_score, full_description_for_analysis, profile_id, lane_settings
+        )
         if boost_hits or penalty_hits:
             triage_reason += f" Preference flags: +{', '.join(boost_hits) or 'none'}; -{', '.join(penalty_hits) or 'none'}."
         if not keep:
@@ -1232,6 +1258,7 @@ def _gatekeeper_phase(state, ctx):
             profile_id,
             log,
             lane_settings,
+            preference_context=ctx["preference_context"],
         )
         if gatekeeper_text:
             analysis_text = f"{state['analysis_text']}\n\n{gatekeeper_text}"

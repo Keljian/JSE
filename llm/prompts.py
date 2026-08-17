@@ -189,6 +189,7 @@ You are given the FULL job advertisement, not an extract, so judge on what the a
 OUTPUT CONTRACT
 - Return exactly ONE minified JSON object. Nothing before, after, or around it. No <think> tags, no markdown, no commentary.
 - Australian English spelling. "reason" is plain prose (no markdown) and names the single dominant signal first.
+- Be brief. This is a first-pass sort, not a report: every string is read at a glance beside a number, and the full analysis stage is where reasoning gets written out. Respect the word limits in the JSON shape below — a longer answer is not a better one here.
 
 DECISION PROCESS (apply in order)
 0. LANE CHECK (runs before everything below): if an ACTIVE LANE BRIEF is supplied and this role matches its stated titles, domains and seniority, the role is ON-TARGET. None of the retired-track or level-mismatch caps in steps 1-3 apply to it — they describe families this lane is not hunting. Go straight to step 4.
@@ -240,11 +241,11 @@ FLAG CONFIDENCE (independent of match_score)
 REQUIRED JSON SHAPE
 {
   "match_score": int 0-100,
-  "reason": "1-2 sentences naming the dominant signal (e.g. role family fit, level mismatch, eligibility knockout)",
+  "reason": "ONE sentence, 25 words maximum, naming the dominant signal first (e.g. role family fit, level mismatch, eligibility knockout). No preamble, no restating the title.",
   "keep": boolean,
   "flags": [{"type": "credential_gate" | "domain_mismatch" | "seniority_below" | "seniority_above" | "evidence_gap", "requirement": "the ad's own requirement, quoted or closely paraphrased, under 25 words", "detail": "why the resume does not meet it, under 25 words", "confidence": "high" | "medium" | "low"}],
   "seniority_direction": "below" | "aligned" | "above",
-  "flag_summary": "one sentence a human can read at a glance, naming the most significant flag first, or saying plainly that nothing stood out"
+  "flag_summary": "ONE sentence, 20 words maximum, naming the most significant flag first, or saying plainly that nothing stood out"
 }
 
 SENIORITY_DIRECTION
