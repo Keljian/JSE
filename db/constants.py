@@ -241,6 +241,55 @@ COMPANY_CANDIDATE_STOPWORDS = {
 }
 
 
+# Capitalised tokens that read like proper nouns inside an ad body but never
+# name an employer: technologies, vendors-named-as-skills, frameworks,
+# standards, certifications and qualifications. Without this guard the
+# "with X" / "About X" extraction patterns return "Azure", "MQTT" or "ITIL"
+# as the hiring company, and that value then overwrites the correct advertiser.
+NON_COMPANY_PROPER_NOUNS = {
+    # cloud, platforms and vendors named as skills
+    "azure", "aws", "gcp", "google cloud", "microsoft", "microsoft 365", "office 365",
+    "m365", "sharepoint", "intune", "salesforce", "servicenow", "workday", "sap",
+    "odoo", "jira", "confluence", "power bi", "databricks", "snowflake", "vmware",
+    "citrix", "linux", "windows", "windows server", "active directory", "entra",
+    "okta", "kubernetes", "docker", "terraform", "ansible", "github", "gitlab",
+    # networking, OT and protocols
+    "mqtt", "modbus", "plc", "plcs", "scada", "sd wan", "sdwan", "mpls", "vlan",
+    "poe", "tcp ip", "bacnet", "profinet", "ethernet", "wifi", "lora", "lorawan",
+    "cisco", "fortinet", "meraki", "palo alto", "juniper", "aruba", "apache",
+    # frameworks, standards and methods
+    "itil", "cobit", "togaf", "prince2", "pmbok", "pmp", "agile", "scrum", "kanban",
+    "safe", "devops", "devsecops", "sdlc", "essential eight", "iso", "nist",
+    "cps", "apra", "gdpr", "pci dss", "soc", "haccp", "whs", "ohs", "oh s", "hseq",
+    "adkar", "lean", "six sigma", "kaizen", "aosp", "ndt", "hvac",
+    # qualifications and ad furniture that survives the stopword pass
+    "bachelor", "bachelors", "masters", "honours", "doctorate", "phd", "diploma",
+    "certificate", "certification", "degree", "post graduate", "postgraduate",
+    "tertiary", "drivers licence", "police check", "post", "graduate",
+    # generic function and audience nouns
+    "product managers", "product owners", "stakeholders", "subject matter experts",
+    "information security", "cyber security", "cyber governance", "managed services",
+    "service desk", "solution design", "problem management", "retail operations",
+    "store ops", "human resources", "finance", "engineering", "technology", "sales",
+    "marketing", "operations", "manufacturing", "logistics", "procurement",
+    "transport", "customer care", "corporate marketing", "digital delivery",
+    "risk", "compliance", "governance", "quality", "safety", "research institutes",
+}
+
+
+# Tokens that make a multi-word candidate look like a real organisation rather
+# than a fragment of prose. Used to rescue legitimate names that would
+# otherwise be caught by the acronym and generic-noun guards.
+COMPANY_SUFFIX_WORDS = {
+    "group", "holdings", "limited", "ltd", "pty", "inc", "incorporated",
+    "corporation", "corp", "company", "co", "services", "solutions", "systems",
+    "technologies", "industries", "partners", "consulting", "council", "university",
+    "institute", "association", "foundation", "authority", "commission", "agency",
+    "bank", "insurance", "health", "hospital", "college", "school", "society",
+    "australia", "australian", "international", "global", "national", "labs",
+}
+
+
 MONTHS = {
     "jan": 1, "january": 1,
     "feb": 2, "february": 2,

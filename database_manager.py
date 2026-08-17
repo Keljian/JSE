@@ -59,6 +59,7 @@ from db.constants import (  # noqa: F401
     BROAD_RELEVANT_TITLES,
     BROAD_UNRELATED_TITLES,
     COMPANY_CANDIDATE_STOPWORDS,
+    COMPANY_SUFFIX_WORDS,
     DEFAULT_APP_SETTINGS,
     DEFAULT_PROFILE_SETTINGS,
     DIRECT_EMPLOYER_PHRASES,
@@ -68,6 +69,7 @@ from db.constants import (  # noqa: F401
     KNOWN_RECRUITERS,
     MANUAL_SOURCE,
     MONTHS,
+    NON_COMPANY_PROPER_NOUNS,
     PIPELINE_STAGES,
     RECRUITER_PHRASES,
     RETIRED_CLAUDE_MODELS,
@@ -112,6 +114,7 @@ from db.text import (  # noqa: F401
     source_aliases,
 )
 from db.companies import (  # noqa: F401
+    _candidate_is_corroborated,
     _extract_named_company_from_text,
     _is_weak_company_candidate,
     _profile_row_to_company_intelligence,

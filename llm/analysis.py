@@ -69,6 +69,12 @@ def _run_deep_gatekeeper(resume_summary, resume_text, full_description, analysis
     preference_context = _analysis_preferences(profile_id)
     if lane_settings is None:
         lane_settings = db.get_lane_settings(profile_id)
+    # Same prefix-reuse rule as _triage_job: candidate-side blocks first and
+    # contiguous, role-side blocks after the marker. The resume extract is the
+    # largest stable block at ~9k characters and used to sit below the per-job
+    # analysis JSON, which stranded it outside the reusable prefix. This path
+    # only fires above the gatekeeper score threshold, so the volume is far
+    # lower than triage, but the ordering costs nothing to get right.
     user_prompt = f"""Run a strict third-pass gatekeeper review.
 
 Do not simply validate the prior score. Look for false positives and apply score caps aggressively.
@@ -83,15 +89,16 @@ PROFILE PREFERENCE WEIGHTING:
 {preference_context}
 ---
 {_lane_brief_block(lane_brief(lane_settings))}
+RESUME EXTRACT:
+---
+{resume_text[:9000]}
+---
+
+--- BEGIN ROLE UNDER ASSESSMENT ---
 
 FULL ANALYSIS JSON:
 ---
 {json.dumps(analysis_data, ensure_ascii=False)[:4500]}
----
-
-RESUME EXTRACT:
----
-{resume_text[:9000]}
 ---
 
 JOB DESCRIPTION:
@@ -285,7 +292,33 @@ def _triage_job(resume_summary, full_description, job_title, profile_id, log, la
         "\n".join(f"- {line}" for line in credential_gates)
         if credential_gates else "None detected by the deterministic pre-pass."
     )
+    # Block order here is load-bearing, not cosmetic. Everything above the
+    # BEGIN ROLE UNDER ASSESSMENT marker is byte-identical for every job in a
+    # sweep: the instruction, the lane weighting terms, the lane brief and the
+    # compact resume summary. Everything below it changes per job.
+    #
+    # A local server reuses the KV cache for the longest token prefix shared
+    # with the request before it, so a stable block sitting after a varying one
+    # is recomputed every call for nothing. This prompt used to open with the
+    # job title, which truncated the reusable prefix at about ten tokens and
+    # forced ~600-900 tokens of redundant prefill per job. Triage runs on every
+    # job, so on a thousand-role sweep that was most of an hour of pure
+    # recomputation.
+    #
+    # Keep the marker. New stable blocks go above it; new per-job blocks below.
     user_prompt = f"""Score this role for first-pass triage and raise any flags on it.
+
+PROFILE PREFERENCE WEIGHTING:
+---
+{_analysis_preferences(profile_id)}
+---
+{_lane_brief_block(lane_brief(lane_settings))}
+COMPACT RESUME SUMMARY:
+---
+{resume_summary[:2200]}
+---
+
+--- BEGIN ROLE UNDER ASSESSMENT ---
 
 JOB TITLE: {job_title or 'Not supplied'}
 
@@ -297,16 +330,6 @@ MANDATORY REQUIREMENT LINES EXTRACTED FROM THE AD (deterministic pre-pass — th
 OF THOSE, THE ONES NAMING A CREDENTIAL, REGISTRATION, OR ELIGIBILITY GATE:
 ---
 {credential_block}
----
-
-PROFILE PREFERENCE WEIGHTING:
----
-{_analysis_preferences(profile_id)}
----
-{_lane_brief_block(lane_brief(lane_settings))}
-COMPACT RESUME SUMMARY:
----
-{resume_summary[:2200]}
 ---
 
 FULL JOB ADVERTISEMENT:

@@ -11,8 +11,10 @@ from .connection import (
 )
 from .constants import (
     COMPANY_CANDIDATE_STOPWORDS,
+    COMPANY_SUFFIX_WORDS,
     DIRECT_EMPLOYER_PHRASES,
     KNOWN_RECRUITERS,
+    NON_COMPANY_PROPER_NOUNS,
     RECRUITER_PHRASES,
 )
 from .text import (
@@ -33,10 +35,16 @@ def _extract_named_company_from_text(text, advertiser):
     for pattern in patterns:
         for match in re.finditer(pattern, body):
             candidate = _clean(match.group(1)).strip(" .,-")
-            while candidate and _company_key(candidate.split()[-1]) in COMPANY_CANDIDATE_STOPWORDS:
+            # Trim trailing prose words, but never a real corporate suffix:
+            # "group" is in the stopword list, which used to turn "Coles Group"
+            # into "Coles" and "Flavorite Group" into "Flavorite".
+            while candidate:
+                last = _company_key(candidate.split()[-1])
+                if last not in COMPANY_CANDIDATE_STOPWORDS or last in COMPANY_SUFFIX_WORDS:
+                    break
                 candidate = " ".join(candidate.split()[:-1]).strip(" .,-")
             key = _company_key(candidate)
-            if _is_weak_company_candidate(candidate):
+            if _is_weak_company_candidate(candidate, extracted=True):
                 continue
             if advertiser_key and key == advertiser_key:
                 continue
@@ -46,7 +54,14 @@ def _extract_named_company_from_text(text, advertiser):
     return ""
 
 
-def _is_weak_company_candidate(candidate):
+def _is_weak_company_candidate(candidate, extracted=False):
+    """Reject values that cannot be an employer name.
+
+    `extracted=True` applies the stricter guards that only make sense for a
+    name pulled out of ad prose by regex. They are deliberately not applied to
+    an advertiser supplied by the board, where a bare acronym ("VISY", "ATTAR")
+    is a perfectly ordinary company name rather than a misfire.
+    """
     value = _clean(str(candidate or "")).strip(" .,-:;")
     key = _company_key(value)
     if not key or key in COMPANY_CANDIDATE_STOPWORDS or len(value) < 3:
@@ -65,9 +80,56 @@ def _is_weak_company_candidate(candidate):
     if len(words) <= 2 and all(word in COMPANY_CANDIDATE_STOPWORDS for word in words):
         return True
     role_like_words = {"analyst", "assistant", "consultant", "coordinator", "engineer", "manager", "officer", "specialist"}
-    company_suffixes = {"group", "holdings", "limited", "ltd", "pty", "services", "solutions"}
-    if any(word in role_like_words for word in words) and not any(word in company_suffixes for word in words):
+    if any(word in role_like_words for word in words) and not any(word in COMPANY_SUFFIX_WORDS for word in words):
         return True
+
+    has_suffix = any(word in COMPANY_SUFFIX_WORDS for word in words)
+
+    # A candidate that crosses a sentence boundary is prose, not a name.
+    # "About Technology. You'll be joining..." yields "Technology. You'll".
+    if re.search(r"[.!?]\s+\S", value):
+        return True
+
+    # Every token is a technology, framework, standard or generic function
+    # noun: "Azure", "MQTT", "Product Managers", "Honours Masters Degree".
+    # A real corporate suffix rescues genuine names like "Apache Corporation".
+    if not has_suffix:
+        if key in NON_COMPANY_PROPER_NOUNS:
+            return True
+        if all(word in NON_COMPANY_PROPER_NOUNS for word in words):
+            return True
+
+    # A bare acronym lifted out of an ad body is almost always a standard, a
+    # protocol or an abbreviation from the requirements list ("WHS", "DGS",
+    # "OHV", "YVW"), not the employer. Only applied to extracted candidates:
+    # as a board-supplied advertiser, "VISY" is just a company.
+    if extracted and len(words) == 1 and value.isupper() and len(value) <= 5 and not has_suffix:
+        if key not in KNOWN_RECRUITERS:
+            return True
+
+    return False
+
+
+def _candidate_is_corroborated(candidate, text, email_domains=(), url_domain=""):
+    """Is this extracted name backed by anything other than one regex hit?
+
+    The extraction patterns fire on ordinary prose, so a single match is weak
+    evidence. Require either repetition in the body (a real employer name is
+    almost never mentioned once) or agreement with the contact/application
+    domain before letting the candidate overwrite the advertiser.
+    """
+    key = _company_key(candidate)
+    if not key:
+        return False
+    first_word = key.split()[0]
+    if len(re.findall(re.escape(candidate), str(text or ""))) > 1:
+        return True
+    for domain in list(email_domains or []) + [url_domain or ""]:
+        domain_key = _company_key(str(domain).split(".")[0])
+        if not domain_key:
+            continue
+        if domain_key == key or (len(first_word) > 3 and first_word in domain_key):
+            return True
     return False
 
 
@@ -102,14 +164,26 @@ def classify_company_intelligence(job_data):
     questions = []
     risks = []
 
+    # One regex hit on ad prose is not enough to overwrite a known advertiser.
+    # Seek and LinkedIn supply a real advertiser name for most postings; before
+    # this check a phrase like "experience with Azure" replaced it with "Azure".
+    named_company_corroborated = bool(named_company) and _candidate_is_corroborated(
+        named_company, company_source_text, email_domains, url_domain
+    )
+
     if recruiter_hits:
         employer_type = "recruiter"
+        # A recruiter ad genuinely hides the end client, so an uncorroborated
+        # guess is still better than nothing here — but it is marked low.
         actual_company = named_company or "Unknown"
         confidence = "high" if advertiser_key in KNOWN_RECRUITERS or any(name in advertiser_key for name in KNOWN_RECRUITERS) else "medium"
+        if named_company and not named_company_corroborated:
+            confidence = "low"
+            questions.append("End client name was inferred from a single mention; confirm before using it.")
         if actual_company == "Unknown":
             risks.append("Actual employer is not named in the advertisement.")
             questions.append("Ask the recruiter to confirm the end client before tailoring company-specific wording.")
-    elif named_company:
+    elif named_company_corroborated:
         employer_type = "mixed"
         actual_company = named_company
         confidence = "medium"
