@@ -1347,11 +1347,11 @@ def _analyze_single_job(job, ctx):
 # during phase 1, so those land throughout, but a job that *survives* triage
 # holds its result in memory until its full analysis runs. Cancelling mid-batch
 # discards the triage work for every survivor still waiting, so the batch size is
-# the bound on what a cancel can throw away. 80 keeps the prefix switches down to
-# roughly one per phase per 80 jobs while capping that loss at one batch.
+# the bound on what a cancel can throw away. 120 keeps the prefix switches down
+# to roughly one per phase per 120 jobs while capping that loss at one batch.
 #
 # None is honoured too, and means the whole sweep in one batch.
-ANALYSIS_PHASE_CHUNK = 80
+ANALYSIS_PHASE_CHUNK = 120
 
 
 def _chunked(items, size):

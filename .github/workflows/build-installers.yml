@@ -357,24 +357,60 @@ jobs:
           MOVING_LATEST: ${{ github.ref_type != 'tag' }}
         run: |
           if [[ "$MOVING_LATEST" == "true" ]]; then
+            # Update the moving release in place. It used to delete the release
+            # with --cleanup-tag and recreate it, which raced with GitHub's
+            # eventually-consistent tag deletion: the delete succeeded, the
+            # recreate got a 422 on the tag that was still going away, and the
+            # repository was left with no latest-build release at all. That is
+            # why this is intermittent — it bit run 722b7a1 having let the two
+            # runs before it through.
             if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release delete "$RELEASE_TAG" \
+              # Force the existing tag onto this commit. A ref PATCH is atomic,
+              # so there is no window where the tag does not exist. Editing the
+              # release's target would not do it: target_commitish is only
+              # honoured when the tag is being created.
+              gh api --method PATCH \
+                "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
+                -f sha="$GITHUB_SHA" \
+                -F force=true \
+                >/dev/null
+
+              # Clear the previous build's assets first. --clobber only replaces
+              # same-named files, so a version bump would otherwise leave the old
+              # installer sitting beside the new one. Deleting assets is safe:
+              # it never touches the tag, which is where the race lived.
+              gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --json assets --jq '.assets[].name' \
+              | while read -r asset; do
+                  [[ -n "$asset" ]] || continue
+                  gh release delete-asset "$RELEASE_TAG" "$asset" \
+                    --repo "$GITHUB_REPOSITORY" \
+                    --yes
+                done
+
+              gh release upload "$RELEASE_TAG" release/* \
                 --repo "$GITHUB_REPOSITORY" \
-                --cleanup-tag \
-                --yes
+                --clobber
+              gh release edit "$RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "JSE latest build" \
+                --notes "Automated installer build from master at $GITHUB_SHA." \
+                --latest
             else
+              # No moving release yet (first run, or one left behind by the old
+              # delete-then-recreate failure). Clear any orphaned tag, then make it.
               gh api \
                 --method DELETE \
                 "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
                 >/dev/null 2>&1 || true
-            fi
 
-            gh release create "$RELEASE_TAG" release/* \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "JSE latest build" \
-              --notes "Automated installer build from master at $GITHUB_SHA." \
-              --latest
+              gh release create "$RELEASE_TAG" release/* \
+                --repo "$GITHUB_REPOSITORY" \
+                --target "$GITHUB_SHA" \
+                --title "JSE latest build" \
+                --notes "Automated installer build from master at $GITHUB_SHA." \
+                --latest
+            fi
           else
             if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               gh release upload "$RELEASE_TAG" release/* \
