@@ -315,5 +315,67 @@ class TruncationTests(unittest.TestCase):
         self.assertLess(seen["max_tokens"], 4096)
 
 
+class PromptTokenCountingTests(unittest.TestCase):
+    """The exact count costs a round trip carrying the whole prompt.
+
+    It exists to answer one question — does this request fit? — so a request
+    that clearly fits should not pay for it. On a sweep that is one wasted
+    transfer and tokenization per job.
+    """
+
+    def setUp(self):
+        providers._local_context_cache.clear()
+        self.addCleanup(providers._local_context_cache.clear)
+
+    def _tokens(self, messages, max_tokens, context, exact=None):
+        calls = []
+
+        def fake_count(local, msgs):
+            calls.append(msgs)
+            return exact
+
+        with mock.patch.object(providers, "_local_context_length", return_value=context), \
+             mock.patch.object(providers, "_count_local_prompt_tokens", fake_count):
+            result = providers._local_prompt_tokens(dict(LOCAL), messages, max_tokens)
+        return result, calls
+
+    def test_a_request_that_clearly_fits_skips_the_tokenizer_round_trip(self):
+        messages = [{"role": "user", "content": "x" * 4000}]  # ~1k tokens
+        result, calls = self._tokens(messages, max_tokens=2048, context=32768)
+        self.assertEqual(calls, [], "should not have asked the server to count")
+        self.assertEqual(result, providers._estimate_prompt_tokens(messages))
+
+    def test_a_request_near_the_window_pays_for_the_exact_count(self):
+        # ~15.8k estimated tokens: doubled, plus the output budget, this no
+        # longer fits 32768, so the fit is genuinely in doubt.
+        messages = [{"role": "user", "content": "x" * 60000}]
+        result, calls = self._tokens(messages, max_tokens=6000, context=32768, exact=9000)
+        self.assertEqual(len(calls), 1, "a borderline request must be counted exactly")
+        self.assertEqual(result, 9000)
+
+    def test_an_endpoint_that_hides_its_window_is_counted_exactly(self):
+        messages = [{"role": "user", "content": "hi"}]
+        _, calls = self._tokens(messages, max_tokens=512, context=None, exact=12)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_failed_exact_count_falls_back_to_the_estimate(self):
+        messages = [{"role": "user", "content": "x" * 60000}]
+        result, calls = self._tokens(messages, max_tokens=6000, context=32768, exact=None)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result, providers._estimate_prompt_tokens(messages))
+
+    def test_the_margin_covers_an_estimate_that_undercounts(self):
+        # The skip is only safe while double the estimate still fits; at exactly
+        # the boundary the exact count must still be taken.
+        messages = [{"role": "user", "content": "x" * 20000}]
+        estimated = providers._estimate_prompt_tokens(messages)
+        max_tokens = 1000
+        boundary = (estimated * providers.LOCAL_ESTIMATE_SAFETY_FACTOR) + max_tokens + providers.LOCAL_CONTEXT_RESERVE
+        _, skipped = self._tokens(messages, max_tokens, context=boundary, exact=estimated)
+        self.assertEqual(skipped, [], "at the boundary the estimate is still trusted")
+        _, counted = self._tokens(messages, max_tokens, context=boundary - 1, exact=estimated)
+        self.assertEqual(len(counted), 1, "one token past the boundary it must be counted")
+
+
 if __name__ == "__main__":
     unittest.main()

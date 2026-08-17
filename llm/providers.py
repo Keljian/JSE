@@ -637,8 +637,9 @@ def _ensure_local_context(local, needed):
 def _count_local_prompt_tokens(local, messages):
     """Exact prompt size from the server's own tokenizer, or None.
 
-    Worth the round trip: it decides whether a request fits, and the character
-    heuristic below can be out by a factor of two on repetitive text.
+    Costs a full extra round trip with the whole prompt in the body, so it is
+    reached through _local_prompt_tokens rather than called directly: only a
+    request whose fit is actually in doubt needs to pay for it.
     """
     try:
         data = _post_json(
@@ -664,6 +665,34 @@ def _estimate_prompt_tokens(messages):
     for message in messages or []:
         chars += len(str(message.get("content") or "")) + len(str(message.get("role") or "")) + 8
     return int(chars / LOCAL_CHARS_PER_TOKEN) + 8
+
+
+# The character heuristic can be out by roughly this factor either way, so a
+# request is only allowed to skip the exact count when even the pessimistic
+# reading of the estimate still fits the loaded window.
+LOCAL_ESTIMATE_SAFETY_FACTOR = 2
+
+
+def _local_prompt_tokens(local, messages, max_tokens):
+    """Prompt size in tokens, paying the server's tokenizer only when it matters.
+
+    The count exists to answer one question: does this request fit the loaded
+    window? Asking the server costs a second round trip carrying the whole
+    prompt, and on a sweep that is one wasted transfer and tokenization per
+    job. Almost every scoring prompt sits far inside a 32K window, so when the
+    cheap estimate says the request fits with a factor-of-two margin, that is
+    already a conclusive answer and the exact number would change nothing.
+
+    Falls back to the exact count whenever the answer is genuinely close, or
+    when the endpoint will not say what window it is serving.
+    """
+    estimated = _estimate_prompt_tokens(messages)
+    context = _local_context_length(local)
+    if context:
+        pessimistic = (estimated * LOCAL_ESTIMATE_SAFETY_FACTOR) + max_tokens + LOCAL_CONTEXT_RESERVE
+        if pessimistic <= context:
+            return estimated
+    return _count_local_prompt_tokens(local, messages) or estimated
 
 
 def _fit_output_budget(max_tokens, context, prompt_tokens):
@@ -741,7 +770,7 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
     # Size the request to the window the model was loaded with rather than to an
     # assumption about the model. Asking for more than fits does not fail — the
     # server truncates mid-answer — so the check has to happen here.
-    prompt_tokens = _count_local_prompt_tokens(local, messages) or _estimate_prompt_tokens(messages)
+    prompt_tokens = _local_prompt_tokens(local, messages, max_tokens)
     context = _ensure_local_context(local, prompt_tokens + max_tokens + LOCAL_CONTEXT_RESERVE)
     requested_tokens = max_tokens
     max_tokens = _fit_output_budget(max_tokens, context, prompt_tokens)

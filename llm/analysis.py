@@ -942,25 +942,17 @@ def _maybe_align_fragments(job_id, score, full_description_for_analysis, profile
     return fragment_score, alignment_json, alignment
 
 
-def _analyze_single_job(job, ctx):
-    """Triage + full analysis for one job. Runs on analysis worker threads.
+# Score at or above which a full analysis earns the third-pass gatekeeper.
+DEEP_GATEKEEPER_THRESHOLD = 78
 
-    Thread safety: every database_manager call opens its own SQLite
-    connection (WAL + busy_timeout) and the bridge log emitter is
-    lock-protected, so concurrent workers are safe. Raises
-    OperationCancelledError when the user cancels.
+
+def _prepare_job(job, ctx):
+    """Build the per-job state the three phases pass between them.
+
+    Everything here is local string work and one signature hash — no LLM call —
+    so it stays outside the phases proper.
     """
-    log = ctx["log"]
     resume_text = ctx["resume_text"]
-    resume_summary = ctx["resume_summary"]
-    preference_context = ctx["preference_context"]
-    lane_target_text = ctx["lane_target_text"]
-    lane_settings = ctx["lane_settings"]
-    lane_brief_text = ctx["lane_brief"]
-    fragment_context = ctx["fragment_context"]
-    system_prompt = ctx["system_prompt"]
-    profile_id = ctx["profile_id"]
-
     job_id, description, pdf_text = job['id'], job['description'], job['pdf_text']
     position_description_text = job["position_description_text"] if "position_description_text" in job.keys() else ""
     if concurrency.cancel_event.is_set():
@@ -975,8 +967,46 @@ def _analyze_single_job(job, ctx):
         )
     if pdf_text:
         full_description_for_analysis += f"\n\n--- ADDITIONAL TEXT FROM PDF ---\n{_strip_image_references(pdf_text)}"
-    analysis_signature = db.make_analysis_signature(resume_text, description, pdf_text, position_description_text)
-    job_title = job["title"] if "title" in job.keys() else ""
+    return {
+        "job": job,
+        "job_id": job_id,
+        "full_description": full_description_for_analysis,
+        "analysis_signature": db.make_analysis_signature(
+            resume_text, description, pdf_text, position_description_text
+        ),
+        "job_title": job["title"] if "title" in job.keys() else "",
+        "triage_score": None,
+        "flags": None,
+        "data": None,
+        "analysis_text": "",
+        "score": 0,
+    }
+
+
+def _triage_phase(state, ctx):
+    """First-pass triage for one job. True when it earns the full analysis.
+
+    A job that fails triage is finalised here — its triage-only analysis text
+    is written and it leaves the pipeline, exactly as before the phase split.
+    """
+    log = ctx["log"]
+    resume_summary = ctx["resume_summary"]
+    preference_context = ctx["preference_context"]
+    lane_target_text = ctx["lane_target_text"]
+    lane_settings = ctx["lane_settings"]
+    profile_id = ctx["profile_id"]
+
+    if concurrency.cancel_event.is_set():
+        raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+    concurrency.paused.wait()
+
+    job = state["job"]
+    job_id = state["job_id"]
+    full_description_for_analysis = state["full_description"]
+    job_title = state["job_title"]
+    analysis_signature = state["analysis_signature"]
+    # Both must survive a _triage_job that raises: the handler below falls
+    # through to the full analysis, and the state write after it reads them.
     triage_score = None
     flags = None
 
@@ -1044,13 +1074,42 @@ def _analyze_single_job(job, ctx):
                 db.update_job_fragment_alignment(job_id, None, _compose_score(triage_score, None), None)
             except Exception as exc:
                 log(f"Composite score persist skipped for job {job_id}: {exc}")
-            return
+            state["flags"] = flags
+            state["triage_score"] = triage_score
+            return False
     except concurrency.OperationCancelledError:
         raise
     except Exception as e:
         if concurrency.cancel_event.is_set():
             raise
         log(f"Triage failed for job ID {job_id}; falling back to full analysis: {e}")
+
+    state["flags"] = flags
+    state["triage_score"] = triage_score
+    return True
+
+
+def _analysis_phase(state, ctx):
+    """Full analysis for one job. True when it still needs the gatekeeper.
+
+    A job that scores below the gatekeeper threshold is finalised here; one at
+    or above it keeps its result in `state` and is written after the gatekeeper
+    phase, so the third-pass prompts can be batched together too.
+    """
+    log = ctx["log"]
+    resume_text = ctx["resume_text"]
+    preference_context = ctx["preference_context"]
+    lane_brief_text = ctx["lane_brief"]
+    fragment_context = ctx["fragment_context"]
+    system_prompt = ctx["system_prompt"]
+
+    if concurrency.cancel_event.is_set():
+        raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+    concurrency.paused.wait()
+
+    job_id = state["job_id"]
+    flags = state["flags"]
+    full_description_for_analysis = state["full_description"]
 
     # Flags come from triage. They are recorded and shown; nothing here branches
     # on them, so a flagged role continues to full analysis exactly like any
@@ -1110,61 +1169,23 @@ JOB ADVERTISEMENT:
         )
 
         data = _extract_json(llm_response_text)
-        if data:
-            json_string = llm_response_text
-            analysis_text, score = _format_analysis_text(data)
-            if score >= 78:
-                log(f"Running deep gatekeeper for job ID {job_id} ({score}%).")
-                gatekeeper_text, gated_score = _run_deep_gatekeeper(
-                    resume_summary,
-                    resume_text,
-                    full_description_for_analysis,
-                    data,
-                    score,
-                    profile_id,
-                    log,
-                    lane_settings,
-                )
-                if gatekeeper_text:
-                    analysis_text = f"{analysis_text}\n\n{gatekeeper_text}"
-                    score = gated_score
-                    analysis_text = re.sub(
-                        r"^Match Score:\s*\d+%",
-                        f"Match Score: {score}%",
-                        analysis_text,
-                        count=1,
-                    )
-        else:
+        if not data:
             # LLM returned an unparseable response. Skip this job rather than
             # auto-rejecting it — a transient failure (empty response, server
             # overload, model issue) must not permanently kill a good fit.
             # analysis_signature is left as-is so the job is re-analysed next run.
             log(f"Could not find JSON for job ID {job_id}; skipping (will retry). Response: {llm_response_text[:200]!r}")
-            return
+            return False
 
-        fragment_score, alignment_json = (
-            _analysis_fragment_alignment(data, bool(fragment_context))
-            if data and score >= 65 else (None, None)
-        )
-        if flags:
-            analysis_text = f"{analysis_text}\n\n{_format_flags_section(flags)}"
-        band_block = _band_block(job)
-        if band_block:
-            analysis_text = f"{analysis_text}\n\n{band_block.rstrip()}"
-        db.update_job_analysis(job_id, analysis_text, score, analysis_signature)
-        # Fragment-aware composite scoring now uses the full-analysis JSON
-        # instead of a separate alignment LLM call. composite_score falls
-        # back to match_score when no fragment score is available.
-        composite_score = _compose_score(score, fragment_score)
-        try:
-            db.update_job_fragment_alignment(job_id, fragment_score, composite_score, alignment_json)
-        except Exception as exc:
-            log(f"Composite score persist skipped for job {job_id}: {exc}")
-        if fragment_score is not None:
-            log(f"Analyzed job ID {job_id}. Match score: {score}%; Fragment score: {fragment_score}%; Composite: {composite_score}%")
-        else:
-            reason = "no fragment bank" if not fragment_context else "no fragment score returned"
-            log(f"Analyzed job ID {job_id}. Match score: {score}% ({reason}; composite = match)")
+        json_string = llm_response_text
+        analysis_text, score = _format_analysis_text(data)
+        state["data"] = data
+        state["analysis_text"] = analysis_text
+        state["score"] = score
+        if score >= DEEP_GATEKEEPER_THRESHOLD:
+            return True
+
+        _finalise_analysis(state, ctx)
 
     except json.JSONDecodeError as e:
         # Malformed JSON in an unexpected code path. Same safe-skip policy.
@@ -1178,6 +1199,186 @@ JOB ADVERTISEMENT:
         # Transient errors (timeout, server overload, model crash) must not
         # permanently auto-reject jobs. Log and skip; next run will retry.
         log(f"Error analysing job ID {job_id}: {e} — skipping (will retry).")
+    return False
+
+
+def _gatekeeper_phase(state, ctx):
+    """Third-pass gatekeeper for one high-scoring job, then finalise it.
+
+    A failure here skips the job without writing, which is what the single-pass
+    version did when the gatekeeper call raised inside its analysis try-block:
+    the analysis is re-run next time rather than stored ungated.
+    """
+    log = ctx["log"]
+    resume_text = ctx["resume_text"]
+    resume_summary = ctx["resume_summary"]
+    lane_settings = ctx["lane_settings"]
+    profile_id = ctx["profile_id"]
+
+    if concurrency.cancel_event.is_set():
+        raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+    concurrency.paused.wait()
+
+    job_id = state["job_id"]
+    score = state["score"]
+    try:
+        log(f"Running deep gatekeeper for job ID {job_id} ({score}%).")
+        gatekeeper_text, gated_score = _run_deep_gatekeeper(
+            resume_summary,
+            resume_text,
+            state["full_description"],
+            state["data"],
+            score,
+            profile_id,
+            log,
+            lane_settings,
+        )
+        if gatekeeper_text:
+            analysis_text = f"{state['analysis_text']}\n\n{gatekeeper_text}"
+            state["score"] = gated_score
+            state["analysis_text"] = re.sub(
+                r"^Match Score:\s*\d+%",
+                f"Match Score: {gated_score}%",
+                analysis_text,
+                count=1,
+            )
+        _finalise_analysis(state, ctx)
+    except concurrency.OperationCancelledError:
+        raise
+    except Exception as e:
+        if concurrency.cancel_event.is_set():
+            raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+        log(f"Error analysing job ID {job_id}: {e} — skipping (will retry).")
+    return False
+
+
+def _finalise_analysis(state, ctx):
+    """Persist a completed full analysis. Shared by the analysis and gate phases."""
+    log = ctx["log"]
+    fragment_context = ctx["fragment_context"]
+    job = state["job"]
+    job_id = state["job_id"]
+    data = state["data"]
+    score = state["score"]
+    flags = state["flags"]
+    analysis_text = state["analysis_text"]
+
+    fragment_score, alignment_json = (
+        _analysis_fragment_alignment(data, bool(fragment_context))
+        if data and score >= 65 else (None, None)
+    )
+    if flags:
+        analysis_text = f"{analysis_text}\n\n{_format_flags_section(flags)}"
+    band_block = _band_block(job)
+    if band_block:
+        analysis_text = f"{analysis_text}\n\n{band_block.rstrip()}"
+    db.update_job_analysis(job_id, analysis_text, score, state["analysis_signature"])
+    # Fragment-aware composite scoring now uses the full-analysis JSON
+    # instead of a separate alignment LLM call. composite_score falls
+    # back to match_score when no fragment score is available.
+    composite_score = _compose_score(score, fragment_score)
+    try:
+        db.update_job_fragment_alignment(job_id, fragment_score, composite_score, alignment_json)
+    except Exception as exc:
+        log(f"Composite score persist skipped for job {job_id}: {exc}")
+    if fragment_score is not None:
+        log(f"Analyzed job ID {job_id}. Match score: {score}%; Fragment score: {fragment_score}%; Composite: {composite_score}%")
+    else:
+        reason = "no fragment bank" if not fragment_context else "no fragment score returned"
+        log(f"Analyzed job ID {job_id}. Match score: {score}% ({reason}; composite = match)")
+
+
+def _analyze_single_job(job, ctx):
+    """Run every phase for one job. The single-job entry point.
+
+    _perform_analysis_loop does NOT go through here — it drives the phases
+    across a chunk of jobs so that prompts of the same shape run consecutively.
+    This remains for callers holding one job, and keeps the exported surface.
+
+    Thread safety: every database_manager call opens its own SQLite
+    connection (WAL + busy_timeout) and the bridge log emitter is
+    lock-protected, so concurrent workers are safe. Raises
+    OperationCancelledError when the user cancels.
+    """
+    state = _prepare_job(job, ctx)
+    if not _triage_phase(state, ctx):
+        return
+    if not _analysis_phase(state, ctx):
+        return
+    _gatekeeper_phase(state, ctx)
+
+
+# Jobs whose prompts of one shape run back to back before the next shape starts.
+#
+# A local server reuses the KV cache for the longest token prefix it shares with
+# the *preceding* request, so the prompt ordering inside each template only pays
+# off if consecutive requests use the same template. Running triage, analysis and
+# gatekeeper per job alternates three prefixes and reuses none of them; batching
+# by phase turns that into one prefix switch per phase per chunk.
+#
+# Chunked rather than whole-sweep so results still land steadily: nothing in a
+# chunk is finalised until its phases finish, and a thousand-job sweep should not
+# hold every result back to the end.
+ANALYSIS_PHASE_CHUNK = 10
+
+
+def _chunked(items, size):
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
+def _run_analysis_phase(states, phase_fn, ctx, workers):
+    """Run one phase across a chunk. Returns (states that advance, failure count).
+
+    Workers > 1 fans the phase out, which is only useful for a hosted scoring
+    provider: the local endpoint serialises on its own single slot regardless,
+    and that serialisation is what makes the prefix reuse possible at all.
+    """
+    log = ctx["log"]
+    if not states:
+        return [], 0
+
+    advanced = []
+    failed = 0
+    if workers <= 1 or len(states) == 1:
+        for state in states:
+            if concurrency.cancel_event.is_set():
+                raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+            try:
+                if phase_fn(state, ctx):
+                    advanced.append(state)
+            except concurrency.OperationCancelledError:
+                raise
+            except Exception as exc:
+                # Per-job failures are handled inside the phase, so anything
+                # landing here is unexpected. Log it and keep the batch moving.
+                failed += 1
+                log(f"Analysis raised unexpectedly: {exc}")
+        return advanced, failed
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job-analysis") as executor:
+        futures = {executor.submit(phase_fn, state, ctx): state for state in states}
+        cancelled = False
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    if future.result():
+                        advanced.append(futures[future])
+                except concurrency.OperationCancelledError:
+                    cancelled = True
+                    break
+                except Exception as exc:
+                    failed += 1
+                    log(f"Analysis worker raised unexpectedly: {exc}")
+        finally:
+            if cancelled or concurrency.cancel_event.is_set():
+                # Drop everything still queued; running workers notice the
+                # cancel event at their next checkpoint and exit quickly.
+                for future in futures:
+                    future.cancel()
+    if cancelled:
+        raise concurrency.OperationCancelledError("Analysis cancelled by user.")
+    return advanced, failed
 
 
 def _perform_analysis_loop(
@@ -1266,56 +1467,53 @@ def _perform_analysis_loop(
 
     workers = _analysis_worker_count()
     total = len(jobs_to_analyze)
-    report(0, total, failed=0)
-    if workers <= 1 or total <= 1:
-        done = 0
-        failed = 0
-        for job in jobs_to_analyze:
-            if concurrency.cancel_event.is_set():
-                log("Analysis cancelled by user.")
-                raise concurrency.OperationCancelledError("Analysis cancelled by user.")
-            try:
-                _analyze_single_job(job, ctx)
-            except concurrency.OperationCancelledError:
-                raise
-            except Exception as exc:
-                # Matches the parallel branch: per-job failures are handled
-                # inside the worker, so anything landing here is unexpected.
-                # Log it, count it, and keep the batch moving.
-                failed += 1
-                log(f"Analysis raised unexpectedly: {exc}")
-            done += 1
-            report(done, total, failed=failed)
-        return
-
-    log(f"Analyzing {total} job(s) with {workers} parallel workers...")
+    report(0, total, phase="triage", failed=0)
     done = 0
     failed = 0
     cancelled = False
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job-analysis") as executor:
-        futures = [executor.submit(_analyze_single_job, job, ctx) for job in jobs_to_analyze]
+    if workers > 1:
+        log(f"Analyzing {total} job(s) with {workers} parallel workers...")
+
+    for chunk in _chunked(jobs_to_analyze, ANALYSIS_PHASE_CHUNK):
+        if concurrency.cancel_event.is_set():
+            cancelled = True
+            break
         try:
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except concurrency.OperationCancelledError:
-                    cancelled = True
-                    break
-                except Exception as exc:
-                    # Per-job failures are already handled inside the worker;
-                    # anything surfacing here is unexpected. Log and continue.
-                    failed += 1
-                    log(f"Analysis worker raised unexpectedly: {exc}")
-                done += 1
-                report(done, total, failed=failed)
-                if done % 5 == 0 or done == total:
-                    log(f"Analysis progress: {done}/{total} job(s) processed.")
-        finally:
-            if cancelled or concurrency.cancel_event.is_set():
-                # Drop everything still queued; running workers notice the
-                # cancel event at their next checkpoint and exit quickly.
-                for future in futures:
-                    future.cancel()
+            states = [_prepare_job(job, ctx) for job in chunk]
+
+            # Phase 1: every triage prompt in the chunk, back to back.
+            survivors, phase_failed = _run_analysis_phase(states, _triage_phase, ctx, workers)
+            failed += phase_failed
+            done += len(states) - len(survivors)
+            report(done, total, phase="triage", failed=failed,
+                   detail=f"{len(survivors)} of {len(states)} through triage")
+
+            # Phase 2: every full-analysis prompt for the survivors.
+            if survivors:
+                report(done, total, phase="analysis", failed=failed,
+                       detail=f"Analysing {len(survivors)} survivor(s)")
+                gated, phase_failed = _run_analysis_phase(survivors, _analysis_phase, ctx, workers)
+                failed += phase_failed
+                done += len(survivors) - len(gated)
+                report(done, total, phase="analysis", failed=failed)
+
+                # Phase 3: the third-pass gatekeeper for the high scorers.
+                if gated:
+                    report(done, total, phase="gatekeeper", failed=failed,
+                           detail=f"Gatekeeping {len(gated)} high scorer(s)")
+                    _, phase_failed = _run_analysis_phase(gated, _gatekeeper_phase, ctx, workers)
+                    failed += phase_failed
+                    done += len(gated)
+                    report(done, total, phase="gatekeeper", failed=failed)
+        except concurrency.OperationCancelledError:
+            # Whatever the chunk finished is already persisted by its phases;
+            # the rest is dropped and re-analysed next run.
+            cancelled = True
+            break
+
+        if done % 50 < ANALYSIS_PHASE_CHUNK or done == total:
+            log(f"Analysis progress: {done}/{total} job(s) processed.")
+
     if cancelled:
         log("Analysis cancelled by user.")
         raise concurrency.OperationCancelledError("Analysis cancelled by user.")

@@ -84,14 +84,14 @@ def test_full_analysis_keeps_the_resume_ahead_of_the_advertisement():
     flags) legitimately sit between the resume and the ad. What matters is only
     that the resume and preference blocks stay above the advertisement.
 
-    Scoped to _analyze_single_job, which is where this prompt is actually
-    built. Falling back to a whole-module scan instead would compare the first
+    Scoped to _analysis_phase, which is where this prompt is actually built.
+    Falling back to a whole-module scan instead would compare the first
     "CANDIDATE RESUME:" against the first "JOB ADVERTISEMENT:" anywhere in the
     file — headings belonging to two different prompts — and the result would
     say nothing about either one's ordering.
     """
-    source = inspect.getsource(analysis._analyze_single_job)
-    assert "CANDIDATE RESUME:" in source, "full-analysis prompt moved out of _analyze_single_job"
+    source = inspect.getsource(analysis._analysis_phase)
+    assert "CANDIDATE RESUME:" in source, "full-analysis prompt moved out of _analysis_phase"
     assert source.index("CANDIDATE RESUME:") < source.index("JOB ADVERTISEMENT:")
     assert source.index("PROFILE PREFERENCE WEIGHTING:") < source.index("JOB ADVERTISEMENT:")
 

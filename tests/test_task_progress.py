@@ -12,6 +12,7 @@ These cover the three things that must hold:
    serial branch had no counter at all before this.
 3. The callback survives the trip through app_logic and the bridge commands.
 """
+import contextlib
 import inspect
 import sys
 import unittest
@@ -103,47 +104,89 @@ class _AnalysisLoopHarness:
         return False
 
 
+def _phase_patches(workers, triage_fn=None, analysis_fn=None, gate_fn=None, order=None):
+    """Patch the three phases, optionally recording the order they are called in."""
+    def _record(name, fn, default):
+        def wrapper(state, ctx):
+            if order is not None:
+                order.append((name, state["job_id"]))
+            return (fn or default)(state, ctx)
+        return wrapper
+
+    reject = lambda state, ctx: False  # noqa: E731 - terse default for a test double
+    return [
+        mock.patch.object(analysis, "_analysis_worker_count", return_value=workers),
+        mock.patch.object(analysis, "_prepare_job",
+                          side_effect=lambda job, ctx: {"job": job, "job_id": job["id"]}),
+        mock.patch.object(analysis, "_triage_phase", side_effect=_record("triage", triage_fn, reject)),
+        mock.patch.object(analysis, "_analysis_phase", side_effect=_record("analysis", analysis_fn, reject)),
+        mock.patch.object(analysis, "_gatekeeper_phase", side_effect=_record("gatekeeper", gate_fn, reject)),
+    ]
+
+
 class AnalysisLoopProgressTests(unittest.TestCase):
-    def _run(self, job_count, workers, analyze=None):
+    def _run(self, job_count, workers, triage_fn=None, analysis_fn=None, gate_fn=None, order=None):
         jobs = [{"id": index} for index in range(job_count)]
         seen = []
         with _AnalysisLoopHarness():
-            with mock.patch.object(analysis, "_analysis_worker_count", return_value=workers), \
-                 mock.patch.object(analysis, "_analyze_single_job", side_effect=analyze or (lambda job, ctx: None)):
+            with contextlib.ExitStack() as stack:
+                for patch in _phase_patches(workers, triage_fn, analysis_fn, gate_fn, order):
+                    stack.enter_context(patch)
                 analysis._perform_analysis_loop(
                     jobs, "resume", "prompt", lambda message: None, profile_id=1, fragments=[],
                     progress_callback=lambda current, total, **fields: seen.append((current, total, fields)),
                 )
         return seen
 
-    def test_serial_branch_reports_every_job(self):
+    def test_jobs_rejected_at_triage_are_all_counted(self):
         seen = self._run(job_count=3, workers=1)
-        self.assertEqual([(current, total) for current, total, _ in seen],
-                         [(0, 3), (1, 3), (2, 3), (3, 3)])
+        self.assertEqual(seen[0][:2], (0, 3))
+        self.assertEqual(seen[-1][:2], (3, 3))
 
-    def test_parallel_branch_reports_every_job(self):
-        seen = self._run(job_count=6, workers=4)
+    def test_survivors_are_counted_after_the_analysis_phase(self):
+        seen = self._run(job_count=4, workers=1, triage_fn=lambda state, ctx: True)
         currents = [current for current, _, _ in seen]
         self.assertEqual(currents[0], 0)
-        self.assertEqual(currents[-1], 6)
+        self.assertEqual(currents[-1], 4)
         self.assertEqual(sorted(currents), currents, "progress must not go backwards")
-        self.assertTrue(all(total == 6 for _, total, _ in seen))
 
-    def test_serial_branch_counts_failures_and_keeps_going(self):
-        def analyze(job, ctx):
-            if job["id"] == 1:
+    def test_gated_jobs_are_counted_after_the_gatekeeper_phase(self):
+        seen = self._run(
+            job_count=4, workers=1,
+            triage_fn=lambda state, ctx: True,
+            analysis_fn=lambda state, ctx: state["job_id"] % 2 == 0,
+        )
+        self.assertEqual(seen[-1][:2], (4, 4))
+        self.assertIn("gatekeeper", [fields.get("phase") for _, _, fields in seen])
+
+    def test_progress_never_exceeds_the_total(self):
+        seen = self._run(job_count=25, workers=1, triage_fn=lambda state, ctx: True)
+        self.assertTrue(all(current <= total for current, total, _ in seen))
+        self.assertEqual(seen[-1][:2], (25, 25))
+
+    def test_parallel_phase_reports_every_job(self):
+        seen = self._run(job_count=6, workers=4, triage_fn=lambda state, ctx: True)
+        currents = [current for current, _, _ in seen]
+        self.assertEqual(currents[-1], 6)
+        self.assertEqual(sorted(currents), currents)
+
+    def test_failures_are_counted_and_the_batch_keeps_going(self):
+        def triage(state, ctx):
+            if state["job_id"] == 1:
                 raise RuntimeError("boom")
+            return False
 
-        seen = self._run(job_count=3, workers=1, analyze=analyze)
+        seen = self._run(job_count=3, workers=1, triage_fn=triage)
         self.assertEqual(seen[-1][0], 3, "a failed job must still advance the bar")
         self.assertEqual(seen[-1][2]["failed"], 1)
 
-    def test_parallel_branch_counts_failures_and_keeps_going(self):
-        def analyze(job, ctx):
-            if job["id"] == 2:
+    def test_parallel_failures_are_counted(self):
+        def triage(state, ctx):
+            if state["job_id"] == 2:
                 raise RuntimeError("boom")
+            return False
 
-        seen = self._run(job_count=4, workers=3, analyze=analyze)
+        seen = self._run(job_count=4, workers=3, triage_fn=triage)
         self.assertEqual(seen[-1][0], 4)
         self.assertEqual(seen[-1][2]["failed"], 1)
 
@@ -153,9 +196,125 @@ class AnalysisLoopProgressTests(unittest.TestCase):
     def test_loop_runs_without_a_progress_callback(self):
         jobs = [{"id": 0}, {"id": 1}]
         with _AnalysisLoopHarness():
-            with mock.patch.object(analysis, "_analysis_worker_count", return_value=1), \
-                 mock.patch.object(analysis, "_analyze_single_job", return_value=None):
+            with contextlib.ExitStack() as stack:
+                for patch in _phase_patches(1):
+                    stack.enter_context(patch)
                 analysis._perform_analysis_loop(jobs, "resume", "prompt", None, profile_id=1, fragments=[])
+
+
+class PhaseBatchingTests(unittest.TestCase):
+    """Prompts of one shape must run consecutively — the whole point of the split.
+
+    A local server reuses the KV cache only against the immediately preceding
+    request, so interleaving triage and analysis per job reuses nothing. These
+    assert the call order, which is the only observable proof it still holds.
+    """
+
+    def _order(self, job_count, workers=1, **kwargs):
+        order = []
+        AnalysisLoopProgressTests()._run(job_count=job_count, workers=workers, order=order, **kwargs)
+        return order
+
+    def test_every_triage_in_a_chunk_precedes_the_first_analysis(self):
+        order = self._order(job_count=analysis.ANALYSIS_PHASE_CHUNK, triage_fn=lambda state, ctx: True)
+        phases = [name for name, _ in order]
+        first_analysis = phases.index("analysis")
+        self.assertEqual(
+            phases[:first_analysis],
+            ["triage"] * analysis.ANALYSIS_PHASE_CHUNK,
+            "all triage prompts in a chunk must run before any analysis prompt",
+        )
+
+    def test_every_analysis_precedes_the_first_gatekeeper(self):
+        order = self._order(
+            job_count=6,
+            triage_fn=lambda state, ctx: True,
+            analysis_fn=lambda state, ctx: True,
+        )
+        phases = [name for name, _ in order]
+        self.assertEqual(phases.count("gatekeeper"), 6)
+        self.assertLess(max(i for i, name in enumerate(phases) if name == "analysis"),
+                        min(i for i, name in enumerate(phases) if name == "gatekeeper"))
+
+    def test_work_is_chunked_so_results_are_not_held_to_the_end(self):
+        chunk = analysis.ANALYSIS_PHASE_CHUNK
+        order = self._order(job_count=chunk * 2 + 3, triage_fn=lambda state, ctx: True)
+        phases = [name for name, _ in order]
+        # Three chunks: triage x N then analysis x N, repeated.
+        groups = []
+        for name in phases:
+            if not groups or groups[-1][0] != name:
+                groups.append([name, 0])
+            groups[-1][1] += 1
+        self.assertEqual(
+            groups,
+            [["triage", chunk], ["analysis", chunk],
+             ["triage", chunk], ["analysis", chunk],
+             ["triage", 3], ["analysis", 3]],
+        )
+
+    def test_the_single_job_entry_point_still_runs_every_phase_in_order(self):
+        order = []
+        with contextlib.ExitStack() as stack:
+            for patch in _phase_patches(1, triage_fn=lambda s, c: True,
+                                        analysis_fn=lambda s, c: True, order=order):
+                stack.enter_context(patch)
+            analysis._analyze_single_job({"id": 7}, {})
+        self.assertEqual([name for name, _ in order], ["triage", "analysis", "gatekeeper"])
+
+
+class TriagePhaseFallbackTests(unittest.TestCase):
+    """The real _triage_phase, not a double — the fallback path has no other cover.
+
+    When _triage_job raises, triage is supposed to fail open and let the job
+    through to the full analysis. Every other test here patches the phases out,
+    so a name that only exists on the success path would go unnoticed until a
+    real sweep hit a triage error.
+    """
+
+    def _state(self):
+        return {
+            "job": {"id": 1}, "job_id": 1, "full_description": "ad text",
+            "analysis_signature": "sig", "job_title": "Ops Manager",
+            "triage_score": None, "flags": None,
+        }
+
+    def _ctx(self):
+        return {
+            "log": lambda message: None, "resume_summary": "summary",
+            "preference_context": "prefs", "lane_target_text": "ops",
+            "lane_settings": {}, "profile_id": 1,
+        }
+
+    def test_a_raising_triage_falls_through_to_the_full_analysis(self):
+        state = self._state()
+        with mock.patch.object(analysis, "_triage_job", side_effect=RuntimeError("endpoint down")):
+            advanced = analysis._triage_phase(state, self._ctx())
+        self.assertTrue(advanced, "a failed triage must fall open, not drop the job")
+        self.assertIsNone(state["triage_score"])
+        self.assertIsNone(state["flags"])
+
+    def test_a_low_score_finalises_and_stops(self):
+        state = self._state()
+        with mock.patch.object(analysis, "_triage_job", return_value=(10, "no", False, None)), \
+             mock.patch.object(analysis, "_apply_preference_weight", return_value=(10, [], [])), \
+             mock.patch.object(analysis, "_persist_flags"), \
+             mock.patch.object(analysis, "_band_block", return_value=""), \
+             mock.patch.object(analysis.db, "update_job_analysis") as write, \
+             mock.patch.object(analysis.db, "update_job_fragment_alignment"):
+            advanced = analysis._triage_phase(state, self._ctx())
+        self.assertFalse(advanced)
+        self.assertTrue(write.called, "a rejected job must still store its triage result")
+
+    def test_a_high_score_advances_without_writing(self):
+        state = self._state()
+        with mock.patch.object(analysis, "_triage_job", return_value=(90, "yes", True, None)), \
+             mock.patch.object(analysis, "_apply_preference_weight", return_value=(90, [], [])), \
+             mock.patch.object(analysis.db, "update_job_analysis") as write:
+            advanced = analysis._triage_phase(state, self._ctx())
+        self.assertTrue(advanced)
+        self.assertFalse(write.called, "the analysis phase writes, not triage")
+        self.assertEqual(state["triage_score"], 90)
 
 
 class CallbackPlumbingTests(unittest.TestCase):
