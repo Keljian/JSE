@@ -22,7 +22,6 @@ import copy
 import re
 import shutil
 import sqlite3
-import sys
 from pathlib import Path
 
 from docx import Document

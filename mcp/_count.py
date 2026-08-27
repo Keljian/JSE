@@ -1,4 +1,4 @@
-﻿import sys, os, sqlite3, json, datetime
+import sqlite3, json, datetime
 con = sqlite3.connect(r"C:\JSE\settings\job_applications.db")
 q = lambda s: con.execute(s).fetchone()[0]
 print(json.dumps({
