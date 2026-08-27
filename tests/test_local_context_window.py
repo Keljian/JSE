@@ -332,7 +332,7 @@ class ReasoningToggleTests(unittest.TestCase):
         self.addCleanup(providers._local_reasoning_cache.clear)
         self.addCleanup(providers._local_context_cache.clear)
 
-    def _send(self, status, json_mode=True):
+    def _send(self, status, json_mode=True, no_reasoning=False):
         """Return the payload _call_unsloth puts on the wire."""
         seen = {}
 
@@ -348,7 +348,8 @@ class ReasoningToggleTests(unittest.TestCase):
              mock.patch.object(providers, "_analysis_worker_count", return_value=1), \
              mock.patch.object(providers, "_local_lock_path", return_value=None):
             providers._call_unsloth([{"role": "user", "content": "score this"}],
-                                    max_tokens=500, json_mode=json_mode)
+                                    max_tokens=500, json_mode=json_mode,
+                                    no_reasoning=no_reasoning)
         return seen
 
     def _last_user(self, payload):
@@ -380,6 +381,16 @@ class ReasoningToggleTests(unittest.TestCase):
                              json_mode=False)
         self.assertIsNone(payload.get("chat_template_kwargs"))
         self.assertNotIn("/no_think", self._last_user(payload))
+
+    def test_free_text_can_opt_out_of_reasoning(self):
+        """The compact resume summary has a shape its readers depend on.
+
+        It is free text, so nothing raises when the model thinks its budget
+        away — the sweep just triages against a wrecked summary.
+        """
+        payload = self._send({"supports_reasoning": True, "reasoning_style": "enable_thinking"},
+                             json_mode=False, no_reasoning=True)
+        self.assertEqual(payload.get("chat_template_kwargs"), {"enable_thinking": False})
 
     def test_the_capability_is_cached_not_probed_per_request(self):
         calls = []

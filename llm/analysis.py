@@ -231,14 +231,51 @@ def _resume_hash(resume_text):
     return hashlib.sha256(str(resume_text or "").encode("utf-8", errors="replace")).hexdigest()
 
 
-def _get_resume_triage_summary(resume_text, profile_id, log):
-    resume_hash = _resume_hash(resume_text)
-    cached = db.get_resume_triage_cache(profile_id, resume_hash)
-    if cached:
-        return cached
+_TRIAGE_SUMMARY_LABELS = (
+    "TARGET ROLE FAMILIES:",
+    "SENIORITY CEILING:",
+    "STRONGEST SKILLS:",
+    "DOMAIN STRENGTHS:",
+    "TRANSFERABLE ADJACENT ROLES:",
+    "CLEAR NON-FIT FAMILIES:",
+    "RECENT ANCHORS:",
+)
 
-    log("Creating compact resume triage cache...")
-    prompt = f"""Summarise this Australian candidate's resume for fast first-pass job-fit triage. Plain text only, no markdown, no <think> tags. Australian English spelling. Maximum 300 words.
+
+def _triage_summary_is_usable(summary):
+    """Is this a summary, or the wreckage of one?
+
+    The compact summary is built once and then read by every triage in the
+    sweep, so a bad one is not a small error — it silently degrades hundreds of
+    scores, and the cache would keep serving it until the resume changed. Two
+    failures are worth catching: a reasoning model that spent its whole budget
+    thinking (leaving empty content, or reasoning_content that never reached
+    the answer), and a generation cut off at the token limit part-way through
+    the labelled lines. Both show up the same way — the labels the prompt asked
+    for are not all there, the last one especially.
+    """
+    text = (summary or "").strip()
+    if len(text) < 200:
+        return False
+    upper = text.upper()
+    if _TRIAGE_SUMMARY_LABELS[-1] not in upper:
+        # Truncation stops before the closing label, whatever else arrived.
+        return False
+    return sum(label in upper for label in _TRIAGE_SUMMARY_LABELS) >= 5
+
+
+def _fallback_triage_summary(resume_text):
+    """Last resort when the model cannot produce the compact summary.
+
+    Triage still needs something true about the candidate in front of it, and
+    the resume itself is that. It is not cached: the next sweep retries the
+    model rather than inheriting this.
+    """
+    return "RESUME EXTRACT (compact summary unavailable):\n" + str(resume_text or "").strip()[:2500]
+
+
+def _resume_triage_prompt(resume_text):
+    return f"""Summarise this Australian candidate's resume for fast first-pass job-fit triage. Plain text only, no markdown, no <think> tags. Australian English spelling. Maximum 300 words.
 
 Structure the summary as labelled lines so the downstream triage prompt can scan it cheaply:
 
@@ -250,19 +287,53 @@ TRANSFERABLE ADJACENT ROLES: 3-5 adjacent role families where the resume credibl
 CLEAR NON-FIT FAMILIES: 2-4 role families this resume does NOT credibly serve (e.g. "Pure software engineering, Clinical, Sales/BD, Junior support").
 RECENT ANCHORS: 2-3 specific recent role/employer/outcome anchors a triage pass can name as evidence.
 
+Emit every one of those seven labels, in that order, each on its own line. Do not write anything before the first label or after the last one.
+
 Use only facts present in the resume. Do not invent.
 
 RESUME:
 ---
 {resume_text[:12000]}
 ---"""
-    summary = _call_scoring_ai(
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.15,
-        max_tokens=1000,
-    ).strip()
-    db.save_resume_triage_cache(profile_id, resume_hash, summary)
-    return summary
+
+
+def _get_resume_triage_summary(resume_text, profile_id, log):
+    resume_hash = _resume_hash(resume_text)
+    cached = db.get_resume_triage_cache(profile_id, resume_hash)
+    if cached:
+        return cached
+
+    log("Creating compact resume triage cache...")
+    prompt = _resume_triage_prompt(resume_text)
+    summary = ""
+    # The whole sweep reads this one answer, so a second attempt is cheap
+    # insurance against a single bad generation. Reasoning is turned off for
+    # both: the answer has a shape triage depends on, and on Qwen3.6 thinking
+    # eats the budget before any of it is written.
+    for attempt in (1, 2):
+        try:
+            summary = _call_scoring_ai(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.15,
+                max_tokens=1500,
+                no_reasoning=True,
+            ).strip()
+        except concurrency.OperationCancelledError:
+            raise
+        except Exception as exc:
+            log(f"Compact resume summary attempt {attempt} failed: {exc}")
+            summary = ""
+        if _triage_summary_is_usable(summary):
+            db.save_resume_triage_cache(profile_id, resume_hash, summary)
+            return summary
+        if attempt == 1:
+            log("Compact resume summary came back truncated or unlabelled; retrying once.")
+
+    log(
+        "Compact resume summary could not be built — triaging against a resume extract instead. "
+        "A local model that spends its output budget on reasoning is the usual cause."
+    )
+    return _fallback_triage_summary(resume_text)
 
 
 def _triage_job(resume_summary, full_description, job_title, profile_id, log, lane_settings=None,

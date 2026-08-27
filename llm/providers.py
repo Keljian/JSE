@@ -797,12 +797,41 @@ def _report_truncation(data, json_mode, max_tokens, context):
     print(f"Warning: {message}")
 
 
+def _suppress_reasoning(payload, messages, local):
+    """Ask this endpoint to answer without thinking first, where it can.
+
+    Reasoning is not merely wasted on a call with a fixed output contract: it
+    is generated into reasoning_content, counts against max_tokens, and on
+    Qwen3.6 routinely consumes the entire budget before any answer is emitted
+    — so the call truncates and the caller is handed nothing, or handed the
+    truncated reasoning itself. Returns the (possibly rewritten) messages.
+    """
+    if _local_reasoning_style(local) == "enable_thinking":
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        return messages
+    if messages and messages[-1].get("role") == "user":
+        # Fallback for endpoints that do not advertise the toggle. The
+        # /no_think token is honoured by Qwen3 chat templates; servers that
+        # ignore it simply pass the literal token through harmlessly.
+        content = messages[-1].get("content", "")
+        if "/no_think" not in content and "/think" not in content:
+            messages = list(messages)
+            messages[-1] = {**messages[-1], "content": f"{content}\n\n/no_think"}
+            payload["messages"] = messages
+    return messages
+
+
 @_serialized_local_call
-def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, settings=None):
+def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, settings=None,
+                  no_reasoning=False):
     """Core local OpenAI-compatible chat-completions call with retry logic.
 
     json_mode=True requests OpenAI-compatible JSON response_format so the
     serving runtime (vLLM/llama.cpp/Ollama) constrains the model to valid JSON.
+
+    no_reasoning=True turns thinking off for a free-text call whose answer has
+    a shape the caller depends on. Free text is otherwise left alone: reasoning
+    may improve it, and a shortened paragraph is still usable.
     """
     from .parsing import _strip_reasoning_blocks
     # Imported here rather than at module scope: _call_unsloth needs a
@@ -849,22 +878,11 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
             {"type": "text"},
         ]
         payload["response_format"] = json_response_formats[0]
-        # Structured calls want an answer, not reasoning about one. Reasoning is
-        # not merely wasted here: it is generated into reasoning_content, counts
-        # against max_tokens, and on Qwen3.6 routinely consumes the entire budget
-        # before any JSON is emitted — so the call truncates and the caller is
-        # handed nothing. Free-text calls are left alone; they may benefit.
-        if _local_reasoning_style(local) == "enable_thinking":
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
-        elif messages and messages[-1].get("role") == "user":
-            # Fallback for endpoints that do not advertise the toggle. The
-            # /no_think token is honoured by Qwen3 chat templates; servers that
-            # ignore it simply pass the literal token through harmlessly.
-            content = messages[-1].get("content", "")
-            if "/no_think" not in content and "/think" not in content:
-                messages = list(messages)
-                messages[-1] = {**messages[-1], "content": f"{content}\n\n/no_think"}
-                payload["messages"] = messages
+
+    # Structured calls want an answer, not reasoning about one, and so do the
+    # free-text calls that opt in.
+    if json_mode or no_reasoning:
+        messages = _suppress_reasoning(payload, messages, local)
 
     # Scaled to the output budget: a 16K-token generation cannot honestly finish
     # in the time a 512-token one needs, and abandoning it early is what puts a
@@ -1046,14 +1064,15 @@ def _call_gemini(api_key, model, messages, temperature=0.2, max_tokens=4096):
     return _strip_reasoning_blocks(response.text or "")
 
 
-def _call_document_ai(settings, messages, temperature=0.2, max_tokens=4096, json_mode=False):
+def _call_document_ai(settings, messages, temperature=0.2, max_tokens=4096, json_mode=False,
+                      no_reasoning=False):
     provider = ((settings or {}).get("doc_ai_provider") or "local").lower()
     model = _model_name(settings, provider)
     # 16K matches the new Qwen3 hard ceiling in _call_unsloth.
     if provider == "local":
         return _call_unsloth(
             messages, temperature=temperature, max_tokens=min(max_tokens, 16384), json_mode=json_mode,
-            settings=settings,
+            settings=settings, no_reasoning=no_reasoning,
         ), f"Local ({model})"
     if provider == "chatgpt":
         return _call_openai_compatible(
@@ -1127,13 +1146,15 @@ def _scoring_settings():
     return resolved
 
 
-def _call_scoring_ai(messages, temperature=0.2, max_tokens=2048, json_mode=False):
+def _call_scoring_ai(messages, temperature=0.2, max_tokens=2048, json_mode=False,
+                     no_reasoning=False):
     """Provider-aware call for triage/scoring/analysis. Routes through the
     selected Job-matching provider (local by default, or Gemini / a free
     OpenAI-compatible endpoint)."""
     text, _label = _call_document_ai(
         _scoring_settings(), messages,
         temperature=temperature, max_tokens=max_tokens, json_mode=json_mode,
+        no_reasoning=no_reasoning,
     )
     return text
 
