@@ -1476,6 +1476,259 @@ def jse_command(command: str, payload: Optional[dict] = None, timeout_seconds: i
     )
 
 
+# --------------------------------------------------------------------------
+# Tools: the daily loop
+# --------------------------------------------------------------------------
+
+DAILY_DIR = APP_ROOT / "mcp" / "daily"
+
+
+def _screening_answers() -> dict:
+    path = DAILY_DIR / "screening_answers.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+@_tool(name="jse_daily_brief", annotations=RO)
+def jse_daily_brief(rebuild: bool = False) -> str:
+    """Read this morning's decision brief. **Start every daily run here.**
+
+    Args:
+        rebuild: re-run the prefilter against the newest packet first. Only
+            needed if the packet was exported after the nightly run finished.
+
+    Returns the brief as markdown, a few kilobytes: the roles closing within four
+    days, the top scored candidates, the on-level roles the scorer never assessed,
+    and what is already committed. It is derived from the multi-megabyte packet by
+    `prefilter.py`, which does the deduping, the placeholder-date detection and the
+    trades filtering deterministically, so none of that costs tokens.
+
+    Do not read the packet itself. If you need more than the brief holds, use
+    `jse_packet_jobs` for specific filters or `jse_get_job` for one role.
+    """
+    if rebuild:
+        try:
+            proc = subprocess.run(
+                [str(PYTHON), str(DAILY_DIR / "prefilter.py")],
+                cwd=str(APP_ROOT), capture_output=True, text=True, timeout=600,
+                creationflags=NO_WINDOW,
+            )
+            if proc.returncode != 0:
+                return _error("prefilter failed", (proc.stderr or proc.stdout or "")[-600:])
+        except Exception as exc:
+            return _error(f"could not run the prefilter: {exc}")
+
+    path = SHORTLISTS_DIR / "daily_brief.md"
+    if not path.exists():
+        return _error(
+            f"no brief at {path}",
+            "Run jse_daily_brief with rebuild=true, or check jse_nightly_status.",
+        )
+    age_hours = round((time.time() - path.stat().st_mtime) / 3600, 1)
+    header = f"<!-- brief written {age_hours}h ago -->\n"
+    if age_hours > 24:
+        header += (
+            f"\n> **This brief is {age_hours} hours old.** The nightly run may not have "
+            "completed. Check `jse_nightly_status` before acting on it.\n"
+        )
+    return header + path.read_text(encoding="utf-8")
+
+
+@_tool(name="jse_nightly_status", annotations=RO)
+def jse_nightly_status() -> str:
+    """Check whether last night's unattended run worked: scrape, analysis, export, brief.
+
+    Each step reports ok, elapsed minutes and any error. Read this when the brief
+    looks thin, when coverage is low, or when the numbers have not moved since
+    yesterday.
+    """
+    path = DAILY_DIR / "nightly_status.json"
+    if not path.exists():
+        return _error(
+            f"no nightly status at {path}",
+            "The scheduled task may never have run. Check Task Scheduler for 'JSE Nightly'.",
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return _error(f"could not read nightly status: {exc}")
+    failures = [s for s in data.get("steps", []) if not s.get("ok")]
+    data["all_ok"] = not failures
+    data["failed_steps"] = [s.get("name") for s in failures]
+    return _respond(data)
+
+
+@_tool(name="jse_prepare_applications", annotations=RW)
+def jse_prepare_applications(
+    job_ids: list,
+    note: str = "",
+    generate_documents: bool = True,
+    next_action_date: str = "",
+) -> str:
+    """Commit to a day's applications: move them to interested and draft the documents.
+
+    Args:
+        job_ids: the roles chosen from the brief, usually five.
+        note: one line recording why these five, stored against every one of them.
+        generate_documents: run JSE's document generation for all of them. This
+            uses the local model, so it costs no tokens here and takes a few
+            minutes per role. Poll it with `jse_task_status`.
+        next_action_date: ISO date for the lodge action, defaults to today.
+
+    Returns the lodge list — id, title, employer, source, URL and the document
+    paths once generation finishes — plus the standing screening answers, so the
+    lodging step needs no further lookups.
+    """
+    ids = []
+    for value in job_ids or []:
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return _error("no valid job ids", "Pass the ids from the brief, e.g. [40665, 42784].")
+
+    when = next_action_date or date.today().isoformat()
+    queued, failed = [], []
+    for job_id in ids:
+        try:
+            _call("jobs:updateStatus", {"job_id": job_id, "status": "interested"}, 120)
+            detail = _call("jobs:detail", {"job_id": job_id}, 120)["data"]
+            job = detail.get("job") or {}
+            source = job.get("source") or "unknown"
+            _call(
+                "jobs:update",
+                {
+                    "job_id": job_id,
+                    "updates": {
+                        "next_action": f"Lodge via {source}",
+                        "next_action_date": when,
+                        "priority": "high",
+                    },
+                },
+                120,
+            )
+            if note:
+                _call(
+                    "events:add",
+                    {"job_id": job_id, "event_type": "note", "title": "Selected for today's run", "details": note},
+                    120,
+                )
+            queued.append(
+                {
+                    "id": job_id,
+                    "title": job.get("title"),
+                    "employer": job.get("actual_company") or job.get("company"),
+                    "source": source,
+                    "url": job.get("url"),
+                    "closing_date": job.get("closing_date"),
+                    "channel": job.get("channel"),
+                    "flags": job.get("job_flags_types"),
+                }
+            )
+        except BridgeError as exc:
+            failed.append({"id": job_id, "error": str(exc)})
+
+    result = {
+        "queued": queued,
+        "failed": failed,
+        "next_action_date": when,
+        "screening_answers": _screening_answers(),
+    }
+
+    if generate_documents and queued:
+        result["documents_task_id"] = _start_task(
+            "docs:generateInterestedBatch", {"job_ids": [row["id"] for row in queued]}
+        )
+        result["documents_note"] = (
+            "Drafting through the local model, a few minutes per role. Poll "
+            "jse_task_status for the resume_path and cover_letter_path of each, "
+            "then review before lodging."
+        )
+    return _respond(result)
+
+
+@_tool(name="jse_record_lodgement", annotations=RW)
+def jse_record_lodgement(
+    applied: Optional[list] = None,
+    blocked: Optional[list] = None,
+    blocked_reason: str = "",
+    note: str = "",
+) -> str:
+    """Close the loop after lodging: mark what went in, and why anything did not.
+
+    Args:
+        applied: ids successfully lodged. Moved to the applied stage with today's
+            date, which is what feeds the outcome snapshot and the conversion stats.
+        blocked: ids that could not be lodged. Left at interested with the reason
+            recorded as the next action, so tomorrow's brief still carries them.
+        blocked_reason: what stopped it, specifically. "Workday account needs a
+            password reset", not "failed".
+        note: anything worth keeping against the applied ones, such as screening
+            answers given or a filename the portal forced.
+
+    Never mark something applied that was not actually submitted. A false applied
+    row corrupts the funnel stats permanently and hides the role from the brief.
+    """
+    today = date.today().isoformat()
+    done, held, failed = [], [], []
+
+    for value in applied or []:
+        try:
+            job_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        try:
+            _call("jobs:updateStatus", {"job_id": job_id, "status": "applied"}, 120)
+            _call(
+                "jobs:update",
+                {"job_id": job_id, "updates": {"application_date": today, "next_action": "", "next_action_date": ""}},
+                120,
+            )
+            if note:
+                _call(
+                    "events:add",
+                    {"job_id": job_id, "event_type": "note", "title": "Lodged", "details": note},
+                    120,
+                )
+            done.append(job_id)
+        except BridgeError as exc:
+            failed.append({"id": job_id, "error": str(exc)})
+
+    for value in blocked or []:
+        try:
+            job_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        reason = blocked_reason or "Lodgement blocked, needs a manual step"
+        try:
+            _call(
+                "jobs:update",
+                {"job_id": job_id, "updates": {"next_action": reason[:180], "next_action_date": today, "priority": "high"}},
+                120,
+            )
+            _call(
+                "events:add",
+                {"job_id": job_id, "event_type": "note", "title": "Lodgement blocked", "details": reason},
+                120,
+            )
+            held.append(job_id)
+        except BridgeError as exc:
+            failed.append({"id": job_id, "error": str(exc)})
+
+    return _respond(
+        {
+            "applied": done,
+            "applied_date": today,
+            "still_blocked": held,
+            "blocked_reason": blocked_reason or None,
+            "errors": failed,
+        }
+    )
+
+
 if __name__ == "__main__":
     log(f"serving JSE at {APP_ROOT} via {PYTHON}")
     server.run()

@@ -36,3 +36,8 @@ external_scrapers/
 *.scraper-plugin.zip
 # Generated shortlist packets: real adverts, scores and candidate analysis.
 shortlists/
+# Nightly loop runtime state: standing answers carry personal details, and the
+# logs carry real adverts and payloads. The scripts that write them stay tracked.
+mcp/daily/screening_answers.json
+mcp/daily/nightly_status.json
+mcp/daily/logs/
