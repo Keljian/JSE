@@ -809,6 +809,7 @@ def _suppress_reasoning(payload, messages, local):
     if _local_reasoning_style(local) == "enable_thinking":
         payload["chat_template_kwargs"] = {"enable_thinking": False}
         return messages
+    payload["reasoning_effort"] = "none"
     if messages and messages[-1].get("role") == "user":
         # Fallback for endpoints that do not advertise the toggle. The
         # /no_think token is honoured by Qwen3 chat templates; servers that

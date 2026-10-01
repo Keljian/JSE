@@ -161,6 +161,7 @@ def _call_local(base_url, api_key, model, system, user, max_output_tokens=6000):
         ],
         "temperature": 0.3,
         "max_tokens": max_output_tokens,
+        "reasoning_effort": "none",
     }
     data = _http_json(f"{base_url}/chat/completions", body, headers=headers, timeout=900)
     msg = (data.get("choices") or [{}])[0].get("message") or {}
