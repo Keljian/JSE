@@ -61,6 +61,24 @@ NON_VIC = re.compile(
 )
 VIC_HINT = re.compile(r"victoria|melbourne|\bvic\b|remote|anywhere|australia wide", re.I)
 
+# Sectors Ro has ruled out. Gambling is excluded unless he says otherwise (28 Aug).
+EXCLUDED_SECTOR = re.compile(
+    r"casino|gambling|wagering|betting|bookmaker|lottery|pokies|gaming machine|"
+    r"crown resorts|tabcorp|sportsbet|ladbrokes|bet365|entain|pointsbet",
+    re.I,
+)
+
+# Suburbs far enough from Croydon that the commute kills the role regardless of
+# fit. The north-west and west in particular: Essendon Fields was rejected on
+# distance on 28 Aug.
+TOO_FAR = re.compile(
+    r"essendon|tullamarine|broadmeadows|craigieburn|sunshine|deer park|derrimut|"
+    r"laverton|altona|werribee|point cook|hoppers crossing|melton|caroline springs|"
+    r"footscray|sunbury|geelong|ballarat|bendigo|traralgon|morwell|shepparton|"
+    r"pakenham|cranbourne|frankston|mornington|dandenong south",
+    re.I,
+)
+
 WORD = re.compile(r"[a-z0-9]+")
 FIT = re.compile(r"Fit Level:\s*([A-Za-z_ -]+)")
 ACTION = re.compile(r"Recommended Action:\s*(.+)")
@@ -140,6 +158,14 @@ def build(packet_path):
             continue
         if (job.get("commute_verdict") or "") == "blocked":
             dropped["commute_blocked"] += 1
+            continue
+        where_text = str(job.get('location') or '')
+        blob = title + ' ' + str(job.get('company') or '') + ' ' + str(job.get('advertiser') or '')
+        if EXCLUDED_SECTOR.search(blob):
+            dropped['excluded_sector'] += 1
+            continue
+        if TOO_FAR.search(where_text) or TOO_FAR.search(str(job.get('company') or '')):
+            dropped['too_far'] += 1
             continue
         if JUNK_TITLE.search(title):
             dropped["title_level"] += 1
