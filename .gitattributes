@@ -1,0 +1,9 @@
+# Normalise text to LF in the repository whatever the platform or core.autocrlf
+# setting. Without this, a checkout made on Windows read from a non-Windows git
+# showed ~180 files as modified that differed only in line endings.
+* text=auto
+
+# Windows-only scripts keep CRLF in the working tree.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

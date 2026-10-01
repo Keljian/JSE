@@ -41,3 +41,9 @@ shortlists/
 mcp/daily/screening_answers.json
 mcp/daily/nightly_status.json
 mcp/daily/logs/
+# Scratch for the daily loop: letter bodies, one-off inspection scripts, specs.
+# Anything a session writes while working goes here, never beside the tools.
+mcp/daily/work/
+# One-off machine-specific MCP registration watcher (scheduled once, 29 Aug).
+mcp/daily/register_jse_mcp.ps1
+mcp/daily/_register_jse.py
