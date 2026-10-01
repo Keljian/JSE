@@ -655,7 +655,7 @@ def jse_list_commands(prefix: str = "") -> str:
         if not path.exists():
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         for node in ast.walk(tree):
@@ -1486,7 +1486,7 @@ DAILY_DIR = APP_ROOT / "mcp" / "daily"
 def _screening_answers() -> dict:
     path = DAILY_DIR / "screening_answers.json"
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
 
@@ -1533,7 +1533,7 @@ def jse_daily_brief(rebuild: bool = False) -> str:
             f"\n> **This brief is {age_hours} hours old.** The nightly run may not have "
             "completed. Check `jse_nightly_status` before acting on it.\n"
         )
-    return header + path.read_text(encoding="utf-8")
+    return header + path.read_text(encoding="utf-8-sig")
 
 
 @_tool(name="jse_nightly_status", annotations=RO)
@@ -1551,7 +1551,7 @@ def jse_nightly_status() -> str:
             "The scheduled task may never have run. Check Task Scheduler for 'JSE Nightly'.",
         )
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         return _error(f"could not read nightly status: {exc}")
     failures = [s for s in data.get("steps", []) if not s.get("ok")]

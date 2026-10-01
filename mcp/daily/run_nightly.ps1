@@ -38,7 +38,7 @@ function Write-Status {
         host         = [System.Net.Dns]::GetHostName()
         steps        = $Steps
     }
-    $payload | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $Daily "nightly_status.json") -Encoding UTF8
+    [IO.File]::WriteAllText((Join-Path $Daily "nightly_status.json"), ($payload | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
 }
 
 function Invoke-BridgeStep {
