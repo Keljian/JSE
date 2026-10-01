@@ -9,6 +9,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+try:  # run as a script from tools/, or imported as tools.restore_database
+    from backup_database import SAFETY_PREFIX, decompress_file, snapshot_database
+except ImportError:
+    from tools.backup_database import SAFETY_PREFIX, decompress_file, snapshot_database
+
 
 def _validate(path: Path) -> dict:
     conn = sqlite3.connect(str(path), timeout=30)
@@ -52,27 +57,37 @@ def restore_database(source: Path, target: Path, backup_dir: Path) -> dict:
     source, target, backup_dir = source.resolve(), target.resolve(), backup_dir.resolve()
     if source == target:
         raise ValueError("Choose a backup file, not the active database.")
-    source_summary = _validate(source)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    safety_backup = backup_dir / f"pre_restore_job_applications_{stamp}.db"
-    partial = target.with_suffix(target.suffix + ".restore-partial")
-    if target.exists():
-        _sqlite_backup(target, safety_backup)
-        _validate(safety_backup)
+    # Compressed backups are expanded beside the target first; everything after
+    # that is the same path an uncompressed backup takes.
+    expanded = None
+    if source.suffix == ".gz":
+        expanded = target.with_name(target.name + ".restore-source")
+        decompress_file(source, expanded)
+    original_source, source = source, (expanded or source)
     try:
-        partial.unlink(missing_ok=True)
-        _sqlite_backup(source, partial)
-        restored_summary = _validate(partial)
-        for suffix in ("-wal", "-shm"):
-            target.with_name(target.name + suffix).unlink(missing_ok=True)
-        _replace_with_retry(partial, target)
-    except Exception:
-        partial.unlink(missing_ok=True)
-        raise
+        source_summary = _validate(source)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        safety_backup = backup_dir / f"{SAFETY_PREFIX}{stamp}.db.gz"
+        partial = target.with_suffix(target.suffix + ".restore-partial")
+        if target.exists():
+            snapshot_database(target, safety_backup)
+        try:
+            partial.unlink(missing_ok=True)
+            _sqlite_backup(source, partial)
+            restored_summary = _validate(partial)
+            for suffix in ("-wal", "-shm"):
+                target.with_name(target.name + suffix).unlink(missing_ok=True)
+            _replace_with_retry(partial, target)
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+    finally:
+        if expanded:
+            expanded.unlink(missing_ok=True)
     return {
         **restored_summary,
-        "source": str(source),
+        "source": str(original_source),
         "safety_backup": str(safety_backup) if safety_backup.exists() else None,
         "source_jobs": source_summary["jobs"],
     }
