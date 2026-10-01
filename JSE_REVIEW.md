@@ -110,10 +110,55 @@ lock (pip-compile or a pinned requirements.lock) used by the runtime-prep script
 - `styles.css` at 5,051 lines: split per component area when main.jsx is split, not
   before.
 
+### 11. Make long-running tasks survive a bridge restart or OS sleep [added 2026-09-03]
+Confirmed by direct incident (an OS sleep event during an `analysis:run`) and by code
+reading + a live kill test: per-job persistence already works. `db/jobs.py
+update_job_analysis()` commits every job immediately (either the auto-reject branch or
+`_execute_with_retry(..., is_commit=True)`), and `llm/analysis.py
+_perform_analysis_loop()` is explicitly designed so "whatever the batch finished is
+already persisted by its phases; the rest is dropped and re-analysed next run" — a manual
+kill of a freshly restarted run confirmed 232 of 282 processed jobs retained their scores.
+
+The actual gap is one level up, in task tracking, not persistence:
+- The bridge keeps in-flight task state (`jse_start_task` / `jse_task_status`) only in an
+  in-memory registry. If the bridge process itself restarts — which an OS sleep/wake cycle
+  can trigger, and which also happened once after several hours idle — `jse_task_status`
+  returns `"error": "no task <id>"` even if the underlying analysis subprocess is still
+  alive and still committing rows. The bridge has no way to re-attach to it, so JSE (and
+  Claude, driving it) has no idea the run is still going, and will assume it needs to be
+  restarted from scratch — which can race with or orphan the still-running process.
+- Separately, OS sleep can kill the analysis subprocess outright mid-phase, before that
+  phase's `_run_analysis_phase` calls land any commits for the jobs in the current chunk.
+  In the one observed case, this produced total loss (0 of 256 scored) despite ~33 jobs
+  having been logged as "Analyzed" pre-sleep, because the whole in-flight chunk was still
+  short of a phase boundary when the process died.
+- The same pattern also stranded two `scraper_runs` rows in `status='running'` forever
+  after their processes died without self-reporting failure (had to be corrected by hand
+  via direct SQL), suggesting this is a general "detached process died silently" gap
+  across `jse_start_task` commands, not analysis-specific.
+
+Suggested fix direction, roughly in order of effort:
+- Persist task state (task id, command, payload, PID, started_at) to the DB or a small
+  state file, not just in-memory, so a restarted bridge can re-attach to a still-alive
+  subprocess by PID on startup instead of losing track of it.
+- On bridge startup, reconcile: for any task marked running whose PID is gone, mark it
+  failed/interrupted (as was done by hand for `scraper_runs` 143/145) instead of leaving
+  it `running` forever.
+- Handle Windows sleep/resume: either have the long-running commands listen for a
+  suspend signal and pause/checkpoint cleanly before the OS suspends the process, or at
+  minimum shrink `ANALYSIS_PHASE_CHUNK` / add a mid-chunk commit point so a mid-phase
+  kill loses at most one job's work instead of a whole chunk.
+- Add a lightweight `jse_health`/`jse_task_status` signal for "task not found but a
+  matching process is still running" vs "task not found, nothing running" so the caller
+  (human or Claude) knows whether it's safe to just restart the command.
+
 ## Suggested order
 
 1. Hard-blocker gate (#1) and channel warmth (#2): direct hit on the conversion problem.
 2. Triage packet export (#3): cheap, removes daily friction.
 3. CI test gate + ruff (#6): protects everything else you change.
 4. Monolith split (#5): do it before the next big feature, not after.
-5. The rest as maintenance passes.
+5. Task-restart resilience (#11): cheap relative to the hours of compute it has already
+   cost (two multi-hour analysis runs lost to a bridge restart / OS sleep in the same
+   week); worth doing alongside #6 rather than deferring to "the rest".
+6. The rest as maintenance passes.
