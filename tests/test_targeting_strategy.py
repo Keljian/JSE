@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -338,7 +339,10 @@ class _OutcomeDatabaseTestCase(unittest.TestCase):
             if job_id and employer_type:
                 conn.execute("UPDATE jobs SET employer_type = ? WHERE id = ?", (employer_type, job_id))
                 conn.commit()
-        db.update_job_application(job_id, {"pipeline_stage": "applied", "application_date": "2026-07-01"})
+        # Relative to today: a fixed date drifts out of the 90-day targeting
+        # window and the summary tests start failing on the calendar alone.
+        applied_on = (date.today() - timedelta(days=10)).isoformat()
+        db.update_job_application(job_id, {"pipeline_stage": "applied", "application_date": applied_on})
         return job_id
 
 
