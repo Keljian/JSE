@@ -122,6 +122,15 @@ function Dashboard({ dashboard, calendar, invoke, onOpenJob, onOpenCleanup, dism
               <p>{dashboard.last_scrape.summary || dashboard.last_scrape.sources || "No summary recorded."}</p>
             </div>
           ) : <p className="empty-inline">No scraper run recorded yet.</p>}
+          {(dashboard?.source_problems || []).length ? (
+            <ul className="source-problems">
+              {dashboard.source_problems.map((problem) => (
+                <li key={problem.source} className={`scraper-health ${problem.status}`} title={problem.detail}>
+                  <strong>{problem.source}</strong> {problem.status}{problem.detail ? `: ${problem.detail}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </section>
       </div>
     </section>

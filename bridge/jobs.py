@@ -224,6 +224,7 @@ def _shortlist_entry(job, warm_index):
         "commute_sector": job.get("commute_sector"),
         "commute_verdict": job.get("commute_verdict"),
         "commute_reason": job.get("commute_reason"),
+        "prefilter_verdict": job.get("prefilter_verdict"),
         "salary_min": job.get("salary_min"),
         "salary_max": job.get("salary_max"),
         "salary_currency": job.get("salary_currency"),
@@ -394,7 +395,11 @@ def command_jobs_export_shortlist(payload):
     jobs = [row_to_dict(row) for row in rows]
     jobs = [job for job in jobs if db.normalize_stage(job.get("pipeline_stage") or job.get("status")) in stages]
     if not include_screened_out:
-        jobs = [job for job in jobs if (job.get("commute_verdict") or "") != "blocked"]
+        jobs = [
+            job for job in jobs
+            if (job.get("commute_verdict") or "") != "blocked"
+            and (job.get("prefilter_verdict") or "") != "skip"
+        ]
     db.annotate_channel_warmth(jobs, warm_index)
     if exclude_flags:
         jobs = [

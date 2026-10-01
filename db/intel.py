@@ -851,7 +851,7 @@ def convert_hidden_market_lead_to_job(lead_id):
     return {"job_id": job_id, "lead": get_hidden_market_lead(lead_id), "already": False}
 
 
-WARM_CONTACT_ORIGINS = ("contact_research", "company_profile", "manual", "lead")
+WARM_CONTACT_ORIGINS = ("contact_research", "company_profile", "manual", "lead", "linkedin")
 
 
 def _warm_contact_key(name, organisation):
@@ -890,39 +890,126 @@ def upsert_warm_contact(name, organisation=None, profile_id=None, role_title=Non
     """Idempotent on (organisation, name). Later writes fill blanks but never
     overwrite a value already recorded — a scraped guess must not clobber
     something the user typed."""
+    params = _warm_contact_params(name, organisation, profile_id, role_title, email, phone,
+                                  linkedin_url, relationship, origin, notes)
+    with get_db_connection() as conn:
+        conn.execute(_WARM_CONTACT_UPSERT_SQL, params)
+        conn.commit()
+        row = conn.execute("SELECT * FROM warm_contacts WHERE contact_key = ?", (params[1],)).fetchone()
+    return _warm_contact_to_dict(row)
+
+
+_WARM_CONTACT_UPSERT_SQL = """
+    INSERT INTO warm_contacts
+        (profile_id, contact_key, name, organisation, organisation_key, role_title,
+         email, phone, linkedin_url, relationship, origin, notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(contact_key) DO UPDATE SET
+        profile_id = COALESCE(warm_contacts.profile_id, excluded.profile_id),
+        role_title = COALESCE(NULLIF(warm_contacts.role_title, ''), excluded.role_title),
+        email = COALESCE(NULLIF(warm_contacts.email, ''), excluded.email),
+        phone = COALESCE(NULLIF(warm_contacts.phone, ''), excluded.phone),
+        linkedin_url = COALESCE(NULLIF(warm_contacts.linkedin_url, ''), excluded.linkedin_url),
+        relationship = COALESCE(NULLIF(warm_contacts.relationship, ''), excluded.relationship),
+        notes = COALESCE(NULLIF(warm_contacts.notes, ''), excluded.notes),
+        updated_at = excluded.updated_at
+"""
+
+
+def _warm_contact_params(name, organisation=None, profile_id=None, role_title=None,
+                         email=None, phone=None, linkedin_url=None, relationship=None,
+                         origin="manual", notes=None):
     name = _clean(str(name or ""))
     if not name:
         raise ValueError("A warm contact needs a name.")
     organisation = _clean(str(organisation or "")) or None
-    contact_key = _warm_contact_key(name, organisation)
     now = datetime.now().isoformat(timespec="seconds")
-    with get_db_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO warm_contacts
-                (profile_id, contact_key, name, organisation, organisation_key, role_title,
-                 email, phone, linkedin_url, relationship, origin, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(contact_key) DO UPDATE SET
-                profile_id = COALESCE(warm_contacts.profile_id, excluded.profile_id),
-                role_title = COALESCE(NULLIF(warm_contacts.role_title, ''), excluded.role_title),
-                email = COALESCE(NULLIF(warm_contacts.email, ''), excluded.email),
-                phone = COALESCE(NULLIF(warm_contacts.phone, ''), excluded.phone),
-                linkedin_url = COALESCE(NULLIF(warm_contacts.linkedin_url, ''), excluded.linkedin_url),
-                relationship = COALESCE(NULLIF(warm_contacts.relationship, ''), excluded.relationship),
-                notes = COALESCE(NULLIF(warm_contacts.notes, ''), excluded.notes),
-                updated_at = excluded.updated_at
-            """,
-            (profile_id, contact_key, name, organisation, _company_key(organisation or "") or None,
-             _clean(str(role_title or "")) or None, _clean(str(email or "")) or None,
-             _clean(str(phone or "")) or None, _clean(str(linkedin_url or "")) or None,
-             _clean(str(relationship or "")) or None,
-             origin if origin in WARM_CONTACT_ORIGINS else "manual",
-             _clean(str(notes or "")) or None, now, now),
+    return (
+        profile_id, _warm_contact_key(name, organisation), name, organisation,
+        _company_key(organisation or "") or None,
+        _clean(str(role_title or "")) or None, _clean(str(email or "")) or None,
+        _clean(str(phone or "")) or None, _clean(str(linkedin_url or "")) or None,
+        _clean(str(relationship or "")) or None,
+        origin if origin in WARM_CONTACT_ORIGINS else "manual",
+        _clean(str(notes or "")) or None, now, now,
+    )
+
+
+def _linkedin_connection_rows(csv_path):
+    """Rows from LinkedIn's Connections.csv data export.
+
+    The export opens with a few lines of notes before the real header, and the
+    column set has shifted over the years, so find the header by its first two
+    columns and read by name.
+    """
+    import csv
+    from pathlib import Path
+
+    text = Path(csv_path).read_text(encoding="utf-8-sig", errors="replace")
+    lines = text.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines)
+         if line.lower().replace('"', "").startswith("first name,last name")),
+        None,
+    )
+    if start is None:
+        raise ValueError(
+            "This does not look like LinkedIn's Connections.csv: no 'First Name,Last Name' header row."
         )
+    return list(csv.DictReader(lines[start:]))
+
+
+def import_linkedin_connections(csv_path, profile_id=None):
+    """Load a LinkedIn connections export into the warm-contact book.
+
+    Every connection with a current company becomes a contact at that employer,
+    which is what warm_path_for_job matches jobs against. Idempotent: re-importing
+    a newer export fills blanks and adds new people without duplicating anyone.
+    Returns counts plus the open roles that now have a known person behind them.
+    """
+    rows = _linkedin_connection_rows(csv_path)
+    params, skipped = [], 0
+    for row in rows:
+        first = (row.get("First Name") or "").strip()
+        last = (row.get("Last Name") or "").strip()
+        company = (row.get("Company") or "").strip()
+        if not (first or last) or not company:
+            skipped += 1
+            continue
+        connected = (row.get("Connected On") or "").strip()
+        params.append(_warm_contact_params(
+            f"{first} {last}".strip(), organisation=company, profile_id=profile_id,
+            role_title=row.get("Position"), email=row.get("Email Address"),
+            linkedin_url=row.get("URL"), relationship="LinkedIn connection",
+            origin="linkedin", notes=f"Connected on LinkedIn {connected}" if connected else None,
+        ))
+    with get_db_connection() as conn:
+        before = conn.execute("SELECT COUNT(*) FROM warm_contacts").fetchone()[0]
+        conn.executemany(_WARM_CONTACT_UPSERT_SQL, params)
         conn.commit()
-        row = conn.execute("SELECT * FROM warm_contacts WHERE contact_key = ?", (contact_key,)).fetchone()
-    return _warm_contact_to_dict(row)
+        after = conn.execute("SELECT COUNT(*) FROM warm_contacts").fetchone()[0]
+        organisations = {p[4] for p in params if p[4]}
+        open_jobs = conn.execute(
+            """
+            SELECT id, title, company, actual_company, advertiser_company
+            FROM jobs WHERE pipeline_stage IN ('new', 'interested', 'applied')
+            """
+        ).fetchall()
+    matches = []
+    for job in open_jobs:
+        keys = {_company_key(job[field] or "") for field in ("actual_company", "company", "advertiser_company")}
+        hit = keys & organisations
+        if hit:
+            matches.append({"job_id": job["id"], "title": job["title"], "company": job["company"]})
+    return {
+        "rows": len(rows),
+        "imported": len(params),
+        "new_contacts": after - before,
+        "skipped_no_company": skipped,
+        "organisations": len(organisations),
+        "open_jobs_with_contact": matches[:50],
+        "open_jobs_with_contact_count": len(matches),
+    }
 
 
 def delete_warm_contact(contact_id):

@@ -40,6 +40,17 @@ def command_dashboard_get(payload):
         "last_scrape": row_to_dict(data["last_scrape"]),
         "interview_nudges": rows_to_dicts(data.get("interview_nudges") or []),
         "warm_channel": data.get("warm_channel") or {},
+        # Sources that are broken or have gone quiet, so the dashboard can say
+        # which feeds are missing instead of showing a cheerful "complete".
+        "source_problems": [
+            {
+                "source": health.get("scraper_id"),
+                "status": health.get("status"),
+                "detail": health.get("stale_reason") or health.get("last_error") or "",
+            }
+            for health in db.get_all_scraper_health()
+            if health.get("status") in ("stale", "degraded", "broken")
+        ],
     }
 
 

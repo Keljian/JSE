@@ -8,6 +8,7 @@ import sys
 import database_manager as db
 import concurrency
 from .runtime import (
+    APP_ROOT,
     _clean_text,
     emit,
     row_to_dict,
@@ -68,6 +69,11 @@ def command_enrichment_application_review(payload):
     )
     db.save_application_kit_review(kit["id"], review, provider)
     return {"application_kit_id": kit["id"], "review": review, "provider": provider}
+
+
+def command_enrichment_clear(payload):
+    """Archive the pending enrichment backlog to Backups as JSON, then delete it."""
+    return db.archive_and_clear_pending_local_llm_tasks(APP_ROOT / "Backups")
 
 
 def command_enrichment_process(payload):
@@ -422,6 +428,14 @@ def command_warm_contacts_delete(payload):
     return {"ok": True}
 
 
+def command_warm_contacts_import_linkedin(payload):
+    """Import LinkedIn's Connections.csv export into the warm-contact book."""
+    path = str(payload.get("path") or "").strip()
+    if not path:
+        raise ValueError("Choose the Connections.csv file from your LinkedIn data export.")
+    return db.import_linkedin_connections(path, payload.get("profile_id"))
+
+
 def command_warm_contacts_seed(payload):
     """Populate the contact book from contact research and company profiles."""
     return {"seeded": db.seed_warm_contacts(payload.get("profile_id") or 1)}
@@ -479,6 +493,7 @@ COMMANDS = {
     "enrichment:applicationReview": command_enrichment_application_review,
     "enrichment:process": command_enrichment_process,
     "enrichment:status": command_enrichment_status,
+    "enrichment:clear": command_enrichment_clear,
     "company:classify": command_company_classify,
     "company:research": command_company_research,
     "company:researchBatch": command_company_research_batch,
@@ -486,6 +501,7 @@ COMMANDS = {
     "warmContacts:save": command_warm_contacts_save,
     "warmContacts:delete": command_warm_contacts_delete,
     "warmContacts:seed": command_warm_contacts_seed,
+    "warmContacts:importLinkedIn": command_warm_contacts_import_linkedin,
     "warmChannel:activity": command_warm_channel_activity,
     "hiddenMarket:addTarget": command_hidden_market_add_target,
     "hiddenMarket:get": command_hidden_market_get,

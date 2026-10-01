@@ -36,7 +36,14 @@ corpus_miner.py        Candidate-memory fragment mining
 application_doc_builder.py / rich_application.py / hybrid_renderer.py / generate_application.py
                        Application document generation and DOCX rendering
 config.py              Non-secret local defaults only
+screening.py           Deterministic commute/pay screen before any LLM call (leaf)
+triage_prefilter.py    Learned per-lane skip of near-certain rejects before triage (leaf)
+tools/backup_database.py / restore_database.py
+                       Compressed, verified startup backups with a 1 GB folder budget
 ```
+
+Scratch files from a working session (letter bodies, one-off scripts, specs)
+go in `mcp/daily/work/`, which is gitignored, never beside the tools.
 
 ## Key Dependencies
 

@@ -137,7 +137,7 @@ function backupDatabaseAtStartup() {
   const backupDir = path.join(rootDir, "Backups");
   if (!fs.existsSync(databasePath) || !fs.existsSync(databaseBackupPath)) return Promise.resolve(null);
   return new Promise((resolve) => {
-    const child = spawn(getPythonCommand(), [databaseBackupPath, databasePath, backupDir, "--retain", "12"], {
+    const child = spawn(getPythonCommand(), [databaseBackupPath, databasePath, backupDir, "--retain", "3", "--weekly", "4", "--max-total-mb", "1024"], {
       cwd: rootDir,
       env: { ...process.env, PYTHONNOUSERSITE: "1" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -655,6 +655,15 @@ ipcMain.handle("dialog:document", async (_event, title = "Select document") => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle("dialog:csv", async (_event, title = "Select CSV file") => {
+  const result = await dialog.showOpenDialog({
+    title,
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+    properties: ["openFile"]
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 ipcMain.handle("dialog:scraperPlugin", async () => {
   const result = await dialog.showOpenDialog({
     title: "Select scraper plugin folder or manifest",
@@ -676,7 +685,7 @@ ipcMain.handle("dialog:databaseBackup", async () => {
   const result = await dialog.showOpenDialog({
     title: "Recover JSE database",
     defaultPath: path.join(rootDir, "Backups"),
-    filters: [{ name: "SQLite database backups", extensions: ["db", "sqlite", "sqlite3"] }],
+    filters: [{ name: "SQLite database backups", extensions: ["gz", "db", "sqlite", "sqlite3"] }],
     properties: ["openFile"]
   });
   return result.canceled ? null : result.filePaths[0];

@@ -6,6 +6,8 @@ import json
 import concurrent.futures
 import re
 import screening
+import time
+import triage_prefilter
 import hashlib
 import concurrency
 import database_manager as db
@@ -1504,6 +1506,71 @@ def _run_analysis_phase(states, phase_fn, ctx, workers, on_item=None):
     return advanced, failed
 
 
+# Lane prefilter models, keyed by (lane, number of scored ads). Training reads
+# up to 20k ad openings, so it is done once per worker per lane until the lane
+# has new scores to learn from.
+_PREFILTER_CACHE = {}
+
+
+def _prefilter_enabled():
+    value = db.get_app_setting("triage_prefilter", True)
+    return value in (True, 1) or str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _lane_prefilter(profile_id, log):
+    rows = db.get_prefilter_training_rows(profile_id)
+    key = (profile_id, len(rows), rows[0][0] if rows else None)
+    model = _PREFILTER_CACHE.get(key)
+    if model is None:
+        started = time.monotonic()
+        model = triage_prefilter.train(rows)
+        _PREFILTER_CACHE.clear()
+        _PREFILTER_CACHE[key] = model
+        if model.enabled:
+            s = model.stats
+            log(
+                f"Prefilter trained on {s.get('trained_on')} scored ads in {time.monotonic() - started:.1f}s. "
+                f"On {s.get('validation')} held-out ads it skips {s.get('skip_share', 0):.0%}, "
+                f"{s.get('skip_precision', 0):.0%} of them below {triage_prefilter.KEEPER_SCORE}, losing "
+                f"{s.get('keepers_lost')} of {s.get('keepers')} that scored {triage_prefilter.KEEPER_SCORE}+."
+            )
+        else:
+            log(f"Prefilter off for this lane: {model.reason}.")
+    return model
+
+
+def _apply_prefilter(jobs, profile_id, log):
+    """Split jobs into (to analyse, audit ids). Skipped jobs keep a reason."""
+    model = _lane_prefilter(profile_id, log)
+    if not model.enabled:
+        return jobs, set()
+    kept, audits, skipped = [], set(), 0
+    for job in jobs:
+        keys = job.keys()
+        decision = model.decide(
+            job["id"],
+            job["title"] if "title" in keys else "",
+            job["description"] if "description" in keys else "",
+        )
+        if decision is None:
+            if "prefilter_verdict" in keys and job["prefilter_verdict"]:
+                db.save_prefilter_verdict(job["id"], None)
+            kept.append(job)
+            continue
+        db.save_prefilter_verdict(job["id"], decision)
+        if decision["verdict"] == "audit":
+            audits.add(job["id"])
+            kept.append(job)
+        else:
+            skipped += 1
+    if skipped or audits:
+        log(
+            f"Prefilter skipped {skipped} near-certain reject(s) before triage and sent "
+            f"{len(audits)} of the would-be skips to the LLM as an audit."
+        )
+    return kept, audits
+
+
 def _perform_analysis_loop(
     jobs_to_analyze,
     resume_text,
@@ -1512,6 +1579,7 @@ def _perform_analysis_loop(
     profile_id=1,
     fragments=None,
     progress_callback=None,
+    use_prefilter=True,
 ):
     """Run the core analysis pipeline over a batch of jobs.
 
@@ -1584,6 +1652,21 @@ def _perform_analysis_loop(
         # than silently dropping roles the user would have wanted to see.
         log(f"Screening skipped ({exc}); analysing all jobs.")
 
+    # Learned prefilter: skip ads this lane's own scoring history says are
+    # near-certain rejects. An explicit re-analysis (specific job ids) always
+    # bypasses it and clears any earlier skip, because the user asked.
+    audit_ids = set()
+    if use_prefilter and jobs_to_analyze:
+        try:
+            if _prefilter_enabled():
+                jobs_to_analyze, audit_ids = _apply_prefilter(jobs_to_analyze, profile_id, log)
+        except Exception as exc:
+            log(f"Prefilter skipped ({exc}); analysing all jobs.")
+    elif jobs_to_analyze:
+        for job in jobs_to_analyze:
+            if "prefilter_verdict" in job.keys() and job["prefilter_verdict"] == "skip":
+                db.save_prefilter_verdict(job["id"], None)
+
     if not jobs_to_analyze:
         report(0, 0, failed=0)
         return
@@ -1599,6 +1682,24 @@ def _perform_analysis_loop(
     # below can advance them as each job lands, instead of the bar jumping once
     # per phase — an 80-job phase runs for minutes.
     counts = {"done": 0, "failed": 0}
+    # Wall time and job count per phase, so a slow run can be pinned on the
+    # phase that caused it rather than guessed at.
+    timing = {phase: {"jobs": 0, "seconds": 0.0} for phase in ("triage", "analysis", "gatekeeper")}
+
+    def _timed(phase, states, phase_fn, on_item):
+        started = time.monotonic()
+        try:
+            return _run_analysis_phase(states, phase_fn, ctx, workers, on_item)
+        finally:
+            timing[phase]["jobs"] += len(states)
+            timing[phase]["seconds"] += time.monotonic() - started
+
+    def _timing_line():
+        parts = []
+        for phase, t in timing.items():
+            if t["jobs"]:
+                parts.append(f"{phase} {t['jobs']} in {t['seconds'] / 60:.1f} min ({t['seconds'] / t['jobs']:.1f}s each)")
+        return "; ".join(parts) or "no LLM phases ran"
 
     def _phase_reporter(phase_name, detail=None):
         def _on_item(advanced, item_failed):
@@ -1621,33 +1722,34 @@ def _perform_analysis_loop(
             # Phase 1: every triage prompt in the batch, back to back.
             report(counts["done"], total, phase="triage", failed=counts["failed"],
                    detail=f"Triaging {len(states)} job(s)")
-            survivors, _ = _run_analysis_phase(
-                states, _triage_phase, ctx, workers, _phase_reporter("triage")
-            )
+            survivors, _ = _timed("triage", states, _triage_phase, _phase_reporter("triage"))
+            for state in states:
+                if state["job_id"] in audit_ids and (state.get("triage_score") or 0) >= triage_prefilter.KEEPER_SCORE:
+                    log(
+                        f"Prefilter audit miss: job ID {state['job_id']} ('{state['job_title']}') "
+                        f"would have been skipped but triaged at {state['triage_score']}%."
+                    )
 
             # Phase 2: every full-analysis prompt for the survivors.
             if survivors:
                 report(counts["done"], total, phase="analysis", failed=counts["failed"],
                        detail=f"Analysing {len(survivors)} survivor(s)")
-                gated, _ = _run_analysis_phase(
-                    survivors, _analysis_phase, ctx, workers, _phase_reporter("analysis")
-                )
+                gated, _ = _timed("analysis", survivors, _analysis_phase, _phase_reporter("analysis"))
 
                 # Phase 3: the third-pass gatekeeper for the high scorers.
                 if gated:
                     report(counts["done"], total, phase="gatekeeper", failed=counts["failed"],
                            detail=f"Gatekeeping {len(gated)} high scorer(s)")
-                    _run_analysis_phase(
-                        gated, _gatekeeper_phase, ctx, workers, _phase_reporter("gatekeeper")
-                    )
+                    _timed("gatekeeper", gated, _gatekeeper_phase, _phase_reporter("gatekeeper"))
         except concurrency.OperationCancelledError:
             # Whatever the batch finished is already persisted by its phases;
             # the rest is dropped and re-analysed next run.
             cancelled = True
             break
 
-        log(f"Analysis progress: {counts['done']}/{total} job(s) processed.")
+        log(f"Analysis progress: {counts['done']}/{total} job(s) processed. Timing so far: {_timing_line()}.")
 
+    log(f"Analysis timing: {_timing_line()}.")
     if cancelled:
         log("Analysis cancelled by user.")
         raise concurrency.OperationCancelledError("Analysis cancelled by user.")
@@ -1703,5 +1805,6 @@ def analyze_specific_jobs(job_ids, log_callback=None, resume_text: str = "", pro
         log_callback,
         profile_id,
         progress_callback=progress_callback,
+        use_prefilter=False,
     )
     log("Specific analysis complete.")

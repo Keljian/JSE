@@ -3,6 +3,9 @@
 Split out of database_manager.py, which re-exports everything here.
 """
 import json
+import os
+import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from .connection import (
     get_db_connection,
@@ -26,13 +29,60 @@ def _scraper_plugin_row(row, lane_row=None):
     return data
 
 
+# A single keyword with no vacancies is normal, so one empty run says nothing.
+# A source that has run this many times in a row without returning a single job,
+# and has not succeeded for this many days, has almost certainly stopped working
+# (a changed API, a blocked request) even though nothing raised. HiringCafe sat
+# at "healthy" through 70 empty runs and a month of silence before this existed.
+STALE_MIN_EMPTY_RUNS = 10
+STALE_AFTER_DAYS = 7
+
+
+def _parse_utc(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "").replace("T", " "))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _apply_staleness(data, now=None):
+    """Mark a quietly dead source as `stale`, with the days since it last worked.
+
+    Errors already move a source to degraded/broken. This covers the other way a
+    scraper dies: every call succeeds and returns nothing.
+    """
+    now = now or datetime.now(timezone.utc)
+    last_success = _parse_utc(data.get("last_success_at"))
+    data["days_since_success"] = (now - last_success).days if last_success else None
+    empty = int(data.get("consecutive_empty") or 0)
+    quiet_for = (now - last_success) if last_success else None
+    long_quiet = quiet_for is None or quiet_for >= timedelta(days=STALE_AFTER_DAYS)
+    if data.get("status") in ("healthy", "unknown", "stale", None) and empty >= STALE_MIN_EMPTY_RUNS and long_quiet:
+        data["status"] = "stale"
+        if last_success:
+            data["stale_reason"] = (
+                f"No results in {data['days_since_success']} days "
+                f"({empty} empty runs in a row)."
+            )
+        else:
+            data["stale_reason"] = f"Has never returned a result ({empty} empty runs)."
+    elif data.get("status") == "stale":
+        data["status"] = "healthy"
+    return data
+
+
 def get_scraper_health(scraper_id):
     with get_db_connection() as conn:
         row = conn.execute(
             "SELECT * FROM scraper_health WHERE scraper_id = ?",
             (scraper_id,),
         ).fetchone()
-    return dict(row) if row else {
+    if row:
+        return _apply_staleness(dict(row))
+    return {
         "scraper_id": scraper_id,
         "status": "unknown",
         "consecutive_errors": 0,
@@ -40,7 +90,17 @@ def get_scraper_health(scraper_id):
         "successful_runs": 0,
         "empty_runs": 0,
         "error_runs": 0,
+        "days_since_success": None,
     }
+
+
+def get_all_scraper_health():
+    """Every source's health, staleness applied, most worrying first."""
+    with get_db_connection() as conn:
+        rows = conn.execute("SELECT * FROM scraper_health ORDER BY scraper_id").fetchall()
+    order = {"broken": 0, "stale": 1, "degraded": 2, "unknown": 3, "healthy": 4}
+    health = [_apply_staleness(dict(row)) for row in rows]
+    return sorted(health, key=lambda h: (order.get(h.get("status"), 5), h["scraper_id"]))
 
 
 def record_scraper_health(scraper_id, outcome, error=None):
@@ -52,10 +112,13 @@ def record_scraper_health(scraper_id, outcome, error=None):
     if outcome == "success":
         errors, empty, status = 0, 0, "healthy"
     elif outcome == "empty":
-        # A keyword can legitimately have no matching vacancies. Keep this as
-        # useful telemetry, but do not improve or degrade structural health.
+        # A keyword can legitimately have no matching vacancies, so one empty
+        # run neither improves nor degrades health. A long streak of them does,
+        # via _apply_staleness on read.
         empty += 1
         status = current.get("status") or "unknown"
+        if status == "stale":
+            status = "healthy"  # stored as the structural state; stale is derived
     else:
         errors, empty = errors + 1, 0
         status = "broken" if errors >= 2 else "degraded"
@@ -390,11 +453,87 @@ def record_scraper_run(profile_id=None, scope="profile", sources=None, status="r
             conn.commit()
             return run_id
         cursor = conn.execute(
-            "INSERT INTO scraper_runs (profile_id, scope, sources, status, summary) VALUES (?, ?, ?, ?, ?)",
-            (profile_id, scope, ",".join(sources or []), status, summary),
+            "INSERT INTO scraper_runs (profile_id, scope, sources, status, summary, pid) VALUES (?, ?, ?, ?, ?, ?)",
+            (profile_id, scope, ",".join(sources or []), status, summary, os.getpid()),
         )
         conn.commit()
         return cursor.lastrowid
+
+
+# No scrape legitimately runs this long (the nightly loop kills one at 4 hours),
+# so a row still `running` past it is dead whatever its PID says. This also
+# covers PID reuse, and rows written before the pid column existed.
+ORPHANED_RUN_MAX_HOURS = 8
+
+
+def _process_alive(pid):
+    """True when a process with this PID is still running. Never signals it.
+
+    os.kill(pid, 0) is a liveness probe on POSIX but TerminateProcess on
+    Windows, so Windows asks the kernel for the exit code instead.
+    """
+    if not pid:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def reconcile_orphaned_scraper_runs(now=None, process_alive=_process_alive):
+    """Close out scrape runs whose process died without reporting.
+
+    A sleep, a crash or a killed window leaves the row at `running` forever,
+    which makes the last-scrape line lie and once needed fixing by hand in SQL.
+    Returns the ids marked `interrupted`.
+    """
+    now = now or datetime.now(timezone.utc)
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, started_at, pid FROM scraper_runs WHERE status = 'running'"
+        ).fetchall()
+        closed = []
+        for row in rows:
+            started = _parse_utc(row["started_at"])
+            too_old = started is None or now - started > timedelta(hours=ORPHANED_RUN_MAX_HOURS)
+            dead = row["pid"] is not None and not process_alive(row["pid"])
+            if not (too_old or dead):
+                continue
+            reason = (
+                "Interrupted: the scrape process exited without reporting a result."
+                if dead else
+                f"Interrupted: still marked running after {ORPHANED_RUN_MAX_HOURS} hours."
+            )
+            conn.execute(
+                "UPDATE scraper_runs SET status = 'interrupted', summary = ?, "
+                "finished_at = COALESCE(finished_at, datetime('now')) WHERE id = ? AND status = 'running'",
+                (reason, row["id"]),
+            )
+            closed.append(row["id"])
+        if closed:
+            conn.commit()
+    return closed
 
 
 def get_all_sources(profile_id=None):

@@ -629,6 +629,22 @@ def jse_health() -> str:
     except Exception as exc:
         info["bridge_status"] = "unreachable"
         info["bridge_error"] = str(exc)
+    if info.get("bridge_status") == "ok":
+        try:
+            health = _call("scrapers:health", {}, 120)["data"]
+            info["sources_needing_attention"] = [
+                {
+                    "source": h.get("scraper_id"),
+                    "status": h.get("status"),
+                    "days_since_success": h.get("days_since_success"),
+                    "reason": h.get("stale_reason") or h.get("last_error"),
+                }
+                for h in health.get("needs_attention", [])
+            ]
+            if health.get("interrupted_runs"):
+                info["interrupted_scrape_runs"] = health["interrupted_runs"]
+        except Exception as exc:
+            info["scraper_health_error"] = str(exc)
     # Read after the call, not before: the worker starts lazily on first use.
     info["worker_alive"] = WORKER.alive()
     return _respond(info)
@@ -1481,6 +1497,9 @@ def jse_command(command: str, payload: Optional[dict] = None, timeout_seconds: i
 # --------------------------------------------------------------------------
 
 DAILY_DIR = APP_ROOT / "mcp" / "daily"
+# The nightly loop runs at 8pm. Past this many hours the status file is from an
+# earlier night and says nothing about the latest one.
+NIGHTLY_STALE_HOURS = 30
 
 
 def _screening_answers() -> dict:
@@ -1555,8 +1574,23 @@ def jse_nightly_status() -> str:
     except Exception as exc:
         return _error(f"could not read nightly status: {exc}")
     failures = [s for s in data.get("steps", []) if not s.get("ok")]
-    data["all_ok"] = not failures
     data["failed_steps"] = [s.get("name") for s in failures]
+    # A run that worked three weeks ago is not "last night worked". Without an
+    # age the old file read as all_ok every morning after the task was disabled.
+    age_hours = None
+    try:
+        finished = datetime.fromisoformat(str(data.get("finished_at")))
+        age_hours = round((datetime.now() - finished).total_seconds() / 3600, 1)
+    except (TypeError, ValueError):
+        pass
+    data["age_hours"] = age_hours
+    data["stale"] = age_hours is None or age_hours > NIGHTLY_STALE_HOURS
+    if data["stale"]:
+        data["stale_warning"] = (
+            f"This status is {age_hours} hours old, so it describes an earlier run, not last night. "
+            "Check that the 'JSE Nightly' scheduled task is enabled."
+        )
+    data["all_ok"] = not failures and not data["stale"]
     return _respond(data)
 
 

@@ -1,5 +1,5 @@
 /** Pure formatting, parsing, and classification helpers. No JSX. */
-import { ANALYSIS_TOP_FIELDS, DOCUMENT_AI_PROVIDERS, PIPELINE, SCOPE_FIELD_KEYS, SUPPORT_URL } from "../lib/constants";
+import { ANALYSIS_TOP_FIELDS, DOCUMENT_AI_PROVIDERS, LOW_SIGNAL_FLAG_TYPES, PIPELINE, SCOPE_FIELD_KEYS, SUPPORT_URL } from "../lib/constants";
 
 function normalizeStage(stage, status) {
   const value = String(stage || status || "new").toLowerCase();
@@ -97,6 +97,10 @@ const jobFlagTypesOf = (job) => {
   const types = String(job?.job_flags_types || "").split(",").filter(Boolean);
   return types.length ? types : jobFlagsOf(job).map((flag) => flag.type).filter(Boolean);
 };
+
+// The flags worth surfacing outside the workspace: everything but the
+// near-universal low-signal ones.
+const signalFlagTypesOf = (job) => jobFlagTypesOf(job).filter((type) => !LOW_SIGNAL_FLAG_TYPES.has(type));
 
 function displayFileName(value) {
   const text = String(value || "").trim();
@@ -254,4 +258,4 @@ function countBy(items, key, fallback = "unknown") {
   }, {});
 }
 
-export { normalizeStage, canMoveToInterested, openSupportLink, documentAiLabel, todayPlus, formatDate, closingDateSourceMeta, formatBytes, toErrorMessage, scoreClass, primaryScore, jobFlagsOf, jobFlagTypesOf, displayFileName, tidyJobTitle, isWordDocumentPath, parseJsonObject, isWeakCompanyName, parseAnalysisReport, actionMeta, gateDecisionMeta, hasCompanyResearch, toDateTimeInputValue, countBy };
+export { normalizeStage, canMoveToInterested, openSupportLink, documentAiLabel, todayPlus, formatDate, closingDateSourceMeta, formatBytes, toErrorMessage, scoreClass, primaryScore, jobFlagsOf, jobFlagTypesOf, signalFlagTypesOf, displayFileName, tidyJobTitle, isWordDocumentPath, parseJsonObject, isWeakCompanyName, parseAnalysisReport, actionMeta, gateDecisionMeta, hasCompanyResearch, toDateTimeInputValue, countBy };

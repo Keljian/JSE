@@ -1,12 +1,12 @@
 /** Job card and the compact signal chips it renders. */
 import React from "react";
 import { APPLY_CHANNEL_LABELS, JOB_FLAG_CHIPS, WARMTH_CHIPS } from "../lib/constants";
-import { formatDate, jobFlagTypesOf, jobFlagsOf } from "../lib/format";
+import { formatDate, jobFlagsOf, signalFlagTypesOf } from "../lib/format";
 import { ScoreStack } from "../components/primitives";
 
 function JobFlagChips({ job }) {
   const flags = jobFlagsOf(job);
-  const types = jobFlagTypesOf(job);
+  const types = signalFlagTypesOf(job);
   if (!types.length) return null;
   const detailFor = (type) => flags
     .filter((flag) => flag.type === type)
@@ -105,6 +105,9 @@ const JobCard = React.memo(function JobCard({ job, onOpen, onDragStart, onReject
         <ScoreStack job={job} compact />
         <JobFlagChips job={job} />
         <WarmthChip job={job} />
+        {job.prefilter_verdict === "skip" && job.match_score == null ? (
+          <span className="ad-chip muted" title={job.prefilter_reason || "Skipped by the prefilter before triage."}>Prefiltered</span>
+        ) : null}
       </div>
       <p>{job.company || "Unknown company"}</p>
       <small>{job.profile_name || "Lane"} · {job.source || "Unknown source"}</small>

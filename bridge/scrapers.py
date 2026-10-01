@@ -143,8 +143,21 @@ def command_scrapers_rollback(payload):
     return result
 
 
+def command_scrapers_health(payload):
+    """Every source's health, plus any scrape runs that died silently."""
+    interrupted = db.reconcile_orphaned_scraper_runs()
+    health = db.get_all_scraper_health()
+    return {
+        "sources": health,
+        "needs_attention": [h for h in health if h.get("status") in ("stale", "degraded", "broken")],
+        "interrupted_runs": interrupted,
+    }
+
+
 def command_scrape_run(payload):
     app_logic = import_app_logic()
+    for stale_id in db.reconcile_orphaned_scraper_runs():
+        emit("log", message=f"Scrape run {stale_id} had died without reporting; marked interrupted.")
     sources = payload.get("sources") or scraper_plugins.source_names(profile_id=payload.get("profile_id"), include_disabled=False)
     if not sources:
         raise ValueError("No scraper plugins are available. Import a plugin or create one in Settings > Searchers.")
@@ -207,5 +220,6 @@ COMMANDS = {
     "scrapers:diagnose": command_scrapers_diagnose,
     "scrapers:repair": command_scrapers_repair,
     "scrapers:rollback": command_scrapers_rollback,
+    "scrapers:health": command_scrapers_health,
     "scrape:run": command_scrape_run,
 }

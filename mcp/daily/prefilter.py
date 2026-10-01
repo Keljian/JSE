@@ -15,12 +15,24 @@ Usage:  python prefilter.py [packet.json]      (default: newest packet)
 
 import json
 import re
+import sqlite3
 import sys
 from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 SHORTLISTS = Path(r"C:\JSE\shortlists")
+DATABASE = Path(r"C:\JSE\settings\job_applications.db")
+
+# Flags that sit on nearly every role, including both roles that reached
+# interview in September. They carry no signal in a one-line table cell, so the
+# brief leaves them out; the full text is still on the job.
+LOW_SIGNAL_FLAGS = {"evidence_gap"}
+
+# Same rule as db/scrapers.py _apply_staleness: a source that keeps running and
+# returns nothing for a week has stopped working without raising.
+STALE_MIN_EMPTY_RUNS = 10
+STALE_AFTER_DAYS = 7
 
 # Titles that are never the target, whatever the keyword match says. The
 # engineering lane pulls these in on hardware nouns; see the 17 Aug commentary.
@@ -131,9 +143,37 @@ def flag_types(job):
     for flag in job.get("flags") or []:
         if isinstance(flag, dict):
             kind = flag.get("type")
-            if kind and kind not in seen:
+            if kind and kind not in seen and kind not in LOW_SIGNAL_FLAGS:
                 seen.append(kind)
     return ",".join(seen)
+
+
+def source_problems():
+    """Sources that are broken, degraded, or have quietly stopped returning jobs."""
+    if not DATABASE.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{DATABASE.as_posix()}?mode=ro", uri=True, timeout=10)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM scraper_health ORDER BY scraper_id").fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return []
+    now = datetime.utcnow()
+    problems = []
+    for r in rows:
+        last = None
+        try:
+            last = datetime.fromisoformat(str(r["last_success_at"])) if r["last_success_at"] else None
+        except ValueError:
+            pass
+        days = (now - last).days if last else None
+        if r["status"] in ("broken", "degraded"):
+            problems.append((r["scraper_id"], r["status"], (r["last_error"] or "")[:120]))
+        elif (r["consecutive_empty"] or 0) >= STALE_MIN_EMPTY_RUNS and (days is None or days >= STALE_AFTER_DAYS):
+            when = f"{days} days" if days is not None else "ever"
+            problems.append((r["scraper_id"], "stale", f"no results in {when}, {r['consecutive_empty']} empty runs"))
+    return problems
 
 
 def build(packet_path):
@@ -235,6 +275,7 @@ def build(packet_path):
         "after_filters": len(kept),
         "dropped": dict(dropped),
         "placeholder_dates": sorted(placeholders),
+        "source_problems": source_problems(),
         "candidates_scored": scored[:12],
         "candidates_unscored": unscored[:10],
         "closing_soon": closing[:15],
@@ -272,6 +313,12 @@ def markdown(brief):
         + (", ".join(brief["placeholder_dates"]) or "none") + ".",
         "",
     ]
+    if brief.get("source_problems"):
+        out += [
+            "> **Sources needing attention.** Roles from these may be missing from this brief:",
+        ]
+        out += [f"> - {sid}: {status}, {detail}" for sid, status, detail in brief["source_problems"]]
+        out += [""]
     if brief["packet_scored_pct"] < 60:
         out += [
             f"> **Coverage warning.** Only {brief['packet_scored_pct']}% of the packet was "
@@ -345,6 +392,10 @@ def main():
     payload = {k: v for k, v in brief.items() if not isinstance(v, list)}
     for key in ("candidates_scored", "candidates_unscored", "closing_soon", "queue"):
         payload[key] = [slim(j) for j in brief[key]]
+    payload["source_problems"] = [
+        {"source": sid, "status": status, "detail": detail}
+        for sid, status, detail in brief.get("source_problems") or []
+    ]
 
     stamp = datetime.now().strftime("%Y-%m-%d")
     SHORTLISTS.mkdir(parents=True, exist_ok=True)

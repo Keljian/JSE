@@ -224,6 +224,15 @@ def setup_database():
     _add_column(cursor, "jobs", "salary_period", "TEXT")
     _add_column(cursor, "jobs", "salary_confidence", "REAL")
     _add_column(cursor, "jobs", "screened_at", "TEXT")
+    # Learned pre-triage filter (triage_prefilter.py). `skip` means not analysed
+    # because the lane's model was near-certain the scorer would reject it;
+    # `audit` means it would have been skipped but was analysed as a check.
+    _add_column(cursor, "jobs", "prefilter_verdict", "TEXT")
+    _add_column(cursor, "jobs", "prefilter_score", "REAL")
+    _add_column(cursor, "jobs", "prefilter_reason", "TEXT")
+    # Set when an old rejected/archived row's long text was moved to the text
+    # archive database (db/jobs.py compact_old_job_text).
+    _add_column(cursor, "jobs", "text_archived_at", "TEXT")
 
     # Geocode results keyed by normalised query string. Rows with NULL lat are
     # cached negatives: without them an unresolvable location is re-requested
@@ -1027,6 +1036,13 @@ def setup_database():
         # strongest signal we have: they get weighted above merely-submitted
         # evidence in lane affinity and keyword generation.
         _add_column(cursor, _table, "interview_validated", "INTEGER DEFAULT 0")
+
+    # The PID of the process that started a scrape, so a run whose process died
+    # without reporting can be told apart from one still going.
+    _add_column(cursor, "scraper_runs", "pid", "INTEGER")
+    # Text archive markers for the lane-model tables, created further up.
+    _add_column(cursor, "job_postings", "text_archived_at", "TEXT")
+    _add_column(cursor, "lane_opportunities", "text_archived_at", "TEXT")
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_pipeline_stage ON jobs(pipeline_stage)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_next_action_date ON jobs(next_action_date)")

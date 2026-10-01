@@ -34,6 +34,13 @@ ACTIVE_PRE_APPLICATION_STAGES = ["interested"]
 APPLIED_EMPLOYER_DECLINE_DAYS = 50
 
 
+# A status follow-up is scheduled this many days after an application goes in,
+# unless the caller set its own next action. One recorded loss reason is
+# literally "I didn't follow up soon enough".
+FOLLOW_UP_AFTER_APPLY_DAYS = 7
+FOLLOW_UP_ACTION = "Follow up: ask for a status update"
+
+
 # Jobs analysed below this score are auto-rejected out of the active pipeline.
 # Relaxed June 2026 (was 50) — keep aligned with llm_handler.TRIAGE_KEEP_THRESHOLD.
 AUTO_REJECT_THRESHOLD = 45
@@ -150,6 +157,9 @@ DEFAULT_APP_SETTINGS.update({
     # Whether JSE may perform that reload itself when a request will not fit.
     # Off means it reports the too-small window and stops instead.
     "local_context_autoload": "1",
+    # Learned pre-triage filter (triage_prefilter.py). On by default; each lane
+    # only filters once its own held-out ads show the cut-off is safe.
+    "triage_prefilter": "1",
 })
 
 

@@ -325,6 +325,7 @@ def _run_startup_maintenance():
         ("closing-date refresh", lambda: db.refresh_closing_date_metadata(log_callback=log)),
         ("low-match auto-reject", lambda: db.reject_low_match_jobs(50, log_callback=log)),
         ("expired pipeline retirement", lambda: db.retire_expired_pipeline_jobs(log)),
+        ("orphaned scrape runs", db.reconcile_orphaned_scraper_runs),
     )
     for name, step in steps:
         try:

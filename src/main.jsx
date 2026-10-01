@@ -16,7 +16,7 @@ import "./styles.css";
 import jseIcon from "../assets/jse-icon.png";
 
 import { KANBAN_COLUMN_RENDER_CAP, PIPELINE, SUPPORT_MESSAGE, SUPPORT_URL, WORK_MODES } from "./lib/constants";
-import { documentAiLabel, formatBytes, hasCompanyResearch, normalizeStage, openSupportLink, jobFlagTypesOf, primaryScore, toErrorMessage, todayPlus } from "./lib/format";
+import { documentAiLabel, formatBytes, hasCompanyResearch, normalizeStage, openSupportLink, signalFlagTypesOf, primaryScore, toErrorMessage, todayPlus } from "./lib/format";
 import { appConfirm, appNotice, appPrompt, dialogBridge } from "./lib/dialogs";
 import { DialogModal, DocumentTextModal, TaskProgressBar } from "./components/primitives";
 import { JobCard } from "./components/chips";
@@ -645,7 +645,7 @@ function App() {
     if (!job) return;
     // Flags are noted in the log, not enforced. They are already on the card
     // and in the workspace; if the call is to apply anyway, that is the call.
-    const flagCount = jobFlagTypesOf(job).length;
+    const flagCount = signalFlagTypesOf(job).length;
     if (flagCount) {
       appendLog(`${job.title} has ${flagCount} flag${flagCount === 1 ? "" : "s"}; generating anyway.`);
     }
@@ -667,7 +667,7 @@ function App() {
       appendLog("Document generation is already running.");
       return;
     }
-    const flagged = candidates.filter((job) => jobFlagTypesOf(job).length);
+    const flagged = candidates.filter((job) => signalFlagTypesOf(job).length);
     const flaggedNote = flagged.length
       ? `\n\n${flagged.length} of these carr${flagged.length === 1 ? "ies" : "y"} flags worth a look first: ${flagged.map((job) => job.title).join(", ")}.`
       : "";
@@ -806,6 +806,21 @@ function App() {
       await refresh();
     } catch (error) {
       appendLog(`Could not create the warm lead: ${toErrorMessage(error)}`);
+    }
+  };
+
+  const importLinkedInContacts = async () => {
+    const csvPath = await window.jobAssistant.chooseCsv?.("Select Connections.csv from your LinkedIn data export");
+    if (!csvPath) return null;
+    try {
+      const result = await invoke("warmContacts:importLinkedIn", { path: csvPath });
+      appendLog(`LinkedIn import: ${result.imported} contacts at ${result.organisations} employers; ${result.open_jobs_with_contact_count} open roles now show a warm path.`);
+      await refresh();
+      return result;
+    } catch (error) {
+      const message = `LinkedIn import failed: ${toErrorMessage(error)}`;
+      appendLog(message);
+      return { error: message };
     }
   };
 
@@ -1692,6 +1707,7 @@ function App() {
             onRefresh={loadHiddenMarket}
             onTrack={trackHiddenTarget}
             onAddTarget={addHiddenMarketTarget}
+            onImportContacts={importLinkedInContacts}
             onStrategy={hiddenStrategy}
             onContactSelect={hiddenContactSelect}
             onLeadUpdate={hiddenLeadUpdate}

@@ -1,6 +1,6 @@
 /** Hidden-market intelligence, targets, and lead tracking. */
 import React, { useState } from "react";
-import { BriefcaseBusiness, Check, ChevronRight, ExternalLink, AlertTriangle, ArrowRightLeft, CalendarClock, Lightbulb, ListTodo, Loader2, Plus, Radar, RefreshCw, Send, Target, Trash2 } from "lucide-react";
+import { BriefcaseBusiness, Check, ChevronRight, ExternalLink, AlertTriangle, ArrowRightLeft, CalendarClock, Lightbulb, ListTodo, Loader2, Plus, Radar, RefreshCw, Send, Target, Trash2, Users } from "lucide-react";
 import { HM_OUTCOME_LABELS, HM_STATUS_LABELS, HM_TYPE_LABELS } from "../lib/constants";
 import { formatDate, tidyJobTitle } from "../lib/format";
 import { LinkedText } from "../components/primitives";
@@ -369,8 +369,10 @@ function ManualWarmLead({ onCreate }) {
   );
 }
 
-function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack, onAddTarget, onStrategy, onContactSelect, onLeadUpdate, onTouch, onConvert, onDeleteLead, onOpenJob }) {
+function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack, onAddTarget, onImportContacts, onStrategy, onContactSelect, onLeadUpdate, onTouch, onConvert, onDeleteLead, onOpenJob }) {
   const [section, setSection] = useState("signals");
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
   const [strategies, setStrategies] = useState({});
   const [contactResearch, setContactResearch] = useState({});
   const [strategyBusy, setStrategyBusy] = useState("");
@@ -379,6 +381,14 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
   const leads = data?.leads || [];
   const performance = data?.performance || {};
   const counts = overview.status_counts || {};
+
+  const importContacts = async () => {
+    setImporting(true);
+    try {
+      const result = await onImportContacts?.();
+      if (result) setImportResult(result);
+    } finally { setImporting(false); }
+  };
 
   const runStrategy = async (target) => {
     const key = target.target_key || target.name;
@@ -442,9 +452,19 @@ function HiddenMarketPanel({ data, busy, days, onDaysChange, onRefresh, onTrack,
               <option value={90}>90 days</option>
             </select>
           </label>
+          {onImportContacts ? (
+            <button className="secondary" disabled={importing} onClick={importContacts} title="Use the Connections.csv file from LinkedIn's data export (Settings > Data privacy > Get a copy of your data)">
+              {importing ? <Loader2 className="spin" size={16} /> : <Users size={16} />} Import LinkedIn contacts
+            </button>
+          ) : null}
           <button className="secondary" disabled={busy} onClick={onRefresh}>{busy ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />} Rescan</button>
         </div>
       </div>
+      {importResult ? (
+        <p className={importResult.error ? "settings-alert" : "settings-hint hm-import-result"}>
+          {importResult.error || `${importResult.imported} contacts across ${importResult.organisations} employers imported (${importResult.new_contacts} new). ${importResult.open_jobs_with_contact_count} open role${importResult.open_jobs_with_contact_count === 1 ? "" : "s"} now show a warm path on the job card.`}
+        </p>
+      ) : null}
 
       <nav className="intelligence-tabs" aria-label="Intelligence views">
         <button className={section === "signals" ? "active" : ""} onClick={() => setSection("signals")}>Market Signals</button>

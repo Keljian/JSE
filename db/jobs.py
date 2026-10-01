@@ -7,6 +7,8 @@ import re
 import hashlib
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
+from . import connection as _connection
 from .connection import (
     _execute_with_retry,
     ensure_application_context_schema,
@@ -16,6 +18,8 @@ from .constants import (
     ACTIVE_PRE_APPLICATION_STAGES,
     APPLIED_EMPLOYER_DECLINE_DAYS,
     AUTO_REJECT_THRESHOLD,
+    FOLLOW_UP_ACTION,
+    FOLLOW_UP_AFTER_APPLY_DAYS,
     BROAD_RELEVANT_TITLES,
     BROAD_UNRELATED_TITLES,
     KEYWORD_FILTERED_SOURCES,
@@ -538,6 +542,55 @@ def _upsert_job_posting_from_row(conn, row):
     return conn.execute("SELECT id FROM job_postings WHERE url = ?", (normalized_url,)).fetchone()["id"]
 
 
+# The local enrichment queue (job_extract per posting, application_review per
+# kit) was filled on every scrape but nothing ever drained it: by October 2026
+# it held ~40k pending rows and job_intelligence_json was empty on every job.
+# Off unless the app setting below is turned on; `enrichment:process` still
+# drains whatever is queued.
+ENRICHMENT_QUEUE_SETTING = "local_enrichment_queue"
+
+
+def _enrichment_queue_enabled(conn):
+    try:
+        row = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?", (ENRICHMENT_QUEUE_SETTING,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    if not row:
+        return False
+    try:
+        value = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        value = row[0]
+    return value in (True, 1) or str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def archive_and_clear_pending_local_llm_tasks(archive_dir):
+    """Write every pending/running enrichment task to a gzipped JSON file, then delete them.
+
+    Returns {"archived": n, "path": str or None}. Completed and failed tasks are
+    kept: they are history, not backlog.
+    """
+    import gzip
+
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM local_llm_tasks WHERE status IN ('pending', 'running') ORDER BY id"
+        ).fetchall()
+        if not rows:
+            return {"archived": 0, "path": None}
+        target_dir = Path(archive_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = target_dir / f"local_llm_tasks_pending_{stamp}.json.gz"
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            json.dump([dict(r) for r in rows], handle, default=str)
+        conn.execute("DELETE FROM local_llm_tasks WHERE status IN ('pending', 'running')")
+        conn.commit()
+    return {"archived": len(rows), "path": str(path)}
+
+
 def sync_legacy_job_to_lane_model(job_id, lane_id=None, source=None, keyword=None, route_result=None):
     with get_db_connection() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -562,6 +615,9 @@ def sync_legacy_job_to_lane_model(job_id, lane_id=None, source=None, keyword=Non
                     (route_result or {}).get("route_reason"),
                 ),
             )
+        if not _enrichment_queue_enabled(conn):
+            conn.commit()
+            return {"job_posting_id": posting_id, "lane_opportunity_id": opportunity_id}
         task_hash = hashlib.sha256(
             "\n".join([
                 str(row["title"] or ""),
@@ -794,6 +850,8 @@ def queue_application_review_task(application_kit_id, lane_id=None):
     with get_db_connection() as conn:
         row = conn.execute("SELECT * FROM application_kits WHERE id = ?", (application_kit_id,)).fetchone()
         if not row:
+            return False
+        if not _enrichment_queue_enabled(conn):
             return False
         payload_hash = hashlib.sha256(
             "\n".join([
@@ -1597,6 +1655,7 @@ PIPELINE_SUMMARY_COLUMNS = (
     "commute_km", "commute_sector", "commute_verdict", "commute_reason",
     "salary_min", "salary_max", "salary_currency", "salary_period",
     "salary_confidence", "screen_score_delta", "screened_at",
+    "prefilter_verdict", "prefilter_reason",
 )
 
 
@@ -1853,6 +1912,18 @@ def move_job_to_profile(job_id, profile_id):
     return get_job_details(job_id)
 
 
+def follow_up_date(applied_on=None):
+    """FOLLOW_UP_AFTER_APPLY_DAYS after the application, moved off a weekend."""
+    try:
+        start = datetime.fromisoformat(str(applied_on)[:10]) if applied_on else datetime.now()
+    except ValueError:
+        start = datetime.now()
+    due = start + timedelta(days=FOLLOW_UP_AFTER_APPLY_DAYS)
+    while due.weekday() >= 5:
+        due += timedelta(days=1)
+    return due.date().isoformat()
+
+
 def update_job_application(job_id, updates):
     if "additional_candidate_context" in updates:
         ensure_application_context_schema()
@@ -1882,6 +1953,21 @@ def update_job_application(job_id, updates):
     if values.get("pipeline_stage") == "new":
         values["next_action"] = None
         values["next_action_date"] = None
+
+    if (
+        values.get("pipeline_stage") == "applied"
+        and "next_action" not in values
+        and "next_action_date" not in values
+    ):
+        with get_db_connection() as conn:
+            current = conn.execute(
+                "SELECT pipeline_stage, application_date FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        if current and current["pipeline_stage"] != "applied":
+            values["next_action"] = FOLLOW_UP_ACTION
+            values["next_action_date"] = follow_up_date(
+                values.get("application_date") or current["application_date"]
+            )
 
     if not values:
         return get_job_details(job_id)
@@ -2346,6 +2432,251 @@ _SCREENING_COLUMNS = (
     ("salary_period", "salary_period"),
     ("salary_confidence", "salary_confidence"),
 )
+
+
+# --- Text archive -------------------------------------------------------------
+# Rejected and archived ads are kept for dedupe, recurrence and the prefilter's
+# training data, but their full text is most of the database: by October 2026,
+# ~60 MB of job text and ~130 MB of posting text, almost all of it for ads
+# nobody will open again. compact_old_job_text moves the long text of old
+# rows into a separate, zlib-compressed archive database and keeps an opening
+# excerpt in place, which is all dedupe (precomputed fingerprints), the
+# prefilter (first 1500 chars) and the board need. Nothing is deleted:
+# restore_archived_job_text puts a row back exactly as it was.
+TEXT_ARCHIVE_FILENAME = "job_text_archive.db"
+ARCHIVE_KEEP_CHARS = {"description": 1500, "ai_analysis": 400}
+_ARCHIVE_COLUMNS = {
+    "jobs": ("description", "ai_analysis", "pdf_text", "position_description_text",
+             "fragment_alignment_json", "company_intelligence", "job_intelligence_json"),
+    "job_postings": ("description", "pdf_text", "company_intelligence", "job_intelligence_json"),
+    "lane_opportunities": ("ai_analysis",),
+}
+_ARCHIVE_NOTE = "\n\n[Full text archived {when}; restore it to see the rest.]"
+
+
+def text_archive_path():
+    return Path(_connection.DB_FILE).with_name(TEXT_ARCHIVE_FILENAME)
+
+
+def _archive_connection():
+    conn = sqlite3.connect(str(text_archive_path()), timeout=30)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS archived_text (
+            source_table TEXT NOT NULL,
+            row_id INTEGER NOT NULL,
+            column_name TEXT NOT NULL,
+            compressed BLOB NOT NULL,
+            archived_at TEXT NOT NULL,
+            PRIMARY KEY (source_table, row_id, column_name)
+        )
+        """
+    )
+    return conn
+
+
+def _compaction_candidates(conn, cutoff):
+    job_ids = [row[0] for row in conn.execute(
+        """
+        SELECT id FROM jobs
+        WHERE pipeline_stage IN ('rejected', 'archived')
+          AND application_date IS NULL
+          AND text_archived_at IS NULL
+          AND date(COALESCE(date_scraped, updated_at)) < date(?)
+          AND NOT EXISTS (SELECT 1 FROM application_outcomes o WHERE o.job_id = jobs.id)
+          AND NOT EXISTS (SELECT 1 FROM interviews i WHERE i.job_id = jobs.id)
+        """,
+        (cutoff,),
+    ).fetchall()]
+    posting_ids = [row[0] for row in conn.execute(
+        """
+        SELECT p.id FROM job_postings p
+        LEFT JOIN jobs j ON j.id = p.legacy_job_id
+        WHERE p.text_archived_at IS NULL
+          AND date(COALESCE(p.date_scraped, p.created_at)) < date(?)
+          AND (
+                j.id IS NULL
+                OR (j.pipeline_stage IN ('rejected', 'archived') AND j.application_date IS NULL)
+          )
+        """,
+        (cutoff,),
+    ).fetchall()]
+    opportunity_ids = []
+    if job_ids:
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS _compact_jobs (id INTEGER PRIMARY KEY)")
+        conn.execute("DELETE FROM _compact_jobs")
+        conn.executemany("INSERT INTO _compact_jobs (id) VALUES (?)", [(i,) for i in job_ids])
+        opportunity_ids = [row[0] for row in conn.execute(
+            """
+            SELECT id FROM lane_opportunities
+            WHERE text_archived_at IS NULL AND legacy_job_id IN (SELECT id FROM _compact_jobs)
+            """
+        ).fetchall()]
+    return {"jobs": job_ids, "job_postings": posting_ids, "lane_opportunities": opportunity_ids}
+
+
+def _archive_columns(conn, table):
+    """The archivable columns this database actually has (some are added lazily)."""
+    present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    return [column for column in _ARCHIVE_COLUMNS[table] if column in present]
+
+
+def _chunks(values, size=500):
+    for start in range(0, len(values), size):
+        yield values[start:start + size]
+
+
+def compact_old_job_text(older_than_days=60, dry_run=True, log_callback=None):
+    """Move the long text of old rejected/archived ads into the text archive.
+
+    Never touches a job that was applied to, has an outcome or an interview.
+    Dry run (the default) only counts. Returns per-table row counts and the
+    bytes that would move.
+    """
+    import zlib
+
+    log = log_callback or (lambda message: None)
+    cutoff = (datetime.now() - timedelta(days=int(older_than_days))).date().isoformat()
+    with get_db_connection() as conn:
+        ids = _compaction_candidates(conn, cutoff)
+        summary = {"cutoff": cutoff, "dry_run": bool(dry_run), "tables": {}}
+        columns_by_table = {table: _archive_columns(conn, table) for table in ids}
+        for table, row_ids in ids.items():
+            columns = columns_by_table[table]
+            size_expr = " + ".join(f"COALESCE(length({c}), 0)" for c in columns)
+            total = 0
+            for chunk in _chunks(row_ids):
+                marks = ",".join("?" for _ in chunk)
+                total += conn.execute(
+                    f"SELECT COALESCE(SUM({size_expr}), 0) FROM {table} WHERE id IN ({marks})", chunk
+                ).fetchone()[0]
+            summary["tables"][table] = {"rows": len(row_ids), "text_mb": round(total / 1048576, 1)}
+        if dry_run or not any(ids.values()):
+            return summary
+
+        # Fingerprints first: dedupe recomputes a missing one from the
+        # description, which after compaction would be the excerpt.
+        for chunk in _chunks(ids["jobs"]):
+            marks = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"SELECT id, description FROM jobs WHERE id IN ({marks}) AND description_fingerprint IS NULL", chunk
+            ).fetchall()
+            updates = [(description_fingerprint(r["description"]), r["id"]) for r in rows]
+            updates = [u for u in updates if u[0]]
+            if updates:
+                conn.executemany("UPDATE jobs SET description_fingerprint = ? WHERE id = ?", updates)
+        conn.commit()
+
+        now = datetime.now().isoformat(timespec="seconds")
+        note = _ARCHIVE_NOTE.format(when=now[:10])
+        archive = _archive_connection()
+        try:
+            for table, row_ids in ids.items():
+                columns = columns_by_table[table]
+                for chunk in _chunks(row_ids):
+                    marks = ",".join("?" for _ in chunk)
+                    rows = conn.execute(
+                        f"SELECT id, {', '.join(columns)} FROM {table} WHERE id IN ({marks})", chunk
+                    ).fetchall()
+                    # The archive is written and committed before the live row
+                    # is shortened, so an interruption can only ever leave text
+                    # in both places, never in neither.
+                    archive.executemany(
+                        "INSERT OR REPLACE INTO archived_text VALUES (?, ?, ?, ?, ?)",
+                        [
+                            (table, r["id"], c, zlib.compress(str(r[c]).encode("utf-8"), 6), now)
+                            for r in rows for c in columns if r[c] not in (None, "")
+                        ],
+                    )
+                    archive.commit()
+                    assignments = []
+                    for c in columns:
+                        keep = ARCHIVE_KEEP_CHARS.get(c)
+                        if keep:
+                            assignments.append(
+                                f"{c} = CASE WHEN length({c}) > {keep} THEN substr({c}, 1, {keep}) || ? ELSE {c} END"
+                            )
+                        else:
+                            assignments.append(f"{c} = NULL")
+                    params = [note for c in columns if ARCHIVE_KEEP_CHARS.get(c)]
+                    conn.execute(
+                        f"UPDATE {table} SET {', '.join(assignments)}, text_archived_at = ? WHERE id IN ({marks})",
+                        [*params, now, *chunk],
+                    )
+                    conn.commit()
+                log(f"Archived long text for {len(row_ids)} {table} row(s).")
+        finally:
+            archive.close()
+    return summary
+
+
+def restore_archived_job_text(job_id):
+    """Put a compacted job (and its posting and lane rows) back as it was."""
+    import zlib
+
+    path = text_archive_path()
+    if not path.exists():
+        return {"restored": 0}
+    restored = 0
+    with get_db_connection() as conn:
+        targets = [("jobs", job_id)]
+        targets += [("job_postings", r[0]) for r in conn.execute(
+            "SELECT id FROM job_postings WHERE legacy_job_id = ?", (job_id,)).fetchall()]
+        targets += [("lane_opportunities", r[0]) for r in conn.execute(
+            "SELECT id FROM lane_opportunities WHERE legacy_job_id = ?", (job_id,)).fetchall()]
+        archive = _archive_connection()
+        try:
+            for table, row_id in targets:
+                rows = archive.execute(
+                    "SELECT column_name, compressed FROM archived_text WHERE source_table = ? AND row_id = ?",
+                    (table, row_id),
+                ).fetchall()
+                if not rows:
+                    continue
+                values = {name: zlib.decompress(blob).decode("utf-8") for name, blob in rows}
+                assignments = ", ".join(f"{name} = ?" for name in values)
+                conn.execute(
+                    f"UPDATE {table} SET {assignments}, text_archived_at = NULL WHERE id = ?",
+                    [*values.values(), row_id],
+                )
+                restored += 1
+            conn.commit()
+        finally:
+            archive.close()
+    return {"restored": restored}
+
+
+def get_prefilter_training_rows(profile_id, limit=20000):
+    """(id, title, opening text, score) for every ad the LLM has scored in a lane.
+
+    Only LLM-scored rows: a prefilter skip has no score, and a hand-entered job
+    never went through the scorer, so neither says anything about it.
+    """
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title, substr(COALESCE(description, ''), 1, 1500) AS opening, match_score
+            FROM jobs
+            WHERE profile_id = ? AND match_score IS NOT NULL
+              AND ai_analysis IS NOT NULL AND ai_analysis <> ''
+              AND COALESCE(source, '') <> 'Manual'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (profile_id, limit),
+        ).fetchall()
+    return [(row["id"], row["title"], row["opening"], row["match_score"]) for row in rows]
+
+
+def save_prefilter_verdict(job_id, verdict):
+    """Record a prefilter decision, or clear it when verdict is None."""
+    verdict = verdict or {}
+    with get_db_connection() as conn:
+        conn.execute(
+            "UPDATE jobs SET prefilter_verdict = ?, prefilter_score = ?, prefilter_reason = ? WHERE id = ?",
+            (verdict.get("verdict"), verdict.get("score"), verdict.get("reason"), job_id),
+        )
+        conn.commit()
 
 
 def save_job_screening(job_id, verdict):

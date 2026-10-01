@@ -161,6 +161,7 @@ GLOBAL_AI_SETTING_FIELDS = (
     "analysis_workers",
     "local_context_target",
     "local_context_autoload",
+    "triage_prefilter",
 )
 
 
@@ -409,7 +410,7 @@ def update_app_settings(settings):
             except (TypeError, ValueError):
                 sanitized[key] = 0
             continue
-        if key == "local_context_autoload":
+        if key in ("local_context_autoload", "triage_prefilter"):
             # A checkbox sends a boolean, and the blank-falls-back-to-default
             # rule below would turn False back into the default "1".
             sanitized[key] = "1" if value in (True, 1) or str(value).strip().lower() in {"1", "true", "yes", "on"} else "0"

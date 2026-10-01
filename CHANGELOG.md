@@ -6,6 +6,29 @@ All notable changes to JSE are documented here.
 
 ### Added
 
+- **Learned prefilter before triage.** Each lane trains a small naive Bayes model
+  on the ads it has already scored and skips new ads it is near-certain would
+  score under 35. A cut-off is only used when, on held-out ads, it loses no role
+  scored 70+, under 1% of roles scored 60+, and at least 97% of what it skips
+  scored under 60; otherwise the lane is not filtered. 5% of would-be skips are
+  still triaged as an audit, and an audit that scores 60+ is logged as a miss.
+  Skipped ads keep their row with a "Prefiltered" chip and a reason, and
+  re-analysing a specific job always bypasses the filter. On/off in Settings.
+- **Per-phase timing in the analysis log.** Every run ends with how many jobs
+  each phase handled, how long it took and the seconds per job.
+- **LinkedIn contacts import.** Intelligence → Import LinkedIn contacts reads
+  the Connections.csv from LinkedIn's data export into the warm-contact book,
+  so any open role at an employer where a connection works shows a warm path.
+- **Follow-up scheduled on apply.** Moving a job to Applied sets a status
+  follow-up seven days out (moved off weekends) unless a next action was given.
+- **Two new outcome dimensions:** time from ad to application, and document
+  track, so Funnel Insights can test whether either predicts an interview.
+- **Text archive for old rejected ads.** "Archive old text and compact" in
+  Maintenance moves the full text of rejected/archived ads older than 60 days
+  into `job_text_archive.db` (zlib-compressed), keeps a 1,500-character excerpt,
+  then vacuums. Applied, interviewed and outcome-bearing jobs are never touched.
+  `jobs:restoreArchivedText` puts a job back exactly.
+
 - **Position descriptions can be fetched straight off the advertisement.** Most
   ads park the real selection criteria in a linked PD and paraphrase them in the
   ad body, and the scrapers keep only the ad text — so the link was gone by the
@@ -52,6 +75,27 @@ All notable changes to JSE are documented here.
   where the endpoint offers one, falling back to the character estimate. The
   estimate can be out by a factor of two on repetitive text, and it decides
   whether a request is refused as too large.
+
+### Changed
+
+- **Scraper health says when a source has gone quiet.** A source with 10+ empty
+  runs in a row and no result for 7+ days is now `stale`, with the days since it
+  last worked, in Settings → Searchers, the dashboard, `jse_health` and the daily
+  brief. HiringCafe had sat at "healthy" for a month of empty runs.
+- **Orphaned scrape runs are closed out.** Runs record their PID; a `running`
+  row whose process has gone, or that is over 8 hours old, is marked
+  `interrupted` at startup and before each scrape.
+- **`jse_nightly_status` reports its age** and no longer says `all_ok` about a
+  run from an earlier night.
+- **Backups are compressed, tiered and capped.** Startup backups are verified,
+  then gzipped. Retention keeps the newest 3 plus one per week for 4 weeks, and
+  the Backups folder is held under 1 GB, oldest JSE-made backups first. Restore
+  accepts `.db.gz` and keeps its safety copy compressed.
+- **The local enrichment queue is off by default.** Nothing drained it; it had
+  reached ~40k pending rows. `enrichment:clear` archives the backlog to Backups
+  and empties it. Turn the `local_enrichment_queue` app setting on to resume.
+- **Evidence-gap flags are left off job cards and counts.** They sat on almost
+  every role. The workspace still lists them in full.
 
 ### Fixed
 

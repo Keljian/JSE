@@ -527,6 +527,7 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
                   {plugin.install_path ? <small title={plugin.install_path}>{plugin.install_path}</small> : null}
                   <small className={`scraper-health ${plugin.health?.status || "unknown"}`}>
                     Health: {plugin.health?.status || "unknown"}
+                    {plugin.health?.stale_reason ? ` · ${plugin.health.stale_reason} Try Diagnose.` : ""}
                     {plugin.health?.last_error ? ` · ${plugin.health.last_error}` : ""}
                   </small>
                 </div>
@@ -619,6 +620,12 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
                   <small className="field-hint">{scoringProvider === "local"
                     ? "The local endpoint runs one request at a time — it returns 429 if sent overlapping requests. Switch matching to a hosted or free endpoint to raise this."
                     : "Caps concurrent requests across matching, analysis and document generation. Raise only if the endpoint genuinely serves parallel requests."}</small>
+                </label>
+                <label className="checkbox-field ai-route-model">
+                  <input type="checkbox" checked={String(globalForm.triage_prefilter ?? "1") !== "0"} onChange={(event) => updateGlobal("triage_prefilter", event.target.checked ? "1" : "0")} />
+                  <span>Skip near-certain rejects before triage
+                    <small className="field-hint">Each lane learns from its own scored ads. A cut-off is only used if it loses no 70+ role and under 1% of 60+ roles on held-out ads, and 5% of would-be skips are still scored as an audit.</small>
+                  </span>
                 </label>
               </div>
             </article>
@@ -921,7 +928,7 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
         <section className="settings-section full-settings">
           <h3>Maintenance</h3>
           <div className="maintenance-row">
-            <button className="secondary" disabled={compacting} onClick={compactDatabase}><RefreshCw size={16} /> {compacting ? "Compacting..." : "Compact database"}</button>
+            <button className="secondary" disabled={compacting} onClick={compactDatabase}><RefreshCw size={16} /> {compacting ? "Compacting..." : "Archive old text and compact"}</button>
             {compactResult ? (
               <span>
                 Total {formatBytes(compactResult.before_bytes)} to {formatBytes(compactResult.after_bytes)}
@@ -931,8 +938,9 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
                     ? `, grew by ${formatBytes(compactResult.delta_bytes)} after merging WAL`
                     : ", no space reclaimed"}
                 . Main DB {formatBytes(compactResult.before_main_bytes)} to {formatBytes(compactResult.after_main_bytes)}.
+                {compactResult.archived?.tables?.jobs?.rows ? ` Archived the text of ${compactResult.archived.tables.jobs.rows} old rejected job(s).` : ""}
               </span>
-            ) : <span>Checkpoint WAL and vacuum the local SQLite database.</span>}
+            ) : <span>Moves the full text of rejected and archived ads older than 60 days to a separate archive file (an opening excerpt stays), then vacuums. Applied-to jobs are never touched.</span>}
           </div>
           <div className="maintenance-row">
             <button className="secondary" disabled={recoveringDatabase} onClick={recoverDatabase}><FolderOpen size={16} /> {recoveringDatabase ? "Recovering..." : "Recover database"}</button>

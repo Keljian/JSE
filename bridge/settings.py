@@ -16,6 +16,7 @@ from .runtime import (
     _run_startup_maintenance,
     _startup_maintenance_lock,
     _startup_maintenance_started,
+    emit,
     row_to_dict,
 )
 from .lanes import (
@@ -265,8 +266,27 @@ def command_ai_local_context_set(payload):
     }
 
 
-def command_database_compact(_payload):
-    return db.compact_database()
+def command_database_compact(payload):
+    """Archive old rejected-ad text (unless told not to), then VACUUM.
+
+    Archiving first is what makes the VACUUM worth running: it frees the pages
+    the VACUUM then returns to the filesystem.
+    """
+    payload = payload or {}
+    archived = None
+    if payload.get("archive_old_text", True):
+        archived = db.compact_old_job_text(
+            older_than_days=int(payload.get("older_than_days") or 60),
+            dry_run=False,
+            log_callback=lambda message: emit("log", message=message),
+        )
+    result = db.compact_database()
+    result["archived"] = archived
+    return result
+
+
+def command_jobs_restore_archived_text(payload):
+    return db.restore_archived_job_text(int(payload["job_id"]))
 
 
 # Commands this module contributes to the bridge dispatch table.
@@ -282,4 +302,5 @@ COMMANDS = {
     "ai:localContextSet": command_ai_local_context_set,
     "ai:listModels": command_ai_list_models,
     "database:compact": command_database_compact,
+    "jobs:restoreArchivedText": command_jobs_restore_archived_text,
 }

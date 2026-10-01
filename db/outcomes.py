@@ -1241,9 +1241,11 @@ def _role_records():
     with get_db_connection() as conn:
         rows = conn.execute(
             """
-            SELECT job_id, role_key, snapshot_json, outcome, interview_rounds,
-                   applied_at, channel, interview_stage_reached, loss_reason
-            FROM application_outcomes
+            SELECT o.job_id, o.role_key, o.snapshot_json, o.outcome, o.interview_rounds,
+                   o.applied_at, o.channel, o.interview_stage_reached, o.loss_reason,
+                   j.date_scraped AS job_first_seen, j.document_track AS job_document_track
+            FROM application_outcomes o
+            LEFT JOIN jobs j ON j.id = o.job_id
             """
         ).fetchall()
     by_role = {}
@@ -1271,6 +1273,8 @@ def _role_records():
         record["loss_reason"] = record["loss_reason"] or row["loss_reason"]
         record["channel"] = record["channel"] or row["channel"] or snap.get("channel")
         record["applied_at"] = record.get("applied_at") or row["applied_at"]
+        record["first_seen"] = record.get("first_seen") or row["job_first_seen"]
+        record["document_track"] = record.get("document_track") or row["job_document_track"]
         # Prefer the most complete (non-orphaned, titled) snapshot as canonical.
         if not record["snap"].get("title") and snap.get("title"):
             record["snap"] = snap
@@ -1289,8 +1293,30 @@ def _role_records():
             "salary_band": snap.get("salary_band") or "unknown",
             "seniority_band": snap.get("seniority_band") or "unknown",
             "lane": lane_names.get(lane_id, "unknown"),
+            "apply_speed": _apply_speed_band(record.get("first_seen"), record.get("applied_at")),
+            "document_track": record.get("document_track") or snap.get("document_track") or "unknown",
         }
     return list(by_role.values())
+
+
+APPLY_SPEED_BANDS = ("0-2 days", "3-7 days", "8+ days")
+
+
+def _apply_speed_band(first_seen, applied_at):
+    """How long after JSE first saw the ad the application went in.
+
+    Tests the hypothesis that early applications convert better. It is only a
+    hypothesis until the outcome data says so, which is the point of tracking it.
+    """
+    try:
+        seen = datetime.fromisoformat(str(first_seen)[:19].replace("T", " "))
+        applied = datetime.fromisoformat(str(applied_at)[:19].replace("T", " "))
+    except (TypeError, ValueError):
+        return "unknown"
+    days = (applied.date() - seen.date()).days
+    if days < 0:
+        return "unknown"
+    return APPLY_SPEED_BANDS[0] if days <= 2 else APPLY_SPEED_BANDS[1] if days <= 7 else APPLY_SPEED_BANDS[2]
 
 
 def compute_funnel_insights(store=True):
@@ -1321,6 +1347,7 @@ def compute_funnel_insights(store=True):
         "channel": "Channel", "employer_type": "Employer type",
         "match_score_band": "Match-score band",
         "salary_band": "Salary band", "seniority_band": "Seniority band", "lane": "Lane",
+        "apply_speed": "Time from ad to application", "document_track": "Document track",
     }
     dimensions = {}
     for dim in dimension_labels:
