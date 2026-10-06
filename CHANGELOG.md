@@ -4,6 +4,8 @@ All notable changes to JSE are documented here.
 
 ## Unreleased
 
+## 1.0.0-beta.3 - 2026-10-07
+
 ### Added
 
 - **Learned prefilter before triage.** Each lane trains a small naive Bayes model
@@ -99,6 +101,11 @@ All notable changes to JSE are documented here.
 
 ### Fixed
 
+- **Installed builds now include the `db/`, `llm/` and `bridge/` packages.** The
+  installer only packaged top-level `.py` files, so after the database, LLM and
+  bridge code moved into packages every installed build failed on its first
+  bridge call with `No module named 'db'` and the bridge worker exited on
+  startup. A packaging test now fails if any Python package is left out.
 - **Local requests are now sized to the context window the model was actually
   loaded with.** A local server serves whatever window it was started with,
   which is often far below the model's native context — Unsloth Studio was
