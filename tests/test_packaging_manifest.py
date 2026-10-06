@@ -45,6 +45,23 @@ class PackagingManifestTests(unittest.TestCase):
             "defaults/ must be packaged — it is the first-run seed for search terms and plugins",
         )
 
+    def test_every_runtime_python_package_is_packaged(self):
+        # `*.py` only matches the repo root. When database_manager/llm_handler/
+        # python_bridge were split into db/, llm/ and bridge/, the installer kept
+        # shipping the facades without the packages behind them, and every
+        # bridge call died with "No module named 'db'".
+        not_shipped = {"tests", "tools", "mcp", "node_modules", "build", "dist"}
+        packages = sorted(
+            init.parent.name for init in ROOT.glob("*/__init__.py")
+            if init.parent.name not in not_shipped
+        )
+        self.assertTrue(packages)
+        for name in packages:
+            self.assertTrue(
+                any(pattern.startswith(f"{name}/") for pattern in self.files),
+                f"Python package {name}/ is imported at runtime but not packaged",
+            )
+
     def test_defaults_directory_exists_and_is_tracked(self):
         defaults = ROOT / "defaults"
         self.assertTrue(defaults.is_dir())
