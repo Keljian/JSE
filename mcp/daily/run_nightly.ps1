@@ -101,8 +101,11 @@ function Invoke-BridgeStep {
 # A stray analysis process from an earlier manual run will contend with this one
 # for the single local endpoint and halve both. Only analysis:run is matched, so
 # the Electron worker and any scrape are left alone.
+# Matched on this install's own bridge path: a second JSE install (JSE-US) shares
+# the machine, and its analysis is not a stray of this one.
+$OwnBridgePattern = "*" + [Management.Automation.WildcardPattern]::Escape($Bridge) + "*analysis:run*"
 Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" | Where-Object {
-    $_.CommandLine -like "*python_bridge.py*analysis:run*"
+    $_.CommandLine -like $OwnBridgePattern
 } | ForEach-Object {
     Write-Host "stopping stray analysis process $($_.ProcessId)"
     try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}

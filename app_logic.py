@@ -6,7 +6,6 @@ updates, and cancellation-aware progress logging.
 """
 import json
 import re
-import threading
 from datetime import datetime
 import llm_handler
 import scraper_dispatcher
@@ -187,8 +186,6 @@ def execute_scraping_and_analysis(keywords, sources, resume_text, status_callbac
         report(completed_tasks, total_tasks, phase="retrying",
                detail=f"Retrying {len(failed_tasks)} empty search(es) with new terms…")
 
-        current_keywords = list(keywords)
-        keywords_lock = threading.Lock()
 
         def _retry_failed_task(task):
             if cancel_event.is_set():
@@ -199,16 +196,9 @@ def execute_scraping_and_analysis(keywords, sources, resume_text, status_callbac
                 return None
             log_callback(f"LLM suggested '{new_keyword}'. Retrying on {task['source']}.")
 
-            # Update keywords list
-            if update_keywords_callback:
-                with keywords_lock:
-                    try:
-                        idx = current_keywords.index(task['keyword'])
-                        current_keywords[idx] = new_keyword
-                        update_keywords_callback(list(current_keywords))
-                        db.save_profile_terms(profile_id, current_keywords)
-                    except ValueError:
-                        pass # Original keyword might have already been replaced
+            # The broader term is used for this retry only. Saving it over the
+            # lane's terms let one empty search rewrite a curated list, and
+            # repeated retries collapsed several terms into the same generic one.
 
             return _run_scraper_task(task['source'], new_keyword, resume_text, status_callback, log_callback, profile_id, search_settings)
 

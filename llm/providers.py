@@ -523,8 +523,11 @@ def _local_context_length(local):
     context = None
     try:
         row = _loaded_model_row(_local_model_rows(local), local.get("model"))
-        for field in ("context_length", "max_context_length", "max_model_len", "n_ctx"):
-            value = (row or {}).get(field)
+        meta = (row or {}).get("meta") if isinstance((row or {}).get("meta"), dict) else {}
+        for value in (
+            *((row or {}).get(field) for field in ("context_length", "max_context_length", "max_model_len", "n_ctx")),
+            meta.get("n_ctx"),  # Strata reports the served window here
+        ):
             if isinstance(value, (int, float)) and value > 0:
                 context = int(value)
                 break
@@ -562,7 +565,11 @@ def _local_reasoning_style(local):
     style = None
     try:
         status = local_status(local)
-        if status.get("supports_reasoning") and not status.get("reasoning_always_on"):
+        if status.get("service") == "strata":
+            # Strata takes chat_template_kwargs.enable_thinking=false (and maps
+            # reasoning_effort "none" onto it), so no /no_think token is needed.
+            style = "enable_thinking"
+        elif status.get("supports_reasoning") and not status.get("reasoning_always_on"):
             style = str(status.get("reasoning_style") or "").strip() or None
     except Exception:
         # An endpoint that will not describe itself is not a reason to refuse to
@@ -606,6 +613,11 @@ def set_local_context_window(target, settings=None, n_parallel=1, local=None):
     """
     local = local or _local_ai_settings(settings)
     status = local_status(local)
+    if status.get("service") == "strata":
+        raise Exception(
+            "Strata cannot reload at another context window from JSE: its window is "
+            "chosen at setup. Run F:\\Strata\\SETUP.bat (or START-HERE.bat --setup) to change it."
+        )
     model_path = str(status.get("model_identifier") or local.get("model") or "").strip()
     if not model_path:
         raise ValueError("No model is loaded, so there is nothing to reload. Load one in Unsloth Studio first.")
@@ -806,7 +818,11 @@ def _suppress_reasoning(payload, messages, local):
     — so the call truncates and the caller is handed nothing, or handed the
     truncated reasoning itself. Returns the (possibly rewritten) messages.
     """
-    if _local_reasoning_style(local) == "enable_thinking":
+    # Unsloth Studio advertises "enable_thinking_effort" once it also takes
+    # effort levels; the template switch is the same, and the fallback below
+    # sends reasoning_effort="none", which that server does not list.
+    style = _local_reasoning_style(local) or ""
+    if style.startswith("enable_thinking"):
         payload["chat_template_kwargs"] = {"enable_thinking": False}
         return messages
     payload["reasoning_effort"] = "none"
@@ -904,10 +920,19 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
             choice = data["choices"][0]
             msg = choice["message"]
             text = (msg.get("content") or "").strip()
-            if not text:
+            if not text and (json_mode or no_reasoning):
                 # Thinking-mode models (qwythos, some Qwen3 configs) route all
                 # output to reasoning_content; content is always empty string.
+                # Only trusted when reasoning was asked to be off: otherwise
+                # reasoning_content is the model's planning, and a long-form
+                # call would save that planning as the document.
                 text = (msg.get("reasoning_content") or "").strip()
+            if not text:
+                raise ValueError(
+                    "The local endpoint returned no answer content"
+                    + (" (output budget spent on reasoning)" if choice.get("finish_reason") == "length" else "")
+                    + "."
+                )
             if choice.get("finish_reason") == "length":
                 _report_truncation(data, json_mode, max_tokens, context)
             return _strip_reasoning_blocks(text)

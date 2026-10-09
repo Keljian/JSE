@@ -58,7 +58,7 @@ if provider == "local":
         check(
             "local endpoint reachable",
             False,
-            f"{base} did not answer ({exc}). Is Unsloth Studio running?",
+            f"{base} did not answer ({exc}). Is the local model server (Strata) running?",
         )
 
     if served:

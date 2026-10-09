@@ -177,6 +177,7 @@ Original Resume (source of truth — every fact must come from here):
             messages=[{"role": "user", "content": resume_prompt}],
             temperature=0.25,
             max_tokens=8000,
+            no_reasoning=True,
         )
     except Exception as e:
         log(f"Error generating tailored resume: {e}")
@@ -228,6 +229,7 @@ Tailored Resume (the source of every factual claim in the letter):
             messages=[{"role": "user", "content": cover_letter_prompt}],
             temperature=0.55,
             max_tokens=2500,
+            no_reasoning=True,
         )
     except Exception as e:
         log(f"Error generating cover letter: {e}")

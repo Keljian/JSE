@@ -55,6 +55,13 @@ PRECISE_PRECISIONS = frozenset({"address", "street", "suburb", "town", "postcode
 # data about the job, and gaps pass.
 UNUSABLE_PRECISIONS = frozenset({"region", "state", "country"})
 
+# How far an employer-name match may sit from the posted location and still be
+# trusted in its place. Wide enough for a metro area (Melton is ~35km from the
+# Melbourne centroid), narrow enough to reject a regional branch. At 150km,
+# "Fire Rescue Victoria" and "Victoria Police" resolved to regional stations
+# and their Melbourne roles were blocked at ~130km.
+EMPLOYER_MAX_OFFSET_KM = 60.0
+
 # How far past the limit a job must sit before an imprecise geocode may block
 # it. "Melbourne VIC" resolves to a city centroid that can be 30km from the
 # actual office, so a job 50km out on a city-level match is a question, not a
@@ -283,7 +290,7 @@ class CommuteModel:
         if hit:
             same_country = (not emp.get("country_code") or not hit.get("country_code")
                             or emp["country_code"] == hit["country_code"])
-            near = haversine_km((hit["lat"], hit["lon"]), (emp["lat"], emp["lon"])) <= 150.0
+            near = haversine_km((hit["lat"], hit["lon"]), (emp["lat"], emp["lon"])) <= EMPLOYER_MAX_OFFSET_KM
             if not (same_country and near):
                 return hit, precision, "location"
         elif self.home_country and emp.get("country_code") \
@@ -365,7 +372,12 @@ class CommuteModel:
             # penalty. The user said this many kilometres is acceptable; a
             # modelled travel-time uplift may raise a question about a trip
             # inside that radius but must not overrule the number they set.
-            if distance > limit + slack:
+            if distance > limit + slack and source == "employer":
+                # An employer name is a guess at the workplace, not a statement
+                # of it. It may raise the question but never settles it.
+                out.update(verdict="review", score_delta=-8)
+                notes.append("located by employer name only")
+            elif distance > limit + slack:
                 out.update(verdict="blocked", score_delta=-15)
             else:
                 out.update(verdict="review", score_delta=-8)

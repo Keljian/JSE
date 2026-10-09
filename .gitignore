@@ -40,6 +40,10 @@ shortlists/
 # logs carry real adverts and payloads. The scripts that write them stay tracked.
 mcp/daily/screening_answers.json
 mcp/daily/nightly_status.json
+# Machine-specific model server paths for the daily scripts.
+mcp/daily/automation*.json
+# Letter bodies drafted during a session belong in mcp/daily/work/.
+mcp/daily/body_*.txt
 mcp/daily/logs/
 # Scratch for the daily loop: letter bodies, one-off inspection scripts, specs.
 # Anything a session writes while working goes here, never beside the tools.

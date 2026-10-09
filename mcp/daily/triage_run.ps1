@@ -27,17 +27,34 @@ function Say($m) {
 
 Say "triage run starting"
 
-# ---- 1. Unsloth Studio -----------------------------------------------------
-$exe = "C:\Users\rohan\AppData\Local\Unsloth Studio (Desktop)\unsloth-studio.exe"
-$running = Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.ProcessName -match 'unsloth' }
-if ($running) {
-    Say "Unsloth Studio already running (pid $($running[0].Id))"
-} elseif (Test-Path $exe) {
-    Say "starting Unsloth Studio"
-    Start-Process -FilePath $exe -WindowStyle Minimized
+# ---- 1. Model server --------------------------------------------------------
+# Which server to start, if any, comes from automation.json beside this script
+# (not tracked: it holds machine paths). {"server_exe": "...", "server_process": "..."}
+# With no file, nothing is started and step 2 just waits for the endpoint.
+$automation = Join-Path $Daily "automation.json"
+$serverExe = $null; $serverProcess = $null; $serverArgs = $null
+if (Test-Path $automation) {
+    try {
+        $auto = Get-Content $automation -Raw | ConvertFrom-Json
+        $serverExe = $auto.server_exe; $serverProcess = $auto.server_process; $serverArgs = $auto.server_args
+    } catch { Say "! could not read $automation" }
+}
+if ($serverExe) {
+    $running = $null
+    if ($serverProcess) {
+        $running = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match $serverProcess }
+    }
+    if ($running) {
+        Say "model server already running (pid $($running[0].Id))"
+    } elseif (Test-Path $serverExe) {
+        Say "starting model server: $serverExe"
+        if ($serverArgs) { Start-Process -FilePath $serverExe -ArgumentList $serverArgs -WindowStyle Minimized }
+        else { Start-Process -FilePath $serverExe -WindowStyle Minimized }
+    } else {
+        Say "! model server not found at $serverExe"
+    }
 } else {
-    Say "! Unsloth Studio not found at $exe"
+    Say "no model server configured in automation.json; waiting for the endpoint"
 }
 
 # ---- 2. Wait for the endpoint to answer ------------------------------------
@@ -65,7 +82,7 @@ if ($endpointUp) {
     Say "local endpoint answering at $base"
 } else {
     Say "! endpoint did not come up within $EndpointWaitMinutes min."
-    Say "! Unsloth Studio may need its server started by hand. Skipping analysis."
+    Say "! the model server may need starting by hand (see automation.json). Skipping analysis."
     Say "triage run aborted"
     exit 1
 }

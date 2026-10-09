@@ -361,6 +361,13 @@ class ReasoningToggleTests(unittest.TestCase):
         self.assertNotIn("/no_think", self._last_user(payload),
                          "the token is redundant once the toggle is understood")
 
+    def test_an_endpoint_advertising_the_effort_variant_gets_the_toggle(self):
+        payload = self._send({"supports_reasoning": True, "reasoning_style": "enable_thinking_effort"})
+        self.assertEqual(payload.get("chat_template_kwargs"), {"enable_thinking": False})
+        self.assertNotIn("/no_think", self._last_user(payload))
+        self.assertNotIn("reasoning_effort", payload,
+                         "the effort variant lists low..xhigh; none is not one of them")
+
     def test_an_endpoint_without_the_toggle_keeps_the_token(self):
         payload = self._send({"supports_reasoning": False})
         self.assertIsNone(payload.get("chat_template_kwargs"))

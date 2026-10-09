@@ -149,6 +149,19 @@ def _call_claude(api_key, model, system, user):
     return "\n".join(p.get("text", "") for p in data.get("content", []) if p.get("type") == "text")
 
 
+def _document_text(msg):
+    """The answer from a local chat completion, never the reasoning behind it.
+
+    reasoning_content is the model planning its answer. Saving it as a resume
+    or letter put thousands of words of "We need answer user's request" into
+    documents ready to lodge, so an empty answer is an error, not a fallback.
+    """
+    text = _strip_think(msg.get("content") or "")
+    if not text.strip():
+        raise ValueError("The local model returned reasoning but no document text.")
+    return text
+
+
 def _call_local(base_url, api_key, model, system, user, max_output_tokens=6000):
     base_url = str(base_url or "").rstrip("/")
     model = (model or "").strip() or _discover_local_model(base_url, api_key)
@@ -162,10 +175,13 @@ def _call_local(base_url, api_key, model, system, user, max_output_tokens=6000):
         "temperature": 0.3,
         "max_tokens": max_output_tokens,
         "reasoning_effort": "none",
+        # Qwen3.6 and later ignore /no_think; the chat template switch is what
+        # actually stops the model thinking through the whole output budget.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     data = _http_json(f"{base_url}/chat/completions", body, headers=headers, timeout=900)
     msg = (data.get("choices") or [{}])[0].get("message") or {}
-    return _strip_think(msg.get("content") or msg.get("reasoning_content") or "")
+    return _document_text(msg)
 
 
 def build_caller(settings):
@@ -489,12 +505,12 @@ class _LocalSession:
             ],
             "temperature": 0.3,
             "max_tokens": max_output_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         # Local authoring is much slower than a hosted API; allow a wide budget.
         data = _http_json(f"{self.base_url}/chat/completions", body, headers=headers, timeout=900)
         msg = (data.get("choices") or [{}])[0].get("message") or {}
-        text = msg.get("content") or msg.get("reasoning_content") or ""
-        return _strip_think(text)
+        return _document_text(msg)
 
     def close(self):
         pass
