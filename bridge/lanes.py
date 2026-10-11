@@ -17,6 +17,8 @@ from .runtime import (
     row_to_dict,
 )
 from .documents import (
+    read_cover_letter_text,
+    read_fit_evidence_text,
     read_resume_text,
 )
 
@@ -179,12 +181,80 @@ def command_lanes_add(payload):
     return {"lanes": data["profiles"], "profiles": data["profiles"]}
 
 
+def import_cover_letter_file(source_path):
+    source = Path(source_path)
+    if source.suffix.lower() not in {".docx", ".doc", ".pdf", ".txt", ".md"}:
+        raise ValueError("Cover letters must be .docx, .doc, .pdf, .txt or .md files.")
+    return copy_into_workspace(source, Path.cwd() / "Resumes" / "Cover letters")
+
+
 def command_profiles_update(payload):
     resume_path = import_resume_file(payload["resume_path"])
     lane_id = payload.get("lane_id") or payload.get("profile_id")
     if not db.update_lane(lane_id, payload["name"], resume_path, payload.get("settings")):
         raise ValueError("Could not update profile. The name may already exist.")
+    # Only touched when the caller sends the key, so older callers that only
+    # know about the resume can't clear a cover letter by omission.
+    if "cover_letter_path" in payload:
+        cover_letter = str(payload.get("cover_letter_path") or "").strip()
+        db.set_profile_cover_letter(lane_id, import_cover_letter_file(cover_letter) if cover_letter else "")
     return command_profiles_list(payload)
+
+
+def _mine_lane_base_documents(profile_id, lane, settings, resume_text):
+    """Mine the lane's base resume and base cover letter into fragments.
+
+    The two are mined in separate passes and tagged by document type, so the
+    resume's evidence feeds resumes and the letter's (side projects, the story
+    behind an outcome) feeds cover letters. Returns (count, provider label).
+    """
+    with contextlib.redirect_stdout(sys.stderr):
+        import corpus_miner
+
+    documents = [{
+        "filename": Path(lane["resume_path"]).name or "base-resume.docx",
+        "text": resume_text,
+        "doc_type": "resume",
+    }]
+    cover_letter = read_cover_letter_text(profile_id)
+    if cover_letter:
+        documents.append({
+            "filename": Path(lane["cover_letter_path"]).name or "base-cover-letter",
+            "text": cover_letter,
+            "doc_type": "cover_letter",
+        })
+    emit("status", message=f"Mining reusable fragments for {lane['name']}…")
+    fragments, provider = corpus_miner.mine_documents(
+        documents,
+        settings,
+        lambda message: emit("log", message=message),
+    )
+    person_id = lane["person_id"] if "person_id" in lane.keys() and lane["person_id"] else 1
+    db.upsert_candidate_fragments(person_id, fragments, replace=False)
+    db.upsert_profile_memory_fragments(profile_id, fragments, replace=False)
+    suggestions = db.suggest_lane_fragment_affinity(profile_id, limit=200)
+    db.upsert_lane_fragment_affinity(profile_id, suggestions)
+    by_type = {}
+    for fragment in fragments:
+        by_type[fragment.get("doc_type") or "both"] = by_type.get(fragment.get("doc_type") or "both", 0) + 1
+    emit("log", message=(
+        f"Stored {len(fragments)} fragments for {lane['name']}: "
+        f"{by_type.get('resume', 0)} from the resume, {by_type.get('cover_letter', 0)} from the cover letter."
+    ))
+    return len(fragments), provider
+
+
+def command_lanes_mine_documents(payload):
+    """Re-mine the lane's base resume and cover letter into fragments, on request."""
+    profile_id = int(payload.get("profile_id") or 0)
+    lane = db.get_lane_by_id(profile_id)
+    if not lane:
+        raise ValueError("Lane not found.")
+    resume_text = read_resume_text(profile_id)
+    if not resume_text.strip():
+        raise ValueError("The selected base resume did not contain readable text.")
+    count, provider = _mine_lane_base_documents(profile_id, lane, db.get_lane_settings(profile_id), resume_text)
+    return {"profile_id": profile_id, "fragments": count, "fragment_provider": provider}
 
 
 def command_lanes_bootstrap(payload):
@@ -212,22 +282,7 @@ def command_lanes_bootstrap(payload):
     fragment_count = 0
     fragment_provider = None
     if payload.get("generate_fragments", True):
-        with contextlib.redirect_stdout(sys.stderr):
-            import corpus_miner
-
-        emit("status", message=f"Mining reusable fragments for {lane['name']}…")
-        fragments, fragment_provider = corpus_miner.mine_documents(
-            [{"filename": Path(lane["resume_path"]).name or "base-resume.docx", "text": resume_text}],
-            settings,
-            lambda message: emit("log", message=message),
-        )
-        person_id = lane["person_id"] if "person_id" in lane.keys() and lane["person_id"] else 1
-        db.upsert_candidate_fragments(person_id, fragments, replace=False)
-        db.upsert_profile_memory_fragments(profile_id, fragments, replace=False)
-        suggestions = db.suggest_lane_fragment_affinity(profile_id, limit=200)
-        db.upsert_lane_fragment_affinity(profile_id, suggestions)
-        fragment_count = len(fragments)
-        emit("log", message=f"Stored {fragment_count} base-resume fragments for {lane['name']}.")
+        fragment_count, fragment_provider = _mine_lane_base_documents(profile_id, lane, settings, resume_text)
 
     terms = manual_terms
     if keyword_mode == "generate":
@@ -314,7 +369,7 @@ def command_terms_save(payload):
 def command_terms_generate(payload):
     app_logic = import_app_logic()
     profile_id = payload.get("profile_id", 1)
-    resume_text = read_resume_text(profile_id)
+    resume_text = read_fit_evidence_text(profile_id)
     terms = app_logic.execute_keyword_generation(
         payload.get("optimism", 3),
         resume_text,
@@ -346,6 +401,7 @@ COMMANDS = {
     "profiles:update": command_profiles_update,
     "profiles:delete": command_profiles_delete,
     "lanes:bootstrap": command_lanes_bootstrap,
+    "lanes:mineDocuments": command_lanes_mine_documents,
     "resume:import": command_resume_import,
     "resumes:list": command_resumes_list,
     "terms:get": command_terms_get,

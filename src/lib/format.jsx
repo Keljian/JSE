@@ -258,4 +258,27 @@ function countBy(items, key, fallback = "unknown") {
   }, {});
 }
 
-export { normalizeStage, canMoveToInterested, openSupportLink, documentAiLabel, todayPlus, formatDate, closingDateSourceMeta, formatBytes, toErrorMessage, scoreClass, primaryScore, jobFlagsOf, jobFlagTypesOf, signalFlagTypesOf, displayFileName, tidyJobTitle, isWordDocumentPath, parseJsonObject, isWeakCompanyName, parseAnalysisReport, actionMeta, gateDecisionMeta, hasCompanyResearch, toDateTimeInputValue, countBy };
+// Activity-log severity. A log frame from the bridge may carry an explicit
+// `level`; most of the hundreds of existing log lines don't, so the level is
+// read from the wording. Order matters: a "⚠" line that mentions an error is a
+// warning (the code carried on), and routine dedupe chatter stays info even
+// though it says "skipped".
+const LOG_LEVELS = ["info", "warning", "error"];
+const LOG_INFO_OVERRIDE = /\bduplicate skipped\b|\b0 failed\b/i;
+const LOG_WARNING_MARK = /⚠|\bwarn(?:ing)?\b/i;
+const LOG_ERROR_PATTERN = /❌|\berror\b|\bcritical\b|\bexception\b|\btraceback\b|raised unexpectedly|max retries reached|\bhalt(?:ed|ing)\b/i;
+const LOG_WARNING_PATTERN = /\bfail(?:ed|ure|s)?\b|could not|couldn't|\bcannot\b|\bunable\b|\bskipp(?:ed|ing)\b|\bfall(?:ing|s)? ?back\b|fell back|\bretry(?:ing)?\b|\bretried\b|\btime(?:d)? ?out\b|\bunavailable\b|not configured|\bmissing\b|not found|no results|yielded no|\bcancel(?:led|ed)\b|\btruncated\b|not confirmed|cautiously|\bblocked\b/i;
+
+function logLevelOf(text, explicit) {
+  const stated = String(explicit || "").toLowerCase();
+  if (stated === "warn") return "warning";
+  if (LOG_LEVELS.includes(stated)) return stated;
+  const value = String(text || "");
+  if (LOG_INFO_OVERRIDE.test(value)) return "info";
+  if (LOG_WARNING_MARK.test(value)) return "warning";
+  if (LOG_ERROR_PATTERN.test(value)) return "error";
+  if (LOG_WARNING_PATTERN.test(value)) return "warning";
+  return "info";
+}
+
+export { LOG_LEVELS, logLevelOf, normalizeStage, canMoveToInterested, openSupportLink, documentAiLabel, todayPlus, formatDate, closingDateSourceMeta, formatBytes, toErrorMessage, scoreClass, primaryScore, jobFlagsOf, jobFlagTypesOf, signalFlagTypesOf, displayFileName, tidyJobTitle, isWordDocumentPath, parseJsonObject, isWeakCompanyName, parseAnalysisReport, actionMeta, gateDecisionMeta, hasCompanyResearch, toDateTimeInputValue, countBy };

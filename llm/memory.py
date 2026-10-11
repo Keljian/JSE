@@ -17,6 +17,19 @@ from .analysis import (
     _format_fragment_context,
 )
 
+def _fragment_source_document(item):
+    """'resume', 'cover_letter' or 'both' from the model's source_document, else None."""
+    text = str(item.get("source_document") or item.get("doc_type") or "").strip().lower()
+    text = text.replace("-", "_").replace(" ", "_")
+    if text in {"resume", "cv"}:
+        return "resume"
+    if text in {"cover_letter", "letter", "cover"}:
+        return "cover_letter"
+    if text == "both":
+        return "both"
+    return None
+
+
 def _normalise_memory_fragments(value):
     """Coerce plausible LLM fragment objects into the persisted fragment shape."""
     fragments = []
@@ -75,6 +88,7 @@ def _normalise_memory_fragments(value):
             "confidence_reasoning": str(item.get("confidence_reasoning") or "").strip(),
             "status": status,
             "reinforces_fragment_themes": _coerce_list(item.get("reinforces_fragment_themes")),
+            "doc_type": _fragment_source_document(item),
         })
     return fragments
 
@@ -175,6 +189,7 @@ PER-FRAGMENT FIELDS (all required)
 - confidence:      "high" | "medium" | "low".
 - confidence_reasoning: one short sentence explaining the confidence (e.g. "Appears across two roles with named outcomes" vs "Single-role evidence, not yet repeated").
 - status:          "established" if the evidence is concrete and repeatable; "emerging" if the fragment is plausible but rests on a single stretch application — emerging fragments are kept for cautious reuse, not narrow echo-chamber filtering.
+- source_document: which document in the kit carries the evidence. "resume" when it is in the tailored resume; "cover_letter" when only the cover letter tells it (personal or side projects, motivations, the story behind an outcome); "both" when both do. Resume fragments are later used to write resumes and cover-letter fragments to write cover letters, so keep the two apart.
 
 QUALITY BAR
 - Fragments are small reusable units, NOT whole paragraphs to copy. Aim for portable claims.
@@ -199,6 +214,7 @@ JSON SHAPE
     "confidence":"high|medium|low",
     "confidence_reasoning":"...",
     "status":"established|emerging",
+    "source_document":"resume|cover_letter|both",
     "reinforces_fragment_themes":["EXACT theme name(s) from the PRIOR LANE FRAGMENT BANK this kit reinforces — empty array when this is a genuinely new theme"]
   }}
 ]}}

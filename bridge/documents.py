@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 import database_manager as db
+import region
 from config import MY_INFO
 from job_liveness import check_job_liveness
 from .runtime import (
@@ -67,6 +68,46 @@ def read_resume_text(profile_id):
     if not resume_path.exists():
         raise FileNotFoundError(f"Resume file not found: {resume_path}")
     return _read_docx_text(resume_path)
+
+
+def read_cover_letter_text(profile_id):
+    """The lane's base cover letter as text, or "" when none is set or it can't be read.
+
+    Never raises: the letter is supporting evidence, and a moved or unreadable
+    file must not stop an analysis that the resume alone can still run.
+    """
+    profile = db.get_profile_by_id(profile_id)
+    if not profile or "cover_letter_path" not in profile.keys() or not profile["cover_letter_path"]:
+        return ""
+    path = Path(profile["cover_letter_path"])
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    try:
+        return extract_document_text(path).strip()
+    except Exception as exc:
+        print(f"Cover letter could not be read for lane {profile_id}: {exc}", file=sys.stderr)
+        return ""
+
+
+COVER_LETTER_EVIDENCE_HEADER = (
+    "--- CANDIDATE'S OWN COVER LETTER (supporting evidence) ---\n"
+    "Projects, outcomes and experience described in this letter are the candidate's real work and count as "
+    "evidence even where the resume above does not list them."
+)
+
+
+def read_fit_evidence_text(profile_id):
+    """The text fit analysis and search-term generation judge the candidate on.
+
+    The resume, then the lane's base cover letter when one is set. Without a
+    cover letter this is exactly read_resume_text(), so existing analyses keep
+    their signatures and nothing is re-analysed.
+    """
+    resume_text = read_resume_text(profile_id)
+    cover_letter = read_cover_letter_text(profile_id)
+    if not cover_letter:
+        return resume_text
+    return f"{resume_text.rstrip()}\n\n{COVER_LETTER_EVIDENCE_HEADER}\n{cover_letter}"
 
 
 def extract_document_text(file_path):
@@ -649,6 +690,7 @@ def command_docs_generate_rich(payload):
     result = rich_application.generate_rich(
         job_id, profile_id=profile_id, settings=settings, personal_info=info,
         source_resume_text=source_resume_text,
+        source_cover_letter_text=read_cover_letter_text(profile_id),
         additional_candidate_context=additional_candidate_context,
         log=lambda m: emit("log", message=m),
         out_dir=applications_dir(),
@@ -808,6 +850,7 @@ Create a targeted application for this role. Produce:
 Rules:
 - Use only truthful evidence from the resume and job advertisement.
 - Use the lane/candidate memory fragments as evidence guidance, not as copy/paste prose.
+- Each fragment's doc_type says where its evidence came from: "resume" fragments belong in the resume, "cover_letter" fragments (side projects, motivations, the story behind an outcome) in the cover letter, "both" or blank in either.
 - Do not copy previous application wording verbatim. Rewrite freshly for this role.
 - Do not invent employers, titles, qualifications, certifications, dates, metrics, responsibilities, or tools.
 - Mirror the job advertisement language where accurate.
@@ -856,6 +899,9 @@ Treat this as first-party evidence. Use only what is stated; do not infer or emb
 {additional_candidate_context or 'No additional candidate evidence was supplied.'}
 ---
 """
+    # This prompt goes to an outside model, not through the LLM call layer, so
+    # it is localised to the lane's market here.
+    prompt = region.localise(prompt, settings.get("preferred_location"), add_market_line=True)
     output_folder = applications_dir()
     output_folder.mkdir(exist_ok=True)
     prompt_path = output_folder / f"{safe_filename(job['title'])}_external_llm_prompt.md"

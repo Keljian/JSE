@@ -61,6 +61,45 @@ Return ONLY a JSON array (no markdown fence). Each item:
 De-duplicate within the batch. Prefer fewer, stronger, fact-rich fragments over many weak ones."""
 
 
+# Resumes and cover letters carry different evidence, so they are mined in
+# separate passes with their own brief, and every fragment remembers which
+# kind of document it came from. Resume fragments feed resume bullets; cover
+# letter fragments (the projects, motivations and stories a candidate only
+# tells in a letter) feed cover letters; "both" is usable in either.
+FRAGMENT_DOC_TYPES = ("resume", "cover_letter", "both")
+
+_DOC_TYPE_BRIEF = {
+    "resume": (
+        "\n\nTHESE DOCUMENTS ARE RESUMES. Extract the quantified achievements, skills, tools, scope and "
+        "domain evidence a resume bullet is built from. Do not invent narrative the resume does not contain."
+    ),
+    "cover_letter": (
+        "\n\nTHESE DOCUMENTS ARE COVER LETTERS. Extract what a cover letter is built from and a resume "
+        "usually leaves out: personal and side projects, the story behind an achievement, motivations, "
+        "why-this-employer reasoning, and positioning angles (use fragment_type 'cover_angle' for those). "
+        "Concrete facts are still required: name the project, what was built, and the outcome."
+    ),
+    "both": (
+        "\n\nTHESE ARE SELECTION-CRITERIA RESPONSES OR CAPABILITY STATEMENTS: narrative evidence written "
+        "against stated criteria. Extract fact-anchored fragments usable in either a resume or a cover letter."
+    ),
+}
+
+
+def fragment_doc_type(document_type):
+    """Map a context_library doc_type (or a loose label) to a fragment doc type."""
+    value = str(document_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if value in {"resume", "cv", "curriculum_vitae", "base_resume"}:
+        return "resume"
+    if value in {"cover_letter", "letter", "cover", "coverletter"}:
+        return "cover_letter"
+    return "both"
+
+
+def _system_for(doc_type):
+    return EXTRACT_SYSTEM + _DOC_TYPE_BRIEF.get(doc_type, _DOC_TYPE_BRIEF["both"])
+
+
 def _select_distinct(docs, max_n, sim_threshold=0.72):
     """Greedily keep documents that aren't near-duplicates of already-kept ones."""
     selected, sets = [], []
@@ -102,34 +141,46 @@ def _parse(raw):
 def mine_documents(documents, settings, log=print):
     """Mine reusable fragments from an explicit set of extracted documents.
 
-    Lane onboarding uses this narrow entry point for the selected base resume,
-    without re-mining the candidate's entire evidence corpus.
+    Lane onboarding uses this narrow entry point for the selected base resume
+    (and base cover letter, when the lane has one), without re-mining the
+    candidate's entire evidence corpus. Each document may carry a "doc_type";
+    resumes and cover letters are mined in separate passes (see
+    _DOC_TYPE_BRIEF). Untyped documents are treated as resumes, which is what
+    every caller passed before cover letters were mined.
     """
     caller, label = _fast_caller(settings)
-    docs = [
-        {
-            "filename": str(document.get("filename") or "document"),
-            "text": str(document.get("text") or "").strip(),
-        }
-        for document in (documents or [])
-        if str(document.get("text") or "").strip()
-    ]
-    fragments = []
-    for batch in _batches(docs):
-        user = "DOCUMENTS:\n\n" + "\n\n".join(f"[{d['filename']}]\n{d['text']}" for d in batch)
-        try:
-            parsed = _parse(caller(EXTRACT_SYSTEM, user))
-        except Exception as exc:
-            log(f"Fragment mining failed: {exc}")
+    by_type = {}
+    for document in documents or []:
+        text = str(document.get("text") or "").strip()
+        if not text:
             continue
-        names = [d["filename"] for d in batch]
-        for fragment in parsed if isinstance(parsed, list) else []:
-            if not isinstance(fragment, dict) or not fragment.get("claim") or not fragment.get("theme"):
+        doc_type = fragment_doc_type(document.get("doc_type") or "resume")
+        by_type.setdefault(doc_type, []).append({
+            "filename": str(document.get("filename") or "document"),
+            "text": text,
+        })
+    fragments = []
+    for doc_type in FRAGMENT_DOC_TYPES:
+        docs = by_type.get(doc_type) or []
+        mined = 0
+        for batch in _batches(docs):
+            user = "DOCUMENTS:\n\n" + "\n\n".join(f"[{d['filename']}]\n{d['text']}" for d in batch)
+            try:
+                parsed = _parse(caller(_system_for(doc_type), user))
+            except Exception as exc:
+                log(f"Fragment mining failed for {doc_type.replace('_', ' ')} documents: {exc}")
                 continue
-            fragment["source_doc_paths"] = names
-            fragment.setdefault("status", "established")
-            fragments.append(fragment)
-        log(f"Mined {len(fragments)} reusable fragments from {len(batch)} document(s).")
+            names = [d["filename"] for d in batch]
+            for fragment in parsed if isinstance(parsed, list) else []:
+                if not isinstance(fragment, dict) or not fragment.get("claim") or not fragment.get("theme"):
+                    continue
+                fragment["source_doc_paths"] = names
+                fragment["doc_type"] = doc_type
+                fragment.setdefault("status", "established")
+                fragments.append(fragment)
+                mined += 1
+        if docs:
+            log(f"Mined {mined} {doc_type.replace('_', ' ')} fragments from {len(docs)} document(s).")
     return fragments, label
 
 
@@ -154,10 +205,11 @@ def mine_corpus(settings, log=print, limits=None):
         if not docs:
             continue
         log(f"Mining {dt}: {len(docs)} distinct documents (of {len(by_type.get(dt, []))})")
+        fragment_type = fragment_doc_type(dt)
         for batch in _batches(docs):
             user = "DOCUMENTS:\n\n" + "\n\n".join(f"[{d['filename']}]\n{d['text']}" for d in batch)
             try:
-                frs = _parse(caller(EXTRACT_SYSTEM, user))
+                frs = _parse(caller(_system_for(fragment_type), user))
             except Exception as e:
                 log(f"  batch failed: {e}")
                 continue
@@ -165,6 +217,7 @@ def mine_corpus(settings, log=print, limits=None):
             for f in frs:
                 if isinstance(f, dict):
                     f["source_doc_paths"] = names
+                    f["doc_type"] = fragment_type
                     f.setdefault("status", "established")
             kept = [f for f in frs if isinstance(f, dict) and f.get("claim") and f.get("theme")]
             fragments.extend(kept)

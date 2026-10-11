@@ -296,13 +296,22 @@ Treat this as first-party evidence. Use only what is stated; do not infer or emb
     lane = lane_context.get("lane") or {}
     lane_settings = lane_context.get("settings") or {}
     lane_fragments = lane_context.get("fragments") or []
-    fragment_lines = []
-    for fragment in lane_fragments[:30]:
-        fragment_lines.append(
+
+    def lane_prompt_for(doc_type):
+        # The resume is written from resume fragments and the letter from
+        # cover-letter fragments (see corpus_miner._DOC_TYPE_BRIEF); 'both'
+        # and untagged fragments serve either.
+        usable = [
+            fragment for fragment in lane_fragments
+            if (fragment.get("doc_type") or "both") in (doc_type, "both")
+        ]
+        fragment_lines = [
             f"- [{fragment.get('id')}] {fragment.get('theme')}: {fragment.get('claim')} "
             f"Guidance: {fragment.get('reuse_guidance') or ''}"
-        )
-    lane_prompt_context = f"""
+            for fragment in usable[:30]
+        ]
+        heading = "RESUME FRAGMENTS" if doc_type == "resume" else "COVER LETTER FRAGMENTS"
+        return f"""
 LANE / POSITIONING STRATEGY:
 Name: {lane.get('name') or ''}
 Intent: {lane_settings.get('lane_intent') or ''}
@@ -313,9 +322,12 @@ Document strategy: {lane_settings.get('document_strategy') or ''}
 Must-have signals: {lane_settings.get('must_have_terms') or ''}
 Avoid signals: {lane_settings.get('avoid_terms') or ''}
 
-SELECTED CANDIDATE FRAGMENTS:
+SELECTED CANDIDATE {heading}:
 {chr(10).join(fragment_lines) if fragment_lines else 'No lane-selected fragments were available.'}
 """
+
+    resume_lane_context = lane_prompt_for("resume")
+    cover_lane_context = lane_prompt_for("cover_letter")
 
     def build_resume_messages(local_retry=False):
         retry_resume_limit = 6000 if local_retry else resume_limit
@@ -336,7 +348,7 @@ CANDIDATE:
 {MY_INFO.get('email', '')}
 {MY_INFO.get('linkedin', '')}
 
-{lane_prompt_context}
+{resume_lane_context}
 
 ROLE:
 Title: {job['title']}
@@ -443,7 +455,7 @@ Title: {job['title']}
 Company: {job['company'] or ''}
 Location: {job['location'] or ''}
 
-{lane_prompt_context}
+{cover_lane_context}
 
 FIT ANALYSIS:
 ---

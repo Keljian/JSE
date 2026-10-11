@@ -134,6 +134,17 @@ def update_profile(profile_id, name, resume_path):
         return False
 
 
+def set_profile_cover_letter(profile_id, cover_letter_path):
+    """Set (or clear, with a blank path) the lane's base cover letter."""
+    with get_db_connection() as conn:
+        _execute_with_retry(
+            conn,
+            "UPDATE profiles SET cover_letter_path = ? WHERE id = ?",
+            (str(cover_letter_path or "").strip() or None, profile_id),
+            is_commit=True,
+        )
+
+
 def update_lane(lane_id, name, resume_path, settings=None):
     if not update_profile(lane_id, name, resume_path):
         return False
@@ -167,6 +178,29 @@ def get_person_for_lane(lane_id):
             (lane_id,),
         ).fetchone()
     return row or ensure_default_person()
+
+
+FRAGMENT_DOC_TYPES = ("resume", "cover_letter", "both")
+
+
+def normalize_fragment_doc_type(value):
+    """'resume', 'cover_letter' or 'both'; None when the source is unknown."""
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not text:
+        return None
+    if text in {"resume", "cv", "curriculum_vitae"}:
+        return "resume"
+    if text in {"cover_letter", "letter", "cover", "coverletter"}:
+        return "cover_letter"
+    return "both"
+
+
+def _doc_type_clause(doc_type, column="doc_type"):
+    """SQL filter for fragments usable in one kind of document, or ("", [])."""
+    wanted = normalize_fragment_doc_type(doc_type)
+    if wanted not in ("resume", "cover_letter"):
+        return "", []
+    return f" AND ({column} IS NULL OR {column} IN (?, 'both'))", [wanted]
 
 
 def _candidate_fragment_fingerprint(fragment):
@@ -214,6 +248,7 @@ def upsert_candidate_fragments(person_id, fragments, replace=False, interview_va
                 "confidence_reasoning": _clean(str(fragment.get("confidence_reasoning") or ""))[:800],
                 "reinforces_themes_json": _json_dumps_compact(fragment.get("reinforces_fragment_themes") or []),
                 "support_count": int(fragment.get("support_count") or 1),
+                "doc_type": normalize_fragment_doc_type(fragment.get("doc_type")),
             }
             fingerprint = fragment.get("fingerprint") or _candidate_fragment_fingerprint(clean)
             # Merge source-job attribution across mining runs. Fragments dedupe by
@@ -241,10 +276,15 @@ def upsert_candidate_fragments(person_id, fragments, replace=False, interview_va
                     source_doc_paths_json, reuse_guidance, confidence, fingerprint,
                     keywords_json, anti_keywords_json, job_families_json,
                     status, confidence_reasoning, reinforces_themes_json,
-                    support_count, interview_validated, last_seen_at, updated_at
+                    support_count, interview_validated, last_seen_at, updated_at, doc_type
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(person_id, fingerprint) DO UPDATE SET
+                    doc_type = CASE
+                        WHEN candidate_fragments.doc_type IS NULL THEN excluded.doc_type
+                        WHEN excluded.doc_type IS NULL OR excluded.doc_type = candidate_fragments.doc_type THEN candidate_fragments.doc_type
+                        ELSE 'both'
+                    END,
                     supporting_detail = excluded.supporting_detail,
                     skills_json = excluded.skills_json,
                     domains_json = excluded.domains_json,
@@ -281,7 +321,7 @@ def upsert_candidate_fragments(person_id, fragments, replace=False, interview_va
                     clean["reuse_guidance"], clean["confidence"], fingerprint,
                     clean["keywords_json"], clean["anti_keywords_json"], clean["job_families_json"],
                     clean["status"], clean["confidence_reasoning"], clean["reinforces_themes_json"],
-                    clean["support_count"], validated_flag, now, now,
+                    clean["support_count"], validated_flag, now, now, clean["doc_type"],
                 ),
             )
             count += 1
@@ -289,13 +329,22 @@ def upsert_candidate_fragments(person_id, fragments, replace=False, interview_va
     return count
 
 
-def get_candidate_fragments(person_id=1, limit=500, query=None):
+def get_candidate_fragments(person_id=1, limit=500, query=None, doc_type=None):
+    """Candidate fragments, optionally only those usable in one kind of document.
+
+    doc_type 'resume' or 'cover_letter' keeps fragments of that type plus
+    'both' and untagged ones; anything else returns every fragment.
+    """
     clauses = ["person_id = ?"]
     params = [person_id]
     if query:
         clauses.append("(theme LIKE ? OR claim LIKE ? OR supporting_detail LIKE ? OR skills_json LIKE ? OR domains_json LIKE ?)")
         q = f"%{query}%"
         params.extend([q] * 5)
+    type_clause, type_params = _doc_type_clause(doc_type)
+    if type_clause:
+        clauses.append(type_clause.removeprefix(" AND "))
+        params.extend(type_params)
     params.append(limit)
     with get_db_connection() as conn:
         return conn.execute(
@@ -310,9 +359,11 @@ def get_candidate_fragments(person_id=1, limit=500, query=None):
         ).fetchall()
 
 
-def get_lane_fragments(lane_id, limit=180):
+def get_lane_fragments(lane_id, limit=180, doc_type=None):
+    """The lane's fragment bank, strongest affinity first. See get_candidate_fragments for doc_type."""
     lane = get_lane_by_id(lane_id)
     person_id = lane["person_id"] if lane and "person_id" in lane.keys() and lane["person_id"] else 1
+    type_clause, type_params = _doc_type_clause(doc_type, "candidate_fragments.doc_type")
     with get_db_connection() as conn:
         rows = conn.execute(
             """
@@ -324,12 +375,13 @@ def get_lane_fragments(lane_id, limit=180):
              AND lane_fragment_affinity.lane_id = ?
             WHERE candidate_fragments.person_id = ?
               AND COALESCE(lane_fragment_affinity.weight, 0.35) > 0
+              {type_clause}
             ORDER BY COALESCE(lane_fragment_affinity.weight, 0.35) DESC,
                      candidate_fragments.updated_at DESC,
                      candidate_fragments.id DESC
             LIMIT ?
-            """,
-            (lane_id, person_id, limit),
+            """.replace("{type_clause}", type_clause),
+            (lane_id, person_id, *type_params, limit),
         ).fetchall()
     return rows
 
@@ -484,6 +536,7 @@ def upsert_profile_memory_fragments(profile_id, fragments, replace=False):
                 "confidence_reasoning": str(fragment.get("confidence_reasoning") or "").strip()[:800],
                 "reinforces_themes_json": _json_dumps_compact(fragment.get("reinforces_fragment_themes") or []),
                 "support_count": int(fragment.get("support_count") or 1),
+                "doc_type": normalize_fragment_doc_type(fragment.get("doc_type")),
             }
             fingerprint = fragment.get("fingerprint") or _memory_fragment_fingerprint(clean)
             conn.execute(
@@ -494,10 +547,15 @@ def upsert_profile_memory_fragments(profile_id, fragments, replace=False):
                     source_doc_paths_json, reuse_guidance, confidence, fingerprint,
                     keywords_json, anti_keywords_json, job_families_json,
                     status, confidence_reasoning, reinforces_themes_json,
-                    support_count, last_seen_at, updated_at
+                    support_count, last_seen_at, updated_at, doc_type
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(profile_id, fingerprint) DO UPDATE SET
+                    doc_type = CASE
+                        WHEN profile_memory_fragments.doc_type IS NULL THEN excluded.doc_type
+                        WHEN excluded.doc_type IS NULL OR excluded.doc_type = profile_memory_fragments.doc_type THEN profile_memory_fragments.doc_type
+                        ELSE 'both'
+                    END,
                     supporting_detail = excluded.supporting_detail,
                     skills_json = excluded.skills_json,
                     domains_json = excluded.domains_json,
@@ -546,6 +604,7 @@ def upsert_profile_memory_fragments(profile_id, fragments, replace=False):
                     clean["support_count"],
                     now,
                     now,
+                    clean["doc_type"],
                 ),
             )
             count += 1
@@ -932,17 +991,18 @@ def merge_lane_terms(lane_id, keywords, source="memory_evolution", confidence=0.
     return inserted
 
 
-def get_profile_memory_fragments(profile_id, limit=500):
+def get_profile_memory_fragments(profile_id, limit=500, doc_type=None):
+    type_clause, type_params = _doc_type_clause(doc_type)
     with get_db_connection() as conn:
         return conn.execute(
-            """
+            f"""
             SELECT *
             FROM profile_memory_fragments
-            WHERE profile_id = ?
+            WHERE profile_id = ?{type_clause}
             ORDER BY updated_at DESC, id DESC
             LIMIT ?
             """,
-            (profile_id, limit),
+            (profile_id, *type_params, limit),
         ).fetchall()
 
 

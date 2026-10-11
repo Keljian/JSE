@@ -120,6 +120,25 @@ def bridge_error_message(exc):
     return message
 
 
+def command_search_location(payload):
+    """The search location of the lane a command acts on, for region.use_location.
+
+    Read from the payload's profile_id, else from the lane of its job_id. None
+    when the command names neither (prompts are then left as written).
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    profile_id = payload.get("profile_id")
+    try:
+        if not profile_id and payload.get("job_id"):
+            job = db.get_job_details(payload["job_id"])
+            profile_id = job["profile_id"] if job else None
+        if not profile_id:
+            return None
+        return (db.get_lane_settings(profile_id) or {}).get("preferred_location") or None
+    except Exception:
+        return None
+
+
 def row_to_dict(row):
     if row is None:
         return None

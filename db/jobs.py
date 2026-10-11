@@ -1378,6 +1378,134 @@ def delete_job(job_id):
         conn.commit()
 
 
+# Stages a scraped listing sits in before anyone has worked on it. "Clear
+# scraped listings" only ever looks here, so a role moved to Interested (or
+# further) is by definition one the user wants to keep.
+SCRAPED_LISTING_STAGES = ("new", "rejected")
+
+
+# Sources that mean a person typed the job in rather than a scraper finding it.
+HAND_ENTERED_SOURCES = ("Manual",)
+
+
+# A job carries application history once it has been applied for, reached an
+# interview, received employer feedback, or had documents generated for it.
+# Bulk deletes skip these unless the caller explicitly opts in: losing them
+# loses the funnel record. Narrower than delete_profile's test on purpose:
+# that one counts any 'stage' event, and auto-rejecting a low match writes
+# one, which would protect every analysed listing from being cleared.
+_JOB_HISTORY_SQL = """(
+    jobs.pipeline_stage IN ('applied', 'interviewing', 'offer', 'rejected_by_company')
+    OR jobs.status IN ('applied', 'interviewing', 'offer', 'rejected_by_company')
+    OR COALESCE(jobs.application_date, '') <> ''
+    OR COALESCE(jobs.feedback, '') <> ''
+    OR COALESCE(jobs.resume_used, '') <> ''
+    OR COALESCE(jobs.cover_letter_path, '') <> ''
+    OR EXISTS (SELECT 1 FROM interviews WHERE interviews.job_id = jobs.id)
+    OR EXISTS (
+        SELECT 1 FROM application_events
+        WHERE application_events.job_id = jobs.id
+          AND application_events.event_type = 'interview'
+    )
+)"""
+
+
+def preview_bulk_delete(mode, filters=None, stages=None):
+    """What a bulk delete would remove, before anything is removed.
+
+    mode="scraped": untouched scraped listings in the lane scope (stages
+    limited to SCRAPED_LISTING_STAGES, hand-entered jobs excluded). The other
+    filter-bar fields are ignored: this is a reset of the scrape, not a search.
+
+    mode="filter": every job the current filter bar matches.
+
+    Returns counts per stage and the ids that can go, with jobs carrying
+    application history counted separately so the UI can say what is kept.
+    """
+    filters = dict(filters or {})
+    if mode == "scraped":
+        scope = {
+            "profile_id": filters.get("profile_id"),
+            "include_all_profiles": filters.get("include_all_profiles"),
+        }
+        clauses, params = _pipeline_filter_clauses(scope)
+        wanted = [normalize_stage(stage) for stage in (stages or SCRAPED_LISTING_STAGES)]
+        wanted = [stage for stage in wanted if stage in SCRAPED_LISTING_STAGES] or list(SCRAPED_LISTING_STAGES)
+        clauses.append(f"jobs.pipeline_stage IN ({','.join('?' for _ in wanted)})")
+        params.extend(wanted)
+        clauses.append(f"COALESCE(jobs.source, '') NOT IN ({','.join('?' for _ in HAND_ENTERED_SOURCES)})")
+        params.extend(HAND_ENTERED_SOURCES)
+    elif mode == "filter":
+        clauses, params = _pipeline_filter_clauses(filters)
+    else:
+        raise ValueError(f"Unknown bulk delete mode: {mode}")
+    sql = f"""
+        SELECT jobs.id, COALESCE(jobs.pipeline_stage, 'new') AS stage,
+               CASE WHEN {_JOB_HISTORY_SQL} THEN 1 ELSE 0 END AS has_history
+        FROM jobs
+        LEFT JOIN profiles ON profiles.id = jobs.profile_id
+        WHERE {' AND '.join(clauses)}
+    """
+    with get_db_connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    by_stage = {}
+    deletable, protected = [], []
+    for row in rows:
+        stage = normalize_stage(row["stage"])
+        entry = by_stage.setdefault(stage, {"total": 0, "protected": 0})
+        entry["total"] += 1
+        if row["has_history"]:
+            entry["protected"] += 1
+            protected.append(row["id"])
+        else:
+            deletable.append(row["id"])
+    return {
+        "mode": mode,
+        "total": len(rows),
+        "deletable_ids": deletable,
+        "protected_ids": protected,
+        "by_stage": by_stage,
+    }
+
+
+def delete_jobs(job_ids, allow_history=False):
+    """Delete many jobs in one transaction.
+
+    Jobs with application history are re-checked here and skipped unless
+    allow_history is set, so a stale preview can't remove a job that was
+    applied for after the preview was taken. Interviews and events cascade
+    (foreign keys are switched on for this connection); the job's
+    lane_opportunities row is removed with it so lane counts stay honest.
+    job_postings rows are left alone: they are shared by URL across lanes.
+    """
+    ids = sorted({int(job_id) for job_id in (job_ids or []) if str(job_id).strip().lstrip("-").isdigit()})
+    deleted = 0
+    kept = 0
+    if not ids:
+        return {"deleted": 0, "kept": 0}
+    with get_db_connection() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        for chunk in _chunks(ids):
+            chunk = list(chunk)
+            if not allow_history:
+                placeholders = ",".join("?" for _ in chunk)
+                held = {
+                    row["id"] for row in conn.execute(
+                        f"SELECT jobs.id FROM jobs WHERE jobs.id IN ({placeholders}) AND {_JOB_HISTORY_SQL}",
+                        chunk,
+                    ).fetchall()
+                }
+                kept += len(held)
+                chunk = [job_id for job_id in chunk if job_id not in held]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            conn.execute(f"DELETE FROM lane_opportunities WHERE legacy_job_id IN ({placeholders})", chunk)
+            deleted += conn.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", chunk).rowcount
+        conn.commit()
+    return {"deleted": deleted, "kept": kept}
+
+
 def get_job_counts(profile_id=None):
     """Gets the count of new and approved jobs."""
     base = " WHERE "
@@ -1699,7 +1827,13 @@ def recurrence_count_for(job):
     return row["n"] if row else 0
 
 
-def get_pipeline_jobs(filters=None):
+def _pipeline_filter_clauses(filters):
+    """WHERE clauses and params for the pipeline filter bar.
+
+    Shared by the board query and the bulk delete, so "delete everything that
+    matches this filter" can never match a different set of rows than the
+    board is showing.
+    """
     filters = filters or {}
     include_all_profiles = bool(filters.get("include_all_profiles"))
     profile_id = filters.get("profile_id")
@@ -1768,6 +1902,12 @@ def get_pipeline_jobs(filters=None):
             """
         )
         params.extend([query] * 7)
+    return clauses, params
+
+
+def get_pipeline_jobs(filters=None):
+    filters = filters or {}
+    clauses, params = _pipeline_filter_clauses(filters)
 
     if filters.get("compact"):
         # The multi-KB company_intelligence JSON blob is only consulted by the

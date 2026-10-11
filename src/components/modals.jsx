@@ -471,4 +471,130 @@ function CleanupModal({ jobs, onClose, onArchive, onOpenJob }) {
   );
 }
 
-export { RejectJobModal, QuickStageForm, AddJobModal, LogExternalModal, RunSearchModal, AnalysisModal, OnboardingWizard, CreateLaneModal, CleanupModal };
+const SCRAPED_STAGE_OPTIONS = [
+  { id: "new", label: "New" },
+  { id: "rejected", label: "Rejected" }
+];
+
+const stageLabel = (stageId) => PIPELINE.find((stage) => stage.id === stageId)?.label || stageId;
+const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+// One modal for both bulk deletes. "scraped" clears listings the scrapers
+// found that nobody has worked on; "filter" deletes whatever the filter bar
+// matches. Either way the backend previews first, and jobs with application
+// history are held back unless the user ticks the box to include them.
+function BulkDeleteModal({ mode, request, scopeLabel, filterSummary, invoke, onClose, onDeleted }) {
+  const scraped = mode === "scraped";
+  const [stages, setStages] = useState(() => SCRAPED_STAGE_OPTIONS.map((stage) => stage.id));
+  const [preview, setPreview] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+  const [includeHistory, setIncludeHistory] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    invoke("jobs:bulkDeletePreview", { ...request, mode, stages: scraped ? stages : undefined })
+      .then((data) => { if (!cancelled) setPreview(data); })
+      .catch((err) => { if (!cancelled) setError(toErrorMessage(err)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [invoke, mode, request, scraped, stages]);
+
+  const toggleStage = (stageId, checked) => setStages((current) => (
+    checked ? [...new Set([...current, stageId])] : current.filter((item) => item !== stageId)
+  ));
+
+  const deletable = preview?.deletable || 0;
+  const held = preview?.protected || 0;
+  const toDelete = deletable + (includeHistory ? held : 0);
+  const stageRows = Object.entries(preview?.by_stage || {}).sort(
+    (a, b) => PIPELINE.findIndex((stage) => stage.id === a[0]) - PIPELINE.findIndex((stage) => stage.id === b[0])
+  );
+
+  const confirmDelete = async () => {
+    if (!toDelete || deleting) return;
+    if (includeHistory && held) {
+      const confirmed = await appConfirm({
+        title: "Delete application history?",
+        message: `${plural(held, "job")} in this set ${held === 1 ? "has" : "have"} application history (applied, interviewed, feedback or generated documents). Their interviews and timeline go with them. This cannot be undone.`,
+        confirmLabel: "Delete them too",
+        danger: true
+      });
+      if (!confirmed) return;
+    }
+    setDeleting(true);
+    setError("");
+    try {
+      const result = await invoke("jobs:bulkDelete", {
+        job_ids: preview.job_ids,
+        protected_job_ids: includeHistory ? preview.protected_job_ids : [],
+        allow_history: includeHistory
+      });
+      onDeleted(result);
+    } catch (err) {
+      setError(toErrorMessage(err));
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <Modal title={scraped ? "Clear scraped listings" : "Delete matching jobs"} onClose={onClose} closeDisabled={deleting}>
+      <div className="modal-copy">
+        {scraped
+          ? <>Removes listings the scrapers found that nobody has worked on yet, in <strong>{scopeLabel}</strong>. Jobs you moved to Interested or further, and jobs you added by hand, stay.</>
+          : <>Removes every job the current filters match in <strong>{scopeLabel}</strong>.</>}
+      </div>
+      <div className="bulk-delete-body">
+      {!scraped && filterSummary.length ? (
+        <ul className="bulk-delete-filters">
+          {filterSummary.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      ) : null}
+      {scraped ? (
+        <div className="filter-choice-options bulk-delete-stages" role="group" aria-label="Stages to clear">
+          {SCRAPED_STAGE_OPTIONS.map((stage) => (
+            <label key={stage.id} className="filter-chip">
+              <input type="checkbox" checked={stages.includes(stage.id)} disabled={deleting} onChange={(event) => toggleStage(stage.id, event.target.checked)} />
+              {stage.label}
+            </label>
+          ))}
+        </div>
+      ) : null}
+      <div className="bulk-delete-summary">
+        {loading ? <p className="empty-inline"><Loader2 className="spin" size={14} /> Counting matching jobs…</p> : null}
+        {!loading && preview && !preview.total ? <p className="empty-inline">Nothing matches, so there is nothing to delete.</p> : null}
+        {!loading && stageRows.length ? (
+          <table>
+            <thead><tr><th>Stage</th><th>Matching</th><th>With history</th></tr></thead>
+            <tbody>
+              {stageRows.map(([stageId, counts]) => (
+                <tr key={stageId}><td>{stageLabel(stageId)}</td><td>{counts.total}</td><td>{counts.protected || 0}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+      </div>
+      {!loading && held ? (
+        <label className="inline-check bulk-delete-history">
+          <input type="checkbox" checked={includeHistory} disabled={deleting} onChange={(event) => setIncludeHistory(event.target.checked)} />
+          <span>Also delete the {plural(held, "job")} with application history. Left unticked, {held === 1 ? "it stays" : "they stay"} on the board.</span>
+        </label>
+      ) : null}
+      <p className="settings-hint">A deleted listing can come back if a later search finds the same ad again.</p>
+      {error ? <p className="settings-alert">{error}</p> : null}
+      </div>
+      <footer className="modal-actions">
+        <button className="secondary" disabled={deleting} onClick={onClose}>Cancel</button>
+        <button className="danger" disabled={loading || deleting || !toDelete} onClick={confirmDelete}>
+          {deleting ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+          {deleting ? "Deleting…" : `Delete ${plural(toDelete, "job")}`}
+        </button>
+      </footer>
+    </Modal>
+  );
+}
+
+export { RejectJobModal, QuickStageForm, AddJobModal, LogExternalModal, RunSearchModal, AnalysisModal, OnboardingWizard, CreateLaneModal, CleanupModal, BulkDeleteModal };

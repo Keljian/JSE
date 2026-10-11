@@ -18,7 +18,7 @@ from .runtime import (
     shortlists_dir,
 )
 from .documents import (
-    read_resume_text,
+    read_fit_evidence_text,
 )
 
 def command_jobs_list(payload):
@@ -62,6 +62,51 @@ def command_jobs_delete(payload):
     return {"ok": True}
 
 
+def _bulk_delete_filters(payload):
+    filters = dict(payload.get("filters") or {})
+    filters["profile_id"] = payload.get("profile_id", filters.get("profile_id"))
+    filters["include_all_profiles"] = bool(payload.get("include_all_profiles", filters.get("include_all_profiles")))
+    filters.pop("compact", None)
+    return filters
+
+
+def command_jobs_bulk_delete_preview(payload):
+    """Count what "Clear scraped listings" or "Delete matching" would remove.
+
+    The UI shows this before asking for confirmation, then sends back the ids
+    it was shown. Nothing is deleted here.
+    """
+    preview = db.preview_bulk_delete(
+        payload.get("mode") or "filter",
+        _bulk_delete_filters(payload),
+        stages=payload.get("stages"),
+    )
+    return {
+        "mode": preview["mode"],
+        "total": preview["total"],
+        "deletable": len(preview["deletable_ids"]),
+        "protected": len(preview["protected_ids"]),
+        "job_ids": preview["deletable_ids"],
+        "protected_job_ids": preview["protected_ids"],
+        "by_stage": preview["by_stage"],
+    }
+
+
+def command_jobs_bulk_delete(payload):
+    job_ids = list(payload.get("job_ids") or [])
+    allow_history = bool(payload.get("allow_history"))
+    if allow_history:
+        job_ids += list(payload.get("protected_job_ids") or [])
+    return db.delete_jobs(job_ids, allow_history=allow_history)
+
+
+def _lane_search_location(profile_id):
+    try:
+        return (db.get_lane_settings(profile_id) or {}).get("preferred_location") or ""
+    except Exception:
+        return ""
+
+
 def command_jobs_add_manual(payload):
     """Track a job that never passed through the scrapers — recruiter calls,
     referrals, careers-page finds. Reuses the full add_job pipeline (dedupe,
@@ -77,7 +122,8 @@ def command_jobs_add_manual(payload):
     job_data = {
         "title": title,
         "company": _clean_text(payload.get("company")),
-        "location": _clean_text(payload.get("location")) or "Melbourne VIC",
+        # A job typed in with no location belongs where the lane searches.
+        "location": _clean_text(payload.get("location")) or _lane_search_location(profile_id),
         "url": url,
         "description": str(payload.get("description") or "").strip() or f"Manually added role: {title}.",
         "pdf_text": "",
@@ -527,7 +573,8 @@ def command_analysis_run(payload):
     lanes = [profile for profile in profiles if profile]
     for index, profile in enumerate(lanes, start=1):
         emit("status", message=f"Analyzing profile: {profile['name']}")
-        resume_text = read_resume_text(profile["id"])
+        # Resume plus the lane's base cover letter, when one is set.
+        resume_text = read_fit_evidence_text(profile["id"])
         # Per-lane totals are only known once analyze_jobs has queried, so
         # progress is scoped to the lane being analysed and the frame carries
         # which lane that is. A single bar across lanes would have to grow its
@@ -553,7 +600,7 @@ def command_analysis_job(payload):
     job = db.get_job_details(payload["job_id"])
     if not job:
         raise ValueError(f"Job {payload['job_id']} was not found.")
-    resume_text = read_resume_text(job["profile_id"])
+    resume_text = read_fit_evidence_text(job["profile_id"])
     app_logic.run_analysis_on_specific_jobs(
         [payload["job_id"]],
         resume_text,
@@ -627,6 +674,8 @@ COMMANDS = {
     "jobs:exportShortlist": command_jobs_export_shortlist,
     "jobs:setDocumentTrack": command_jobs_set_document_track,
     "jobs:delete": command_jobs_delete,
+    "jobs:bulkDeletePreview": command_jobs_bulk_delete_preview,
+    "jobs:bulkDelete": command_jobs_bulk_delete,
     "interviews:add": command_interviews_add,
     "interviews:update": command_interviews_update,
     "events:add": command_events_add,

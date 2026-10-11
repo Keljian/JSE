@@ -16,34 +16,26 @@ print("Local LLM endpoint defaults loaded; configure the active endpoint in Sett
 
 
 # ---------------------------------------------------------------------------
-# POSITIONING DOCTRINE (June 2026) — the DEFAULT view of the target market,
-# used by any lane that has not set its own. Update HERE when the overall
-# strategy changes; a lane whose market is a slice of this one (a secondary
-# technical lane, say) should set profiles.positioning_doctrine instead, or the
-# doctrine's RETIRED clause will cap the very roles that lane exists to find.
-# Resolved per lane by resolve_positioning_doctrine(); the triage / analysis /
-# gatekeeper prompts append the resolved text, not this constant directly.
+# POSITIONING DOCTRINE: the market view every scoring pass is judged against.
+#
+# Resolved per lane by resolve_positioning_doctrine(), most specific first:
+#   1. the lane's own doctrine (profiles.positioning_doctrine)
+#   2. the install's default doctrine (app setting default_positioning_doctrine,
+#      edited in Settings > Lane), which get_lane_settings overlays on every lane
+#   3. POSITIONING_DOCTRINE below, which describes no one in particular.
+#
+# The shipped default used to be one specific candidate's two-track strategy,
+# salary bands in AUD included, and the triage and gatekeeper prompts carried
+# the same tracks. Anyone else who installed JSE was scored against that
+# person's career. The base prompts now only refer to "the CANDIDATE
+# POSITIONING section", and everything candidate-specific lives in a doctrine.
 # ---------------------------------------------------------------------------
-POSITIONING_DOCTRINE = """CANDIDATE POSITIONING (authoritative — June 2026)
-Single identity: a technology leader for businesses whose product is physical, technical or creative work (manufacturing, agtech, food production, energy, industrial services, design-led and professional practices). The builder-practitioner who creates structure and foundations where none exist, and works in the tools himself.
-
-TRACK 1 — PRIMARY (~70% of application effort): senior technology leadership.
-- Titles: Head of IT, Head of Digital & Technology, Head of Technology, ICT Manager, IT Manager, Technology Manager, IT Operations Manager, Digital & Technology Lead.
-- Strongest environment: mid-sized operational, manufacturing, agtech, energy, or design-led businesses, especially where structure is being built (first senior technology hire, MSP-governed estates, growth or consolidation phase).
-- Salary band: AUD $140k-$185k+. A Track 1-shaped title advertised clearly below ~$120k is a level-mismatch signal, not a bargain.
-- Evidence anchors: Flavorite (built the IT function from scratch, MSP governance, quantified multi-million savings), EPSA (Salesforce CPQ delivery), Bosch (commercial and creative-environment fluency).
-
-TRACK 2 — SECONDARY (~25% of effort): embedded / power electronics engineering.
-- Titles: Embedded Systems Engineer, Electronics Engineer, Power Electronics Engineer, Firmware Engineer, Hardware Engineer, Mechatronics Engineer, Product Development Engineer.
-- Score on what was built (down-hole monitoring hardware at Firetail; honours capstone hardware), never on headcount or generic leadership.
-- Salary band: AUD $85k-$110k with an engineering trajectory.
-
-RETIRED — never score up: coordinator, project officer, BA-only, administration, or university/council coordinator-grade roles scoped or priced materially below the resume's demonstrated leadership ceiling. These fight the market's own signal about the candidate's level; treat as adjacent at best.
-
-TIMING & LIABILITIES
-- Mechatronics honours degree completes December 2027 (part-time alongside consulting). A hard completed-engineering-degree gate before then is a knockout for Track 2 roles.
-- The recent gap is a deliberate investment in the degree's heavy phase plus part-time consulting delivery — never treat it as unemployment.
-- The degree is practitioner fluency and the credential for a long-run IT/OT-convergence CTO path; on Track 1 it supports the story, it never leads it.
+POSITIONING_DOCTRINE = """CANDIDATE POSITIONING (default: no positioning has been written for this search)
+No candidate-specific strategy has been set, so read it from the evidence:
+- Target role families: the families the resume's recent roles credibly support, plus any the ACTIVE LANE BRIEF names. A role outside all of them is adjacent at best.
+- Level: the level the resume demonstrates through scope (team, budget, ownership, decisions), not job titles alone. A role materially above or below it is a level mismatch to note, not a knockout on its own.
+- Salary: no salary band has been set, so never mark a role down for its advertised pay. Any pay floor the user set is applied before you see the ad.
+- No role family or level is retired.
 
 Use this positioning to judge role-family fit, level fit, and application ROI. Never use it to invent or inflate resume facts."""
 
@@ -56,8 +48,10 @@ def resolve_positioning_doctrine(lane_settings=None):
     needs its own or it gets capped by a doctrine written about someone else's
     search.
     """
-    override = str((lane_settings or {}).get("positioning_doctrine") or "").strip()
-    return override or POSITIONING_DOCTRINE
+    settings = lane_settings or {}
+    override = str(settings.get("positioning_doctrine") or "").strip()
+    install_default = str(settings.get("default_positioning_doctrine") or "").strip()
+    return override or install_default or POSITIONING_DOCTRINE
 
 
 def with_doctrine(base_prompt, lane_settings=None):
@@ -193,9 +187,9 @@ OUTPUT CONTRACT
 
 DECISION PROCESS (apply in order)
 0. LANE CHECK (runs before everything below): if an ACTIVE LANE BRIEF is supplied and this role matches its stated titles, domains and seniority, the role is ON-TARGET. None of the retired-track or level-mismatch caps in steps 1-3 apply to it — they describe families this lane is not hunting. Go straight to step 4.
-1. ROLE FAMILY: TRACK 1 — senior IT / digital / technology leadership (Head of IT/Digital & Technology, ICT/IT/Technology Manager, IT Operations Manager) with platform, vendor, budget, or team ownership; strongest in mid-sized operational, manufacturing, agtech, energy, or design-led businesses where structure is being built. TRACK 2 — embedded / power electronics / mechatronics / firmware / product engineering where the resume's engineering evidence matches the ad's scope. Business systems / transformation / delivery / technical BA roles qualify ONLY at genuine senior-ownership level. If clearly outside (sales, marketing, finance, clinical, trades, legal, HR, customer support L1/L2), score <= 35. Coordinator / project-officer / BA-only / administration roles below senior level are a RETIRED track -> cap at 40.
-2. SENIORITY: Is the level credible given a senior-leaning resume? Junior, graduate, intern, or coordinator roles -> cap at 40 (retired track). Executive C-suite roles the resume cannot evidence -> cap at 45.
-3. SALARY/LEVEL SIGNAL: A Track 1-shaped title with an advertised band clearly below ~AUD $120k signals coordinator-level scope wearing a manager title -> cap at 55 unless the duties evidence genuine Head-of ownership.
+1. ROLE FAMILY: Judge the role against the target role families in the CANDIDATE POSITIONING section below. A role in none of them, in a domain the resume does not practise, scores <= 35. A role in a family the positioning RETIRES is capped at 40. Apply any further role-family rules the positioning states.
+2. SENIORITY: Is the level credible given the level the resume demonstrates? A role materially below it is capped at 40 only when the positioning retires that level; otherwise treat it as adjacent. Executive C-suite roles the resume cannot evidence -> cap at 45.
+3. SALARY/LEVEL SIGNAL: When the positioning gives a salary band for a role family, a title in that family advertised clearly below the band signals lower-level scope wearing a senior title -> cap at 55 unless the duties evidence the senior scope. With no band set, pay never lowers the score.
 4. ELIGIBILITY KNOCKOUTS: Mandatory clearances/citizenship/registrations/trade tickets/completed-degree gates that the resume cannot meet -> cap at 35.
 5. EVIDENCE OVERLAP: With knockouts cleared, score on credible overlap with the role's core outcomes.
 
@@ -257,7 +251,7 @@ Report this even when you raise no seniority flag: it selects which document str
 EXAMPLES (shape only)
 {"match_score":72,"reason":"Adjacent program-delivery role with credible senior overlap; recruiter ad so end client is unclear.","keep":true,"flags":[{"type":"evidence_gap","requirement":"Hands-on Dynamics 365 F&O administration.","detail":"Resume shows Salesforce CPQ delivery instead.","confidence":"high"}],"seniority_direction":"aligned","flag_summary":"Named platform gap the application should address directly."}
 {"match_score":28,"reason":"Clinical practice manager role outside target families; no transferable evidence in resume summary.","keep":false,"flags":[{"type":"credential_gate","requirement":"Current AHPRA registration is mandatory.","detail":"Resume evidences technology leadership only; no clinical registration.","confidence":"high"},{"type":"domain_mismatch","requirement":"Lead a clinical services team across three sites.","detail":"Clinical service delivery is not a domain this resume practises.","confidence":"high"}],"seniority_direction":"aligned","flag_summary":"Mandatory AHPRA registration the candidate does not hold, in a clinical domain outside the resume."}
-{"match_score":88,"reason":"Head of Technology at a mid-sized manufacturer; squarely Track 1.","keep":true,"flags":[],"seniority_direction":"aligned","flag_summary":"Nothing stood out; ordinary tailoring should be enough."}"""
+{"match_score":88,"reason":"Head of Technology at a mid-sized manufacturer; squarely in the primary target family.","keep":true,"flags":[],"seniority_direction":"aligned","flag_summary":"Nothing stood out; ordinary tailoring should be enough."}"""
 
 
 TRIAGE_SYSTEM_PROMPT = with_doctrine(TRIAGE_SYSTEM_PROMPT_BASE)
@@ -276,23 +270,19 @@ ASSUMPTIONS THAT BIAS YOU TOWARD A CAP
 - A flattering full-analysis JSON is not evidence. Re-derive your view from the ad and resume.
 
 TARGET ROLE FAMILIES (anything else is adjacent at best)
-- TRACK 1: senior IT / digital / technology leadership (Head of IT/Digital & Technology, ICT/IT/Technology Manager) with budget, team, vendor, and platform ownership — strongest in mid-sized operational, manufacturing, agtech, energy, or design-led environments where structure is being built.
-- Business systems, enterprise systems, transformation, service management ONLY with genuine senior delivery ownership.
-- TRACK 2: mechatronics, embedded, power electronics, firmware, automation, or product engineering ONLY when the resume's engineering evidence is directly relevant to the ad's engineering scope.
-- RETIRED (reject or treat as adjacent): coordinator, project officer, BA-only, or administration roles scoped or priced materially below the resume's demonstrated leadership ceiling — regardless of how attractive the employer is.
+- The families the CANDIDATE POSITIONING section below targets, at the level it targets. Apply any gatekeeper rules it states.
+- Families it RETIRES: reject or treat as adjacent, regardless of how attractive the employer is.
 
 LANE OVERRIDE: when an ACTIVE LANE BRIEF is supplied, its stated titles, domains and seniority ARE a target family for this pass, and the RETIRED clause plus the sub-target-seniority knockout below do not apply to roles matching it. Every other knockout and cap still applies in full.
 
 HARD REJECT OR CAP AT 49 (any one of these)
-- Primarily helpdesk, service desk, desktop support, L1/L2 support, field tech, installation, generic support analyst, or hands-on break/fix.
-- Pure software developer / full-stack / coding role without credible product, architecture, systems, or delivery ownership.
-- Sales, account management, customer success, presales, or BD without technical delivery ownership.
-- Junior coordinator / admin / graduate / clearly sub-target seniority.
+- A role family the positioning or the resume rules out, including any knockout families the positioning lists.
+- Clearly below the level the positioning targets (junior, graduate, coordinator or admin scope when the positioning targets senior roles).
 - Mandatory shift / heavy on-call / unacceptable location or work mode stated explicitly.
 - Mandatory credential, clearance, trade ticket, licence, or completed degree that the resume cannot evidence.
 
 CAP AT 69
-- Track 1-shaped title with an advertised salary clearly below ~AUD $120k and no evidence of genuine Head-of scope (level-mismatch signal).
+- A title in a target family advertised clearly below the positioning's salary band for that family, with no evidence of the senior scope (level-mismatch signal). Skip this when no band is set.
 - Vague recruiter ad with no identifiable employer/end client AND weak responsibility detail.
 - "Manager" title but the duties listed are mainly IC support / admin.
 - Keyword overlap exists but the ad shows weak platform, team, budget, stakeholder, delivery, or strategic ownership.

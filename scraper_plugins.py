@@ -187,10 +187,16 @@ def build_config(plugin, search_settings=None):
     manifest = plugin.get("manifest") or {}
     config = manifest_defaults(manifest)
     config.update(plugin.get("config") or {})
-    config.update(plugin.get("lane_config") or {})
+    lane_config = plugin.get("lane_config") or {}
+    config.update(lane_config)
     for item in manifest.get("config_schema") or []:
         legacy_key = item.get("legacy_key")
         key = item.get("key")
+        # A location typed into this lane's settings for this source is the
+        # most specific answer there is; the lane-wide legacy column (which
+        # defaulted to Melbourne for every lane) must not override it.
+        if key == "location" and str(lane_config.get("location") or "").strip():
+            continue
         if legacy_key and key and search_settings.get(legacy_key) not in (None, ""):
             value = search_settings.get(legacy_key)
             converter = CONFIG_CONVERTERS.get(item.get("convert"))
@@ -200,6 +206,12 @@ def build_config(plugin, search_settings=None):
                 except (TypeError, ValueError):
                     continue
             config[key] = value
+    # A source with no location of its own searches where the lane searches.
+    # Plugins made with the scraper builder leave it blank on purpose.
+    if "location" in config and not str(config.get("location") or "").strip():
+        lane_location = str(search_settings.get("preferred_location") or "").strip()
+        if lane_location:
+            config["location"] = lane_location
     if "max_pages" in config:
         try:
             config["max_pages"] = int(config["max_pages"])

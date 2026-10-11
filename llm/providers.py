@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from config import MY_INFO
 import concurrency
 import database_manager as db
+import region
 
 # --- Local OpenAI-compatible client defaults ---
 UNSLOTH_BASE_URL = MY_INFO.get("unsloth_base_url", "https://api.unloth.studio/v1")
@@ -853,6 +854,9 @@ def _call_unsloth(messages, temperature=0.2, max_tokens=2048, json_mode=False, s
     from .parsing import _strip_reasoning_blocks
     # Imported here rather than at module scope: _call_unsloth needs a
     # module that imports this one back.
+    # Every prompt passes through here or _call_document_ai, so this is where
+    # the Australian framing is swapped for the lane's market (see region.py).
+    messages = region.localise_messages(messages)
     max_tokens = min(int(max_tokens or 2048), LOCAL_MAX_OUTPUT_TOKENS)
     local = _local_ai_settings(settings)
     if not local["model"]:
@@ -1092,6 +1096,7 @@ def _call_gemini(api_key, model, messages, temperature=0.2, max_tokens=4096):
 
 def _call_document_ai(settings, messages, temperature=0.2, max_tokens=4096, json_mode=False,
                       no_reasoning=False):
+    messages = region.localise_messages(messages)
     provider = ((settings or {}).get("doc_ai_provider") or "local").lower()
     model = _model_name(settings, provider)
     # 16K matches the new Qwen3 hard ceiling in _call_unsloth.

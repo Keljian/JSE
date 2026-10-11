@@ -11,6 +11,7 @@ import triage_prefilter
 import hashlib
 import concurrency
 import database_manager as db
+import region
 from .providers import (
     _analysis_worker_count,
     _call_scoring_ai,
@@ -911,10 +912,9 @@ RULES
 - Order from most to least likely to surface a fit.
 - Use Australian title conventions (e.g. "Programme Manager" or "Program Manager" — match the spelling the user's market actually uses).
 
-TRACK ANCHORS
-- When the resume/lane context signals senior technology leadership, anchor on: "Head of IT", "Head of Digital and Technology", "Head of Technology", "IT Manager", "ICT Manager", "Technology Manager", "IT Operations Manager".
-- When it signals embedded/electronics engineering, anchor on: "Embedded Systems Engineer", "Electronics Engineer", "Power Electronics Engineer", "Firmware Engineer", "Mechatronics Engineer", "Product Development Engineer".
-- NEVER generate coordinator, project officer, helpdesk, service desk, support analyst, or graduate titles — these are retired tracks."""
+POSITIONING
+- When the context includes a CANDIDATE POSITIONING section, anchor on the role families and titles it targets, follow any search-title rules it states, and never generate titles in families or levels it retires.
+- Without one, anchor on the titles the resume's recent roles and the lane's target titles support."""
     user_prompt = (
         f"Generate {level_description}. Spread: {spread}.\n"
         "Return a JSON array of strings only.\n\n"
@@ -1477,7 +1477,8 @@ def _run_analysis_phase(states, phase_fn, ctx, workers, on_item=None):
         return advanced, failed
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job-analysis") as executor:
-        futures = {executor.submit(phase_fn, state, ctx): state for state in states}
+        # run_in_context carries the lane's search location into each worker.
+        futures = {region.run_in_context(executor, phase_fn, state, ctx): state for state in states}
         cancelled = False
         try:
             for future in concurrent.futures.as_completed(futures):
@@ -1572,6 +1573,32 @@ def _apply_prefilter(jobs, profile_id, log):
 
 
 def _perform_analysis_loop(
+    jobs_to_analyze,
+    resume_text,
+    system_prompt,
+    log_callback,
+    profile_id=1,
+    fragments=None,
+    progress_callback=None,
+    use_prefilter=True,
+):
+    """Run the analysis pipeline with the lane's search location in force.
+
+    Set here as well as by the bridge so a lane loop (all-lanes analysis, the
+    MCP daily run) scores each lane against its own market. See region.py.
+    """
+    try:
+        location = (db.get_lane_settings(profile_id) or {}).get("preferred_location")
+    except Exception:
+        location = None
+    with region.use_location(location or region.active_location()):
+        return _perform_analysis_loop_in_lane(
+            jobs_to_analyze, resume_text, system_prompt, log_callback, profile_id,
+            fragments=fragments, progress_callback=progress_callback, use_prefilter=use_prefilter,
+        )
+
+
+def _perform_analysis_loop_in_lane(
     jobs_to_analyze,
     resume_text,
     system_prompt,

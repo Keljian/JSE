@@ -769,6 +769,9 @@ def _builder_prompt(answers, recon=None, feedback=None):
         "  BAD:  if keyword and keyword.lower() not in title.lower(): continue  <- NEVER filter job titles by keyword text",
         "  GOOD: pass keyword as a URL search param (e.g. ?q=keyword); if the site has no search, return ALL jobs",
         "  BAD:  changing mode from 'sweep' to 'keyword' in the manifest  <- never override the mode from the answers",
+        '  BAD:  def scrape(..., location="Melbourne VIC", ...) or any hardcoded city/region/country  <- wrong',
+        '  GOOD: def scrape(..., location="", ...) and pass `location` to the site\'s own location search when it has one',
+        "        (JSE fills `location` from the user's lane at run time; the example plugin's default is NOT yours to copy)",
         "",
         "PLUGIN CONTRACT:",
         f'- manifest.id must be "{plugin_id}".',
@@ -783,6 +786,8 @@ def _builder_prompt(answers, recon=None, feedback=None):
         "- Keep scraper_code concise (under 150 lines). Use helpers — do not reinvent WebDriver setup or detail loops.",
         "- Log selectors tried and element counts: log(f\"Selector X: {N} elements\") — helps repair if it fails.",
         "- Never include personal information.",
+        "- Never hardcode a search location. The location parameter arrives from the user's lane settings "
+        "(for example 'Manchester, UK'); when it is blank, search without a location filter.",
         "",
         _HELPERS_REFERENCE,
         "",
@@ -843,7 +848,7 @@ def _builder_code_prompt(answers, recon=None, feedback=None):
         f"Write scraper.py only for JSE source {source_name!r} (plugin id {plugin_id!r}).",
         f"Careers URL: {answers.get('careers_url') or answers.get('base_url') or ''}",
         f"Company: {answers.get('company_name') or source_name}",
-        f"Default location: {answers.get('location') or ''}",
+        f"Default location: {answers.get('location') or '(none: JSE passes the lane location at run time; never hardcode one)'}",
         f"Test keyword: {answers.get('test_keyword') or 'business analyst'}; max pages: {max_pages}",
         f"Mode: {answers.get('mode') or 'keyword'}; platform hint: {answers.get('platform_hint') or 'none'}",
         f"User notes: {answers.get('notes') or 'none'}",
@@ -902,6 +907,14 @@ def _normalise_generation(data, answers):
         "max_pages": int(answers.get("max_pages") or 3),
         "test_keyword": answers.get("test_keyword") or "",
     }
+    # The model copies the location default out of the example plugin it was
+    # shown (an Australian one), so a UK user's new scraper searched Melbourne.
+    # The answer the user gave, blank included, always wins: blank means
+    # "follow the lane" (see scraper_plugins.build_config).
+    for item in schema:
+        if isinstance(item, dict) and item.get("key") == "location":
+            item["default"] = defaults["location"]
+            item.pop("legacy_key", None)
     for key, value in defaults.items():
         if key not in keys:
             schema.append({

@@ -4,6 +4,63 @@ All notable changes to JSE are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Clear scraped listings.** A button in the Pipeline's New column deletes listings the
+  scrapers found that nobody has worked on (New and, optionally, Rejected) in the current
+  lane or all lanes. Jobs moved to Interested or further and hand-entered jobs stay. Handy
+  after a test search.
+- **Delete matching.** With any filter set, the Pipeline toolbar can delete every job the
+  filter bar matches, using the same query as the board. The modal previews counts by stage
+  first. Jobs with application history (applied, interviewed, employer feedback or generated
+  documents) are kept unless you tick the box to include them, and that is re-checked at
+  delete time.
+- **Activity log levels.** Info, Warnings and Errors toggles with counts, remembered between
+  sessions. Log frames can carry an explicit `level`; older log lines are classified from
+  their wording.
+- **Base cover letter per lane.** Settings > Lane takes an optional cover letter (.docx,
+  .doc, .pdf, .txt or .md). Fit analysis, live analysis during search and search-term
+  generation read it after the resume, so projects only described in the letter count as
+  evidence. Without one, the analysis text and signatures are unchanged. Rich document
+  generation also gets it as reference evidence.
+- **Fragments split by document type.** Fragments now record whether their evidence came
+  from a resume, a cover letter or both. The corpus miner and lane onboarding mine resumes
+  and cover letters in separate passes with their own brief (cover-letter passes go after
+  side projects, motivations and the story behind an outcome), and kit extraction tags each
+  fragment's source document. Template generation feeds resume fragments to the resume and
+  cover-letter fragments to the letter. Fit analysis still sees all of them. Settings >
+  Documents shows the split and has a **Mine CV + cover letter** button for existing lanes.
+  Fragments mined before this are untagged, usable anywhere, and take a type the next time
+  a mining run reinforces them.
+
+### Changed
+
+- **Neutral default positioning.** The built-in positioning doctrine was one candidate's
+  two-track strategy with named employers and AUD salary bands, and the triage,
+  gatekeeper and search-title prompts carried the same tracks, so every install scored
+  roles against that career. The built-in default now reads target families and level
+  from the resume and lane brief, sets no salary band and retires nothing, and the base
+  prompts only refer to "the CANDIDATE POSITIONING section". A new **Default positioning**
+  box in Settings > Lane sets an install-wide doctrine for lanes without their own
+  (lane doctrine > install default > built-in). Search-title generation now sees the
+  resolved doctrine too.
+- **Prompts follow the lane's search location.** Scoring, search-term, research and
+  document prompts were written as "an Australian career analyst" in Australian English.
+  For a lane searching outside Australia they now name that market, use its English
+  variety, and replace the ASX/council employer examples; a US lane also gets US letter
+  dates and sign-off. Australian and blank locations leave every prompt byte-for-byte
+  unchanged.
+- **Scrapers search where the lane searches.** The hidden `seek_location` and
+  `linkedin_location` columns defaulted to Melbourne and overrode the lane location, so a
+  Manchester lane still searched Melbourne on LinkedIn. They now follow the lane's search
+  location unless set to somewhere else on purpose, a location set in a lane's source
+  settings beats them, and a source with no location of its own uses the lane's.
+- **New Scraper never hardcodes a location.** The builder prompt forbids it, and the
+  generated manifest's location default is always what you typed (blank means "use the
+  lane's location"), not a value copied from the example plugin.
+- A manually added job with no location gets the lane's search location instead of
+  "Melbourne VIC".
+
 ## 1.0.0-beta.3 - 2026-10-07
 
 ### Added

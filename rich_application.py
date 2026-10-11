@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 import context_library as clib
+import region
 from hybrid_renderer import render_markdown_to_docx, render_cover_letter_to_docx
 
 DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
@@ -289,13 +290,13 @@ def resume_task(track="senior"):
     return RESUME_TASK + (STRIPPED_RESUME_BRIEF if track == "stripped_back" else SENIOR_RESUME_BRIEF)
 
 
-def cover_task(today, name, track="senior"):
+def cover_task(today, name, track="senior", closing="Yours sincerely,"):
     return (
         "TASK: Using only the evidence and job above, write a tailored cover letter, mirroring the authentic "
         "voice/tone of the candidate's PRIOR COVER LETTERS.\n"
         f"Structure (plain text): date ({today}); recipient name+company+location IF known else omit; "
         "`Re: <role title>`; `Dear <name or 'Hiring Manager'>,`; 3–4 concise evidence-grounded paragraphs with real "
-        f"metrics; `Yours sincerely,`; {name}.\n"
+        f"metrics; `{closing}`; {name}.\n"
         "Keep the entire letter to 400 words or fewer so it fits on one page. "
         "No sender contact header (the renderer adds it). Output ONLY the letter text."
         + (STRIPPED_COVER_BRIEF if track == "stripped_back" else "")
@@ -623,7 +624,7 @@ def _review(caller, context_block, job, resume_md, cover_txt):
 # Engine
 # --------------------------------------------------------------------------- #
 def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
-                  source_resume_text=None, additional_candidate_context="",
+                  source_resume_text=None, additional_candidate_context="", source_cover_letter_text="",
                   log=print, out_dir="applications", conn=None, do_review=True,
                   document_track="senior"):
     owns_conn = conn is None
@@ -660,18 +661,27 @@ def generate_rich(job_id, profile_id=1, settings=None, personal_info=None,
                  f"CLOSING: {job['closing_date']}\nCONTACT: {job['contact_person'] or '(unknown)'}\n\n"
                  f"JOB ADVERTISEMENT:\n{(job['description'] or '')[:6000]}\n\n{context_block}\n\n"
                  f"{additional_evidence}"
-                 f"CANDIDATE BASE RESUME (reference):\n{base_resume[:6000]}")
-    today = datetime.now().strftime("%d %B %Y")
+                 f"CANDIDATE BASE RESUME (reference):\n{base_resume[:6000]}"
+                 + (f"\n\nCANDIDATE BASE COVER LETTER (reference: real projects and experience the resume may not "
+                    f"list; use them as evidence, not as wording to copy):\n{str(source_cover_letter_text)[:5000]}"
+                    if str(source_cover_letter_text or "").strip() else ""))
+    # The lane's search location sets the market framing, the date format and
+    # the sign-off; an Australian or blank location leaves all three as before.
+    location = (settings or {}).get("preferred_location") or region.active_location()
+    today = region.letter_date(datetime.now(), location)
+    system = region.localise(GENERIC_SYSTEM, location, add_market_line=True)
 
     # One cached session shares the big evidence prefix across all three calls.
-    session = build_session(settings, GENERIC_SYSTEM, job_brief, log=log)
+    session = build_session(settings, system, job_brief, log=log)
     provider_label = session.label
     try:
         track = document_track if document_track in ("senior", "stripped_back") else "senior"
         log(f"Authoring resume with {provider_label} on the {track.replace('_', ' ')} track…")
         resume_md = session.ask(resume_task(track)).strip()
         log("Authoring cover letter…")
-        cover_txt = session.ask(cover_task(today, f"{info['first_name']} {info['last_name']}", track)).strip()
+        cover_txt = session.ask(cover_task(
+            today, f"{info['first_name']} {info['last_name']}", track, closing=region.letter_closing(location),
+        )).strip()
 
         review = {}
         if do_review:

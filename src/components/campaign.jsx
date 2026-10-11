@@ -265,7 +265,9 @@ function StatsPanel({ stats, period, onPeriodChange, busy }) {
   );
 }
 
-function MemoryPanel({ memoryStatus, memoryFragments, memoryBusy, onScanMemory }) {
+const FRAGMENT_DOC_TYPE_LABELS = { resume: "CV", cover_letter: "Cover letter", both: "CV + letter" };
+
+function MemoryPanel({ memoryStatus, memoryFragments, memoryBusy, onScanMemory, onMineDocuments, mineBusy }) {
   const fragmentCount = Number(memoryStatus?.fragment_count || memoryFragments?.length || 0);
   const unscanned = Number(memoryStatus?.recent_unscanned_count || 0);
   const threshold = Number(memoryStatus?.reminder_threshold || 6);
@@ -273,6 +275,7 @@ function MemoryPanel({ memoryStatus, memoryFragments, memoryBusy, onScanMemory }
   const latestScanSummary = lastScan?.summary || "";
   const byConfidence = countBy(memoryFragments, "confidence");
   const byStatus = countBy(memoryFragments, "status", "established");
+  const byDocType = countBy(memoryFragments, "doc_type", "both");
   const preview = (memoryFragments || []).slice(0, 5);
   const needsScan = unscanned > 0;
   const urgency = unscanned >= threshold ? "due" : needsScan ? "pending" : "current";
@@ -289,10 +292,23 @@ function MemoryPanel({ memoryStatus, memoryFragments, memoryBusy, onScanMemory }
           <h3>Lane Application Memory</h3>
           <p className="settings-hint">Fragments turn submitted applications into reusable evidence, search terms, and composite fit scores.</p>
         </div>
-        <button className="secondary" disabled={memoryBusy} onClick={onScanMemory}>
-          {memoryBusy ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-          {scanCopy}
-        </button>
+        <div className="memory-head-actions">
+          {onMineDocuments ? (
+            <button
+              className="secondary"
+              disabled={mineBusy}
+              title="Mine the lane's base resume and base cover letter in separate passes"
+              onClick={onMineDocuments}
+            >
+              {mineBusy ? <Loader2 className="spin" size={16} /> : <FileText size={16} />}
+              {mineBusy ? "Mining CV and letter..." : "Mine CV + cover letter"}
+            </button>
+          ) : null}
+          <button className="secondary" disabled={memoryBusy} onClick={onScanMemory}>
+            {memoryBusy ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+            {scanCopy}
+          </button>
+        </div>
       </div>
 
       <div className="memory-metrics">
@@ -305,6 +321,11 @@ function MemoryPanel({ memoryStatus, memoryFragments, memoryBusy, onScanMemory }
           <span>Waiting docs</span>
           <strong>{unscanned}</strong>
           <small>{needsScan ? "Applied kits ready to mine" : "No saved applied kits waiting"}</small>
+        </article>
+        <article>
+          <span>By document</span>
+          <strong>{byDocType.resume || 0}/{byDocType.cover_letter || 0}/{byDocType.both || 0}</strong>
+          <small>CV / cover letter / both</small>
         </article>
         <article>
           <span>Confidence</span>
@@ -336,7 +357,7 @@ function MemoryPanel({ memoryStatus, memoryFragments, memoryBusy, onScanMemory }
           <article key={fragment.id || `${fragment.theme}-${fragment.claim}`} className="fragment-preview">
             <div>
               <strong>{fragment.theme || "Untitled fragment"}</strong>
-              <span>{fragment.fragment_type || "evidence"} · {fragment.confidence || "medium"} · {fragment.status || "established"}</span>
+              <span>{FRAGMENT_DOC_TYPE_LABELS[fragment.doc_type || "both"]} · {fragment.fragment_type || "evidence"} · {fragment.confidence || "medium"} · {fragment.status || "established"}</span>
             </div>
             <p>{fragment.claim || fragment.supporting_detail || "No claim captured."}</p>
             {(fragment.keywords || []).length ? <small>Activates on: {fragment.keywords.slice(0, 5).join(", ")}</small> : null}

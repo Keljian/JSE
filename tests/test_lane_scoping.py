@@ -134,6 +134,36 @@ class PositioningDoctrineTests(unittest.TestCase):
                 self.prompts.POSITIONING_DOCTRINE,
             )
 
+    def test_the_install_default_sits_between_the_lane_and_the_built_in(self):
+        self.assertEqual(
+            self.prompts.resolve_positioning_doctrine({"default_positioning_doctrine": "MY STRATEGY"}),
+            "MY STRATEGY",
+        )
+        self.assertEqual(
+            self.prompts.resolve_positioning_doctrine({
+                "positioning_doctrine": "LANE VIEW", "default_positioning_doctrine": "MY STRATEGY",
+            }),
+            "LANE VIEW",
+        )
+
+    def test_the_built_in_default_describes_no_one_in_particular(self):
+        # It once carried one candidate's tracks, employers and AUD salary
+        # bands, so every other user was scored against that career.
+        for text in (
+            self.prompts.POSITIONING_DOCTRINE,
+            self.prompts.TRIAGE_SYSTEM_PROMPT_BASE,
+            self.prompts.DEEP_GATEKEEPER_SYSTEM_PROMPT_BASE,
+            self.prompts.ANALYSIS_SYSTEM_PROMPT_BASE,
+        ):
+            for personal in ("TRACK 1", "Track 1", "TRACK 2", "Flavorite", "EPSA", "Bosch", "Firetail",
+                             "Mechatronics honours", "AUD $"):
+                self.assertNotIn(personal, text)
+        self.assertNotIn("RETIRED", self.prompts.POSITIONING_DOCTRINE.replace("retires", ""))
+
+    def test_the_install_default_reaches_lane_settings(self):
+        import database_manager as db
+        self.assertIn("default_positioning_doctrine", db.GLOBAL_AI_SETTING_FIELDS)
+
     def test_a_lane_override_replaces_the_global_doctrine_entirely(self):
         resolved = self.prompts.resolve_positioning_doctrine({"positioning_doctrine": "TECHNICAL LANE VIEW"})
         self.assertEqual(resolved, "TECHNICAL LANE VIEW")

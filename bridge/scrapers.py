@@ -12,7 +12,7 @@ from .runtime import (
     import_app_logic,
 )
 from .documents import (
-    read_resume_text,
+    read_fit_evidence_text,
 )
 
 def command_sources_list(payload):
@@ -176,7 +176,8 @@ def command_scrape_run(payload):
                 "lane_count": len(profiles),
             })
             terms = db.get_profile_terms(profile_id)
-            resume_text = read_resume_text(profile_id)
+            # Search terms and live analysis see the cover letter too.
+            resume_text = read_fit_evidence_text(profile_id)
             if not terms:
                 emit("log", message=f"No saved terms for {profile['name']}. Generating terms first.")
                 reporter(0, None, phase="terms", detail="Generating search terms…")

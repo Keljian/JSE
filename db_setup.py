@@ -211,6 +211,9 @@ def setup_database():
     _add_column(cursor, "profiles", "commute_screening_enabled", "INTEGER DEFAULT 1")
     _add_column(cursor, "profiles", "salary_floor", "INTEGER DEFAULT 0")
     _add_column(cursor, "profiles", "salary_currency", "TEXT")
+    # Optional base cover letter read alongside the resume by fit analysis, so
+    # projects that only appear in the letter still count as evidence.
+    _add_column(cursor, "profiles", "cover_letter_path", "TEXT")
 
     _add_column(cursor, "jobs", "commute_km", "REAL")
     _add_column(cursor, "jobs", "commute_sector", "TEXT")
@@ -1036,6 +1039,11 @@ def setup_database():
         # strongest signal we have: they get weighted above merely-submitted
         # evidence in lane affinity and keyword generation.
         _add_column(cursor, _table, "interview_validated", "INTEGER DEFAULT 0")
+        # Which kind of document the evidence came from: 'resume',
+        # 'cover_letter' or 'both'. NULL is a fragment mined before the split;
+        # it is usable anywhere and takes the type of the next mining that
+        # reinforces it.
+        _add_column(cursor, _table, "doc_type", "TEXT")
 
     # The PID of the process that started a scrape, so a run whose process died
     # without reporting can be told apart from one still going.

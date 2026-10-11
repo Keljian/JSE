@@ -11,13 +11,29 @@ import llm_handler
 import scraper_dispatcher
 import scraper_plugins
 import database_manager as db
+import region
 from concurrency import OperationCancelledError, cancel_event
 import concurrent.futures
 
 class LogicError(Exception):
     pass
 
+def _lane_location(profile_id, search_settings=None):
+    """The lane's search location, for region.use_location (see region.py)."""
+    try:
+        settings = search_settings or db.get_lane_settings(profile_id) or {}
+        return settings.get("preferred_location") or region.active_location()
+    except Exception:
+        return region.active_location()
+
+
 def execute_keyword_generation(optimism, resume_text, log_callback, profile_id=1):
+    # Search titles follow the lane's market: a Manchester lane gets UK titles.
+    with region.use_location(_lane_location(profile_id)):
+        return _execute_keyword_generation(optimism, resume_text, log_callback, profile_id)
+
+
+def _execute_keyword_generation(optimism, resume_text, log_callback, profile_id=1):
     """Generates and saves search terms for a lane using candidate fragments and lane definition."""
     log_callback("Asking Unsloth Studio to generate lane search terms...")
     try:
@@ -43,6 +59,8 @@ Avoid signals: {settings.get('avoid_terms') or settings.get('penalty_terms') or 
 
 RELEVANT CANDIDATE FRAGMENTS:
 {chr(10).join(fragment_lines) if fragment_lines else 'No shared candidate fragments are available yet.'}
+
+{llm_handler.resolve_positioning_doctrine(settings)}
 
 BASE RESUME:
 {resume_text}
@@ -191,7 +209,9 @@ def execute_scraping_and_analysis(keywords, sources, resume_text, status_callbac
             if cancel_event.is_set():
                 return None
             log_callback(f"'{task['keyword']}' on {task['source']} yielded no results. Asking LLM for a better term...")
-            new_keyword = llm_handler.generalize_search_term(task['keyword'], resume_text)
+            # A worker thread starts with no search location; give it the lane's.
+            with region.use_location(_lane_location(profile_id, search_settings)):
+                new_keyword = llm_handler.generalize_search_term(task['keyword'], resume_text)
             if not new_keyword or new_keyword.lower() == task['keyword'].lower():
                 return None
             log_callback(f"LLM suggested '{new_keyword}'. Retrying on {task['source']}.")

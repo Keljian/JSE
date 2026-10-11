@@ -2187,9 +2187,16 @@ h3 {
   flex-shrink: 0;
 }
 
+.memory-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .memory-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -2314,6 +2321,36 @@ h3 {
 .resume-picker {
   display: grid;
   grid-column: 1 / -1;
+  gap: 8px;
+}
+
+.default-positioning {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #edf0ed;
+}
+
+.cover-letter-picker {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+}
+
+.cover-letter-picker em {
+  margin-left: 6px;
+  color: #7b847e;
+  font-style: normal;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.cover-letter-picker .settings-hint {
+  margin: 0;
+}
+
+.cover-letter-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -2982,6 +3019,82 @@ h3 {
   background: #edf6f1;
 }
 
+.interested-batch-toolbar button + button {
+  margin-top: 6px;
+}
+
+.interested-batch-toolbar button.clear-scraped,
+button.secondary.danger-outline {
+  color: #7d303f;
+  border-color: #f0c2cd;
+}
+
+.interested-batch-toolbar button.clear-scraped:hover:not(:disabled),
+button.secondary.danger-outline:hover:not(:disabled) {
+  border-color: #eda8ba;
+  background: #fdf0f3;
+}
+
+.bulk-delete-body {
+  margin: 12px 14px 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.bulk-delete-body .settings-hint,
+.bulk-delete-body .settings-alert {
+  margin: 0;
+}
+
+.bulk-delete-filters {
+  margin: 0;
+  padding: 8px 12px 8px 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: #34423d;
+  font-size: 13px;
+}
+
+.bulk-delete-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bulk-delete-summary table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.bulk-delete-summary th,
+.bulk-delete-summary td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #edf0ed;
+  text-align: left;
+}
+
+.bulk-delete-summary th {
+  color: #56615b;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.bulk-delete-summary td + td,
+.bulk-delete-summary th + th {
+  text-align: right;
+}
+
+.bulk-delete-history {
+  align-items: flex-start !important;
+}
+
+.bulk-delete-history span {
+  font-size: 13px;
+}
+
 .interested-batch-toolbar button > span {
   min-width: 20px;
   height: 20px;
@@ -3402,13 +3515,63 @@ h3 {
 
 .logs div {
   display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
+  grid-template-columns: 92px minmax(0, 1fr);
   gap: 9px;
   word-break: break-word;
 }
 
 .logs time {
   color: #7b847e;
+}
+
+.logs .log-line {
+  padding-left: 7px;
+  border-left: 3px solid transparent;
+}
+
+.logs .log-line.warning {
+  border-left-color: #e0b44f;
+  color: #6c4a14;
+}
+
+.logs .log-line.error {
+  border-left-color: #d9687f;
+  color: #7d303f;
+}
+
+.activity-head {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.activity-head h2 {
+  margin-right: auto;
+}
+
+.log-level-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.log-level-chip b {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #edf1ec;
+  color: #44524b;
+  font-size: 11px;
+  text-align: center;
+}
+
+.log-level-chip.warning b {
+  background: #fbf0d6;
+  color: #6c4a14;
+}
+
+.log-level-chip.error b {
+  background: #fde8ee;
+  color: #7d303f;
 }
 
 .modal-backdrop {

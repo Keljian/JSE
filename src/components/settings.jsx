@@ -91,7 +91,7 @@ function ScraperPluginBuilder({ profileId, busy, onBuild, onTest }) {
         <div className="scraper-builder-step-head"><span>2</span><div><strong>Search behaviour</strong><small>Use conservative test settings for the first run.</small></div></div>
         <div className="scraper-builder-fields behaviour-fields">
           <label><span>Mode</span><select value={form.mode} onChange={(event) => update("mode", event.target.value)}><option value="keyword">Keyword search</option><option value="sweep">Sweep all listings</option></select></label>
-          <label><span>Default location</span><input value={form.location} placeholder="Melbourne VIC" onChange={(event) => update("location", event.target.value)} /></label>
+          <label><span>Default location</span><input value={form.location} placeholder="Blank = each lane's search location" onChange={(event) => update("location", event.target.value)} /></label>
           <label><span>Test keyword</span><input value={form.test_keyword} placeholder="business analyst" onChange={(event) => update("test_keyword", event.target.value)} /></label>
           <label><span>Test pages</span><input type="number" min="1" max="5" value={form.max_pages} onChange={(event) => update("max_pages", event.target.value)} /></label>
         </div>
@@ -146,10 +146,10 @@ function ScraperPluginBuilder({ profileId, busy, onBuild, onTest }) {
   );
 }
 
-function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onDeleteLane, onApplyFilters, onCompactDatabase, onRecoverDatabase, onResetRejected, onImportResume, onSearchResumes, onScanMemory, onImportScraper, onBuildScraper, onTestScraper, onDiagnoseScraper, onRepairScraper, onRollbackScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
+function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers, scraperError, memoryStatus, memoryFragments, memoryBusy, onSave, onSaveGlobal, onSaveProfile, onDeleteLane, onApplyFilters, onCompactDatabase, onRecoverDatabase, onResetRejected, onImportResume, onSearchResumes, onScanMemory, onMineDocuments, mineBusy, onImportScraper, onBuildScraper, onTestScraper, onDiagnoseScraper, onRepairScraper, onRollbackScraper, onUpdateScraper, onUpdateLaneScraper, onRemoveScraper }) {
   const [form, setForm] = useState(settings || {});
   const [globalForm, setGlobalForm] = useState(globalSettings || {});
-  const [profileForm, setProfileForm] = useState({ name: "", resume_path: "" });
+  const [profileForm, setProfileForm] = useState({ name: "", resume_path: "", cover_letter_path: "" });
   const [resumeQuery, setResumeQuery] = useState("");
   const [resumeOptions, setResumeOptions] = useState([]);
   const [resumeSearchBusy, setResumeSearchBusy] = useState(false);
@@ -172,7 +172,8 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
   useEffect(() => {
     setProfileForm({
       name: profile?.name || "",
-      resume_path: profile?.resume_path || ""
+      resume_path: profile?.resume_path || "",
+      cover_letter_path: profile?.cover_letter_path || ""
     });
   }, [profile]);
   useEffect(() => {
@@ -223,6 +224,10 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
       updateProfile("resume_path", importedPath);
       setResumeQuery("");
     }
+  };
+  const chooseCoverLetter = async () => {
+    const path = await window.jobAssistant.chooseDocument("Select your base cover letter");
+    if (path) updateProfile("cover_letter_path", path);
   };
   const selectSavedResume = (resume) => {
     updateProfile("resume_path", resume.path);
@@ -778,19 +783,42 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
                 ))}
               </div>
             </div>
+            <div className="cover-letter-picker">
+              <label>
+                <span>Base cover letter <em>Optional</em></span>
+                <input value={profileForm.cover_letter_path} placeholder="Read with the resume in fit analysis" onChange={(event) => updateProfile("cover_letter_path", event.target.value)} />
+              </label>
+              <div className="cover-letter-actions">
+                <button type="button" className="secondary" onClick={chooseCoverLetter}><FolderOpen size={15} /> Choose cover letter</button>
+                {profileForm.cover_letter_path ? <button type="button" className="secondary" onClick={() => updateProfile("cover_letter_path", "")}><X size={15} /> Clear</button> : null}
+              </div>
+              <p className="settings-hint">Fit analysis and search-term generation read this alongside the resume, so projects you only describe in your cover letter still count. Save the lane to apply it. Adding or changing it means jobs still in New are re-scored on the next analysis run.</p>
+            </div>
             <label><span>Lane intent</span><textarea value={form.lane_intent || ""} placeholder="Senior IT leadership, engineering systems, business partnering..." onChange={(event) => update("lane_intent", event.target.value)} /></label>
             <label><span>Target titles</span><textarea value={form.target_titles || ""} placeholder="IT Manager, Digital Systems Manager, Technology Business Partner" onChange={(event) => update("target_titles", event.target.value)} /></label>
             <label><span>Target domains</span><input value={form.target_domains || ""} placeholder="systems, platforms, operations, transformation" onChange={(event) => update("target_domains", event.target.value)} /></label>
             <label><span>Seniority</span><input value={form.seniority || ""} placeholder="manager, senior manager, lead" onChange={(event) => update("seniority", event.target.value)} /></label>
             <label><span>Must-have signals</span><textarea value={form.must_have_terms || ""} placeholder="stakeholder leadership, vendor governance, systems delivery" onChange={(event) => update("must_have_terms", event.target.value)} /></label>
             <label><span>Avoid signals</span><textarea value={form.avoid_terms || ""} placeholder="junior support, shift work, pure coding" onChange={(event) => update("avoid_terms", event.target.value)} /></label>
-            <label className="full"><span>Positioning doctrine</span><textarea rows={8} value={form.positioning_doctrine || ""} placeholder="Leave blank to score this lane against the default doctrine. Set it when this lane hunts a different role family or level to your primary market — otherwise the default retires roles this lane exists to find." onChange={(event) => update("positioning_doctrine", event.target.value)} /></label>
+            <label className="full"><span>Positioning doctrine</span><textarea rows={8} value={form.positioning_doctrine || ""} placeholder="Leave blank to use the default positioning below. Set it when this lane hunts a different role family or level to your primary market." onChange={(event) => update("positioning_doctrine", event.target.value)} /></label>
           </div>
-          <p className="settings-hint">The positioning doctrine is the market view every scoring pass is judged against: which role families are on target, which level, which salary band. Blank uses the app default.</p>
+          <p className="settings-hint">The positioning doctrine is the market view every scoring pass is judged against: which role families are on target, which level, which salary band. Blank uses the default positioning below.</p>
+          <div className="form-grid compact default-positioning">
+            <label className="full">
+              <span>Default positioning (every lane without its own)</span>
+              <textarea
+                rows={8}
+                value={globalForm.default_positioning_doctrine || ""}
+                placeholder="Blank: JSE reads your target role families and level from the resume and lane brief, sets no salary band and retires nothing. Write your own to name your target families, the level you are going for, salary bands, and anything to rule out."
+                onChange={(event) => updateGlobal("default_positioning_doctrine", event.target.value)}
+              />
+            </label>
+          </div>
           <div className="section-actions">
             <button className="secondary" onClick={chooseResume}><FolderOpen size={16} /> Choose resume</button>
             <button disabled={!profile || !profileForm.name.trim() || !profileForm.resume_path.trim()} onClick={() => onSaveProfile(profileForm)}><Check size={16} /> Save lane</button>
             <button onClick={() => onSave(form)}><Check size={16} /> Save lane strategy</button>
+            <button className="secondary" onClick={() => onSaveGlobal(globalForm)}><Check size={16} /> Save default positioning</button>
             <button
               className="ghost danger"
               disabled={!profile || deletingLane || laneCount <= 1}
@@ -918,6 +946,8 @@ function SettingsPanel({ profile, laneCount, settings, globalSettings, scrapers,
           memoryFragments={memoryFragments}
           memoryBusy={memoryBusy}
           onScanMemory={onScanMemory}
+          onMineDocuments={onMineDocuments}
+          mineBusy={mineBusy}
         />
         </>
         ) : null}

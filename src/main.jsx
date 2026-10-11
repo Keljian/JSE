@@ -11,16 +11,16 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, CircleStop, Download, FileText, ClipboardCheck, GraduationCap, KanbanSquare, Loader2, NotebookTabs, Info, Play, Plus, Radar, RefreshCw, Settings, Sparkles, Target, TrendingUp, X } from "lucide-react";
+import { BarChart3, CircleStop, Download, FileText, ClipboardCheck, GraduationCap, KanbanSquare, Loader2, NotebookTabs, Info, Play, Plus, Radar, RefreshCw, Settings, Sparkles, Target, Trash2, TrendingUp, X } from "lucide-react";
 import "./styles.css";
 import jseIcon from "../assets/jse-icon.png";
 
 import { KANBAN_COLUMN_RENDER_CAP, PIPELINE, SUPPORT_MESSAGE, SUPPORT_URL, WORK_MODES } from "./lib/constants";
-import { documentAiLabel, formatBytes, hasCompanyResearch, normalizeStage, openSupportLink, signalFlagTypesOf, primaryScore, toErrorMessage, todayPlus } from "./lib/format";
+import { LOG_LEVELS, logLevelOf, documentAiLabel, formatBytes, hasCompanyResearch, normalizeStage, openSupportLink, signalFlagTypesOf, primaryScore, toErrorMessage, todayPlus, countBy } from "./lib/format";
 import { appConfirm, appNotice, appPrompt, dialogBridge } from "./lib/dialogs";
 import { DialogModal, DocumentTextModal, TaskProgressBar } from "./components/primitives";
 import { JobCard } from "./components/chips";
-import { AddJobModal, AnalysisModal, CleanupModal, CreateLaneModal, LogExternalModal, OnboardingWizard, QuickStageForm, RejectJobModal, RunSearchModal } from "./components/modals";
+import { AddJobModal, AnalysisModal, BulkDeleteModal, CleanupModal, CreateLaneModal, LogExternalModal, OnboardingWizard, QuickStageForm, RejectJobModal, RunSearchModal } from "./components/modals";
 import { WorkspaceModal } from "./components/workspace";
 import { AboutPanel, Dashboard, InterviewLearningsPanel, UpdateToast } from "./components/dashboard";
 import { CampaignPanel, StatsPanel } from "./components/campaign";
@@ -32,6 +32,17 @@ function App() {
   const [booting, setBooting] = useState(true);
   const [status, setStatus] = useState("Idle");
   const [logs, setLogs] = useState([]);
+  // Which severities the Activity view shows. Remembered per machine; storage
+  // can be unavailable, in which case every level is shown.
+  const [logLevelsShown, setLogLevelsShown] = useState(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("jse.activityLogLevels") || "null");
+      if (Array.isArray(saved)) return saved.filter((level) => LOG_LEVELS.includes(level));
+    } catch {
+      // Fall through to the default.
+    }
+    return [...LOG_LEVELS];
+  });
   const [latestLog, setLatestLog] = useState("");
   const [profiles, setProfiles] = useState([]);
   const [activeProfileId, setActiveProfileId] = useState(1);
@@ -77,6 +88,7 @@ function App() {
   const [workspace, setWorkspace] = useState({ job: null, events: [], interviews: [], tab: "Details" });
   const [documentViewer, setDocumentViewer] = useState(null);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [bulkDelete, setBulkDelete] = useState(null);
   const [campaignBusy, setCampaignBusy] = useState(false);
   const [dialog, setDialog] = useState(null);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -130,11 +142,27 @@ function App() {
   const docsBusy = Boolean(activeTasks.docs);
   const memoryBusy = Boolean(activeTasks.memory);
 
-  const appendLog = useCallback((message) => {
+  const appendLog = useCallback((message, level) => {
     const text = typeof message === "string" ? message : JSON.stringify(message);
     setLatestLog(text);
-    setLogs((current) => [...current.slice(-250), { at: new Date().toLocaleTimeString(), text }]);
+    setLogs((current) => [...current.slice(-250), { at: new Date().toLocaleTimeString(), text, level: logLevelOf(text, level) }]);
   }, []);
+
+  const toggleLogLevel = (level, shown) => setLogLevelsShown((current) => {
+    const next = shown ? [...new Set([...current, level])] : current.filter((item) => item !== level);
+    try {
+      window.localStorage.setItem("jse.activityLogLevels", JSON.stringify(next));
+    } catch {
+      // Not remembered; the toggle still applies for this session.
+    }
+    return next;
+  });
+
+  const logLevelCounts = useMemo(() => countBy(logs, "level", "info"), [logs]);
+  const visibleLogs = useMemo(
+    () => logs.map((line, index) => ({ ...line, key: `${line.at}-${index}` })).filter((line) => logLevelsShown.includes(line.level || "info")),
+    [logs, logLevelsShown],
+  );
 
   const invoke = useCallback((command, payload = {}) => window.jobAssistant.invoke(command, payload), []);
   const normalizeActiveProfile = useCallback((nextProfiles, preferredId = 0) => {
@@ -177,6 +205,51 @@ function App() {
     }));
   }, []);
 
+  // Plain-language list of the active filters, shown in the delete-matching
+  // modal so the user sees exactly which filter set is about to be applied.
+  const filterSummary = useMemo(() => {
+    const items = [];
+    if (filters.query) items.push(`Search: "${filters.query}"`);
+    if (filters.stage) items.push(`Stage: ${PIPELINE.find((stage) => stage.id === filters.stage)?.label || filters.stage}`);
+    if (filters.source) items.push(`Source: ${filters.source}`);
+    if (filters.company) items.push(`Company: ${filters.company}`);
+    if (filters.location) items.push(`Location: ${filters.location}`);
+    if (filters.min_score !== "" && filters.min_score != null) items.push(`Score ${filters.min_score}+ (unscored jobs included)`);
+    if (filters.max_score !== "" && filters.max_score != null) items.push(`Score up to ${filters.max_score}`);
+    if (filters.date_from) items.push(`Posted since ${filters.date_from}`);
+    const modes = filters.work_modes || [];
+    if (modes.length && modes.length < WORK_MODES.length) {
+      items.push(`Work mode: ${modes.map((id) => WORK_MODES.find((mode) => mode.id === id)?.label || id).join(", ")}`);
+    }
+    if (filters.has_interview) items.push("Has interviews");
+    if (filters.has_feedback) items.push("Has feedback");
+    return items;
+  }, [filters]);
+
+  const openBulkDelete = (mode) => {
+    if (!hasActiveProfile && !includeAllProfiles) return;
+    setBulkDelete({
+      mode,
+      // Snapshot of the scope and filters at the moment the button was
+      // pressed; the modal previews and deletes against this, not live state.
+      request: {
+        profile_id: activeProfileId,
+        include_all_profiles: includeAllProfiles,
+        filters: mode === "filter" ? { ...filters } : {},
+      },
+      scopeLabel: includeAllProfiles ? "all lanes" : (activeProfile?.name || "the current lane"),
+      filterSummary: mode === "filter" ? filterSummary : [],
+    });
+  };
+
+  const finishBulkDelete = (result) => {
+    const deleted = result?.deleted || 0;
+    const kept = result?.kept || 0;
+    appendLog(`Deleted ${deleted} job${deleted === 1 ? "" : "s"}${kept ? `; kept ${kept} with application history` : ""}.`);
+    setBulkDelete(null);
+    refresh().catch((error) => appendLog(toErrorMessage(error), "error"));
+  };
+
   const requestPayload = useMemo(() => ({
     ...filters,
     profile_id: activeProfileId,
@@ -217,7 +290,7 @@ function App() {
         setPrerequisites(prerequisiteData);
         setOnboardingOpen(Boolean(data.needs_onboarding));
       })
-      .catch((error) => appendLog(`Startup failed: ${toErrorMessage(error)}`))
+      .catch((error) => appendLog(`Startup failed: ${toErrorMessage(error)}`, "error"))
       .finally(() => setBooting(false));
   }, [appendLog, invoke, normalizeActiveProfile]);
 
@@ -226,7 +299,7 @@ function App() {
     // Debounce so rapid filter changes (e.g. typing in the search box) coalesce
     // into a single app:refresh instead of spawning a Python process per keystroke.
     const handle = setTimeout(() => {
-      refresh().catch((error) => appendLog(toErrorMessage(error)));
+      refresh().catch((error) => appendLog(toErrorMessage(error), "error"));
     }, 250);
     return () => clearTimeout(handle);
   }, [booting, refresh, appendLog]);
@@ -245,7 +318,7 @@ function App() {
       });
       setCampaignPlan(data);
     } catch (error) {
-      appendLog(`Today's plan failed to load: ${toErrorMessage(error)}`);
+      appendLog(`Today's plan failed to load: ${toErrorMessage(error)}`, "error");
     }
   }, [activeProfileId, appendLog, includeAllProfiles, invoke]);
 
@@ -262,7 +335,7 @@ function App() {
     setStatsBusy(true);
     invoke("stats:summary", { profile_id: activeProfileId, include_all_profiles: includeAllProfiles, days: statsPeriod })
       .then((data) => { if (active) setStats(data); })
-      .catch((error) => appendLog(`Stats load failed: ${toErrorMessage(error)}`))
+      .catch((error) => appendLog(`Stats load failed: ${toErrorMessage(error)}`, "error"))
       .finally(() => { if (active) setStatsBusy(false); });
     return () => { active = false; };
   }, [view, statsPeriod, activeProfileId, includeAllProfiles, booting, invoke, appendLog]);
@@ -274,10 +347,10 @@ function App() {
         setSettings(data.settings);
         applySettingsToFilters(data.settings);
       })
-      .catch((error) => appendLog(`Settings load failed: ${toErrorMessage(error)}`));
+      .catch((error) => appendLog(`Settings load failed: ${toErrorMessage(error)}`, "error"));
     invoke("settings:globalGet")
       .then((data) => setGlobalSettings(data.settings))
-      .catch((error) => appendLog(`Global settings load failed: ${toErrorMessage(error)}`));
+      .catch((error) => appendLog(`Global settings load failed: ${toErrorMessage(error)}`, "error"));
     invoke("scrapers:list", { profile_id: activeProfileId })
       .then((data) => {
         setScrapers(data.scrapers || []);
@@ -370,7 +443,7 @@ function App() {
       [taskKind]: { current: 0, total: null, phase: "starting", startedAt: Date.now() },
     }));
     const task = window.jobAssistant.startTask(command, payload, (event) => {
-      if (event.type === "log") appendLog(event.message);
+      if (event.type === "log") appendLog(event.message, event.level);
       if (event.type === "status") setStatus(event.message || "Running");
       if (event.type === "progress") recordProgress(taskKind, event);
       if (event.type === "result") {
@@ -408,14 +481,14 @@ function App() {
             if (command.startsWith("docs:") && payload.job_id) return openJob(payload.job_id, "Application");
             return null;
           })
-          .catch((error) => appendLog(toErrorMessage(error)));
+          .catch((error) => appendLog(toErrorMessage(error), "error"));
       }
       if (event.type === "error") {
-        appendLog(`Error: ${event.message}`);
+        appendLog(`Error: ${event.message}`, "error");
         finishTask(taskKind);
         task.unsubscribe();
         if (command.startsWith("scrape:")) {
-          refresh(refreshProfileId).catch((error) => appendLog(toErrorMessage(error)));
+          refresh(refreshProfileId).catch((error) => appendLog(toErrorMessage(error), "error"));
         }
       }
     });
@@ -534,7 +607,7 @@ function App() {
       appendLog(`Campaign staged ${data.moved?.length || 0} role${data.moved?.length === 1 ? "" : "s"} for attack.`);
       await refresh();
     } catch (error) {
-      appendLog(`Campaign staging failed: ${toErrorMessage(error)}`);
+      appendLog(`Campaign staging failed: ${toErrorMessage(error)}`, "error");
     } finally {
       setCampaignBusy(false);
     }
@@ -550,7 +623,7 @@ function App() {
       appendLog(`Campaign refreshed ${data.changed?.length || 0} active action${data.changed?.length === 1 ? "" : "s"}.`);
       await refresh();
     } catch (error) {
-      appendLog(`Campaign action refresh failed: ${toErrorMessage(error)}`);
+      appendLog(`Campaign action refresh failed: ${toErrorMessage(error)}`, "error");
     } finally {
       setCampaignBusy(false);
     }
@@ -572,7 +645,7 @@ function App() {
         }
       }
     } catch (error) {
-      appendLog(`Add job failed: ${toErrorMessage(error)}`);
+      appendLog(`Add job failed: ${toErrorMessage(error)}`, "error");
     } finally {
       setAddJobBusy(false);
     }
@@ -587,7 +660,7 @@ function App() {
       await refresh();
       if (data.job_id) await openJob(data.job_id);
     } catch (error) {
-      appendLog(`Log external application failed: ${toErrorMessage(error)}`);
+      appendLog(`Log external application failed: ${toErrorMessage(error)}`, "error");
     } finally {
       setAddJobBusy(false);
     }
@@ -626,7 +699,7 @@ function App() {
       }
       setDismissedNudges((current) => new Set(current).add(nudge.interview_id));
     } catch (error) {
-      appendLog(`Could not record interview outcome: ${toErrorMessage(error)}`);
+      appendLog(`Could not record interview outcome: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -637,7 +710,7 @@ function App() {
       appendLog(`Follow-up logged for ${job.title}; next check in 5 days.`);
       await refresh();
     } catch (error) {
-      appendLog(`Could not log follow-up: ${toErrorMessage(error)}`);
+      appendLog(`Could not log follow-up: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -701,7 +774,7 @@ function App() {
       "docs:generateInterestedBatch",
       { job_ids: candidates.map((job) => job.id) },
       (event) => {
-        if (event.type === "log") appendLog(event.message);
+        if (event.type === "log") appendLog(event.message, event.level);
         if (event.type === "status") setStatus(event.message || "Generating Interested docs");
         if (event.type === "progress") {
           setDocsBatchProgress({ ...event, running: true });
@@ -723,7 +796,7 @@ function App() {
           appendLog(`Interested document batch complete: ${result.succeeded || 0} generated, ${result.skipped || 0} skipped (closed or gated), ${result.failed || 0} failed.`);
           finishTask("docs");
           task.unsubscribe();
-          refresh().catch((error) => appendLog(toErrorMessage(error)));
+          refresh().catch((error) => appendLog(toErrorMessage(error), "error"));
         }
         if (event.type === "error") {
           const cancelled = /cancel/i.test(event.message || "");
@@ -733,7 +806,7 @@ function App() {
             status: cancelled ? "cancelled" : "failed",
             message: cancelled ? "Batch cancelled." : `Batch stopped: ${event.message}`
           }));
-          appendLog(cancelled ? "Interested document batch cancelled." : `Interested document batch failed: ${event.message}`);
+          appendLog(cancelled ? "Interested document batch cancelled." : `Interested document batch failed: ${event.message}`, cancelled ? "warning" : "error");
           finishTask("docs");
           task.unsubscribe();
         }
@@ -752,7 +825,7 @@ function App() {
       });
       setHiddenMarket(data);
     } catch (error) {
-      appendLog(`Hidden market scan failed: ${toErrorMessage(error)}`);
+      appendLog(`Hidden market scan failed: ${toErrorMessage(error)}`, "error");
     } finally {
       setHiddenMarketBusy(false);
     }
@@ -785,7 +858,7 @@ function App() {
       });
       await loadHiddenMarket();
     } catch (error) {
-      appendLog(`Could not track target: ${toErrorMessage(error)}`);
+      appendLog(`Could not track target: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -805,7 +878,7 @@ function App() {
       await loadHiddenMarket();
       await refresh();
     } catch (error) {
-      appendLog(`Could not create the warm lead: ${toErrorMessage(error)}`);
+      appendLog(`Could not create the warm lead: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -829,7 +902,7 @@ function App() {
       await invoke("hiddenMarket:leadUpdate", { id: leadId, updates });
       await loadHiddenMarket();
     } catch (error) {
-      appendLog(`Lead update failed: ${toErrorMessage(error)}`);
+      appendLog(`Lead update failed: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -851,7 +924,7 @@ function App() {
       await Promise.all([loadHiddenMarket(), refresh()]);
       if (result?.job_id) openJob(result.job_id);
     } catch (error) {
-      appendLog(`Convert failed: ${toErrorMessage(error)}`);
+      appendLog(`Convert failed: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -867,7 +940,7 @@ function App() {
       await invoke("hiddenMarket:leadDelete", { id: lead.id });
       await loadHiddenMarket();
     } catch (error) {
-      appendLog(`Delete failed: ${toErrorMessage(error)}`);
+      appendLog(`Delete failed: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -876,7 +949,7 @@ function App() {
       const data = await invoke("hiddenMarket:strategy", { profile_id: activeProfileId, target });
       return data || {};
     } catch (error) {
-      appendLog(`AI angle failed: ${toErrorMessage(error)}`);
+      appendLog(`AI angle failed: ${toErrorMessage(error)}`, "error");
       return {};
     }
   };
@@ -914,7 +987,7 @@ function App() {
     try {
       data = await invoke("jobs:moveProfile", { job_id: workspace.job.id, profile_id: profileId });
     } catch (error) {
-      appendLog(`Lane move failed: ${toErrorMessage(error)}`);
+      appendLog(`Lane move failed: ${toErrorMessage(error)}`, "error");
       throw error;
     }
     setWorkspace((current) => ({ ...current, job: data.job, events: data.events, interviews: data.interviews || current.interviews }));
@@ -953,7 +1026,7 @@ function App() {
       setWorkspace((current) => ({ ...current, job: detail.job, events: detail.events }));
       await refresh();
     } catch (error) {
-      appendLog(`Could not update flags: ${toErrorMessage(error)}`);
+      appendLog(`Could not update flags: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -979,7 +1052,7 @@ function App() {
       });
       await window.jobAssistant.showPath(result.folder);
     } catch (error) {
-      appendLog(`Could not export the triage packet: ${toErrorMessage(error)}`);
+      appendLog(`Could not export the triage packet: ${toErrorMessage(error)}`, "error");
     } finally {
       setExportingShortlist(false);
     }
@@ -993,7 +1066,7 @@ function App() {
       const detail = await invoke("jobs:detail", { job_id: workspace.job.id });
       setWorkspace((current) => ({ ...current, job: detail.job, events: detail.events }));
     } catch (error) {
-      appendLog(`Could not update the document track: ${toErrorMessage(error)}`);
+      appendLog(`Could not update the document track: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -1008,7 +1081,7 @@ function App() {
       setWorkspace((current) => ({ ...current, job: detail.job, events: detail.events }));
       await refresh();
     } catch (error) {
-      appendLog(`Could not update the application channel: ${toErrorMessage(error)}`);
+      appendLog(`Could not update the application channel: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -1054,11 +1127,11 @@ function App() {
         try {
           await window.jobAssistant.showPath(filePath);
         } catch (fallbackError) {
-          appendLog(`Open document location failed: ${toErrorMessage(fallbackError)}`);
+          appendLog(`Open document location failed: ${toErrorMessage(fallbackError)}`, "error");
         }
         return;
       }
-      appendLog(`Document download failed: ${message}`);
+      appendLog(`Document download failed: ${message}`, "error");
     }
   };
 
@@ -1067,7 +1140,7 @@ function App() {
     try {
       await window.jobAssistant.showPath(filePath);
     } catch (error) {
-      appendLog(`Open document location failed: ${toErrorMessage(error)}`);
+      appendLog(`Open document location failed: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -1100,7 +1173,7 @@ function App() {
       }));
       await window.jobAssistant.showPath(data.pdf_path);
     } catch (error) {
-      appendLog(`PDF conversion failed: ${toErrorMessage(error)}`);
+      appendLog(`PDF conversion failed: ${toErrorMessage(error)}`, "error");
       throw error;
     }
   };
@@ -1111,6 +1184,16 @@ function App() {
       "memory:scan",
       { profile_id: activeProfileId, limit: 100 },
       "Lane application memory updated."
+    );
+  };
+
+  const mineLaneDocuments = () => {
+    if (!activeProfileId) return;
+    runTask(
+      "lanes:mineDocuments",
+      { profile_id: activeProfileId },
+      "Fragments refreshed from the lane's resume and cover letter.",
+      activeProfileId,
     );
   };
 
@@ -1139,7 +1222,7 @@ function App() {
       setDocumentViewer({ title: `Attack pack: ${job.title}`, text: data.prompt });
       await refresh();
     } catch (error) {
-      appendLog(`Campaign attack pack failed: ${toErrorMessage(error)}`);
+      appendLog(`Campaign attack pack failed: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -1171,7 +1254,7 @@ function App() {
     try {
       filePath = filePath || window.jobAssistant.getPathForFile?.(file);
     } catch (error) {
-      appendLog(`Could not read the selected file path: ${toErrorMessage(error)}`);
+      appendLog(`Could not read the selected file path: ${toErrorMessage(error)}`, "error");
       return;
     }
     if (!filePath) {
@@ -1193,7 +1276,7 @@ function App() {
       }
       await refresh();
     } catch (error) {
-      appendLog(`Could not attach ${file.name}: ${toErrorMessage(error)}`);
+      appendLog(`Could not attach ${file.name}: ${toErrorMessage(error)}`, "error");
     }
   };
 
@@ -1338,7 +1421,8 @@ function App() {
     const data = await invoke("profiles:update", {
       profile_id: activeProfileId,
       name: profileUpdates.name.trim(),
-      resume_path: profileUpdates.resume_path.trim()
+      resume_path: profileUpdates.resume_path.trim(),
+      cover_letter_path: (profileUpdates.cover_letter_path || "").trim()
     });
     setProfiles(data.profiles);
     appendLog("Lane saved.");
@@ -1625,6 +1709,14 @@ function App() {
             </button>
             <button className="secondary" data-tooltip="Add a job listing manually" aria-description="Add a job listing manually" onClick={() => setAddJobOpen(true)}><Plus size={16} /> Add Job</button>
             {view === "pipeline" ? <button className="secondary" data-tooltip="Log an application you made outside JSE" aria-description="Log an application you made outside JSE" onClick={() => setAddExternalOpen(true)}><ClipboardCheck size={16} /> Log External</button> : null}
+            {view === "pipeline" && filterSummary.length ? (
+              <button
+                className="secondary danger-outline"
+                data-tooltip="Delete every job the current filters match"
+                aria-description="Delete every job the current filters match"
+                onClick={() => openBulkDelete("filter")}
+              ><Trash2 size={16} /> Delete matching</button>
+            ) : null}
             <button
               className="secondary"
               disabled={analysisBusy}
@@ -1778,6 +1870,14 @@ function App() {
                       Export triage packet
                       <span>{groupedJobs.new?.length || 0}</span>
                     </button>
+                    <button
+                      className="secondary clear-scraped"
+                      onClick={() => openBulkDelete("scraped")}
+                      title="Delete scraped listings nobody has worked on yet (New and Rejected), e.g. after a test search"
+                    >
+                      <Trash2 size={14} />
+                      Clear scraped listings
+                    </button>
                   </div>
                 ) : null}
                 {stage.id === "interested" && docsBatchProgress ? (
@@ -1824,9 +1924,27 @@ function App() {
 
         {view === "activity" ? (
           <section className="activity-view">
-            <div className="section-head"><h2>Activity Log</h2><span>{logs.length} entries</span></div>
+            <div className="section-head activity-head">
+              <h2>Activity Log</h2>
+              <div className="log-level-toggles" role="group" aria-label="Log levels shown">
+                {LOG_LEVELS.map((level) => (
+                  <label key={level} className={`filter-chip log-level-chip ${level}`}>
+                    <input type="checkbox" checked={logLevelsShown.includes(level)} onChange={(event) => toggleLogLevel(level, event.target.checked)} />
+                    {{ info: "Info", warning: "Warnings", error: "Errors" }[level]}
+                    <b>{logLevelCounts[level] || 0}</b>
+                  </label>
+                ))}
+              </div>
+              <span>{visibleLogs.length === logs.length ? `${logs.length} entries` : `${visibleLogs.length} of ${logs.length} entries`}</span>
+            </div>
             <div className="logs">
-              {logs.map((line, index) => <div key={`${line.at}-${index}`}><time>{line.at}</time><span>{line.text}</span></div>)}
+              {visibleLogs.map((line) => (
+                <div key={line.key} className={`log-line ${line.level}`}>
+                  <time>{line.at}</time>
+                  <span>{line.text}</span>
+                </div>
+              ))}
+              {logs.length && !visibleLogs.length ? <p className="empty-inline">No entries at the selected levels.</p> : null}
             </div>
           </section>
         ) : null}
@@ -1853,6 +1971,8 @@ function App() {
             onImportResume={importResume}
             onSearchResumes={searchResumes}
             onScanMemory={scanProfileMemory}
+            onMineDocuments={mineLaneDocuments}
+            mineBusy={Boolean(activeTasks.laneSetup)}
             onImportScraper={importScraper}
             onBuildScraper={buildScraper}
             onTestScraper={testScraper}
@@ -1921,6 +2041,17 @@ function App() {
             setCleanupOpen(false);
             openJob(jobId);
           }}
+        />
+      ) : null}
+      {bulkDelete ? (
+        <BulkDeleteModal
+          mode={bulkDelete.mode}
+          request={bulkDelete.request}
+          scopeLabel={bulkDelete.scopeLabel}
+          filterSummary={bulkDelete.filterSummary}
+          invoke={invoke}
+          onClose={() => setBulkDelete(null)}
+          onDeleted={finishBulkDelete}
         />
       ) : null}
       {dialog ? <DialogModal dialog={dialog} onClose={closeDialog} /> : null}

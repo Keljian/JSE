@@ -27,6 +27,7 @@ if str(APP_ROOT) not in sys.path:
 sys.path.append(site.getusersitepackages())
 
 import concurrency  # noqa: E402
+import region  # noqa: E402
 from db_setup import setup_database  # noqa: E402
 
 from bridge import runtime  # noqa: E402
@@ -70,7 +71,8 @@ def main():
     payload = load_json_payload()
     concurrency.cancel_event.clear()
     concurrency.paused.set()
-    result = handler(payload)
+    with region.use_location(runtime.command_search_location(payload)):
+        result = handler(payload)
     emit("result", data=result)
 
 
@@ -81,7 +83,9 @@ def _handle_serve_request(request_id, command, payload):
         if handler is None:
             emit("error", message=f"Unknown bridge command: {command}")
             return
-        result = handler(payload or {})
+        payload = payload or {}
+        with region.use_location(runtime.command_search_location(payload)):
+            result = handler(payload)
         emit("result", data=result)
     except Exception as exc:
         emit("error", message=bridge_error_message(exc))

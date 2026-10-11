@@ -38,6 +38,7 @@ application_doc_builder.py / rich_application.py / hybrid_renderer.py / generate
 config.py              Non-secret local defaults only
 screening.py           Deterministic commute/pay screen before any LLM call (leaf)
 triage_prefilter.py    Learned per-lane skip of near-certain rejects before triage (leaf)
+region.py              Lane search location -> market wording in every LLM prompt (leaf)
 tools/backup_database.py / restore_database.py
                        Compressed, verified startup backups with a 1 GB folder budget
 ```

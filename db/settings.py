@@ -89,6 +89,27 @@ def _screening_values(merged):
     }
 
 
+# SEEK and LinkedIn each kept their own location column, defaulted to
+# "Melbourne VIC" and never shown in the UI, and the scraper plugins read it in
+# preference to the lane's search location. A lane searching Manchester still
+# sent LinkedIn to Melbourne. They now follow the lane's search location unless
+# they were set to some other place on purpose.
+_SOURCE_LOCATION_KEYS = ("seek_location", "linkedin_location")
+
+
+# The values these columns were ever created with (see db_setup).
+_STOCK_SOURCE_LOCATIONS = {"melbourne vic", "australia"}
+
+
+def _follows_search_location(value, search_location):
+    value = _clean(value)
+    return (
+        not value
+        or value.lower() in _STOCK_SOURCE_LOCATIONS
+        or value == _clean(search_location)
+    )
+
+
 def _settings_from_profile(row):
     if not row:
         return dict(DEFAULT_PROFILE_SETTINGS)
@@ -101,6 +122,9 @@ def _settings_from_profile(row):
                 "positioning_doctrine"):
         if key in row.keys():
             settings[key] = row[key] or settings[key]
+    for key in _SOURCE_LOCATION_KEYS:
+        if _follows_search_location(settings.get(key), settings.get("preferred_location")):
+            settings[key] = settings["preferred_location"]
     if "active" in row.keys():
         settings["active"] = 1 if row["active"] is None else int(row["active"])
     settings["work_modes"] = _split_csv(row["work_modes"]) or list(DEFAULT_PROFILE_SETTINGS["work_modes"])
@@ -162,6 +186,10 @@ GLOBAL_AI_SETTING_FIELDS = (
     "local_context_target",
     "local_context_autoload",
     "triage_prefilter",
+    # Not an AI setting, but it rides the same overlay: every lane's settings
+    # carry it, so llm.prompts.resolve_positioning_doctrine can fall back to it
+    # for lanes without their own doctrine.
+    "default_positioning_doctrine",
 )
 
 
@@ -249,6 +277,10 @@ def update_profile_settings(profile_id, settings):
         update_app_settings(ai_updates)
     current = get_profile_settings(profile_id)
     merged = {**current, **(settings or {})}
+    search_location = _clean(merged.get("preferred_location")) or DEFAULT_PROFILE_SETTINGS["preferred_location"]
+    for key in _SOURCE_LOCATION_KEYS:
+        if _follows_search_location(merged.get(key), current.get("preferred_location")):
+            merged[key] = search_location
     work_modes = [mode for mode in _split_csv(merged.get("work_modes")) if mode in WORK_MODE_OPTIONS]
     if not work_modes:
         work_modes = list(DEFAULT_PROFILE_SETTINGS["work_modes"])

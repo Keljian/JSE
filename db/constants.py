@@ -101,9 +101,9 @@ DEFAULT_PROFILE_SETTINGS = {
     "must_have_terms": "",
     "avoid_terms": "",
     "document_strategy": "",
-    # Blank means the lane is scored against the global positioning doctrine in
-    # llm.prompts. Set it per lane when the lane's market is not the candidate's
-    # primary one.
+    # Blank means the lane is scored against the install's default doctrine
+    # (app setting default_positioning_doctrine), else the neutral one in
+    # llm.prompts. Set it per lane when the lane's market differs.
     "positioning_doctrine": "",
     "active": 1,
 }
@@ -138,6 +138,9 @@ DEFAULT_APP_SETTINGS.update({
     # this workflow. Free / OpenAI-compatible endpoint credentials (Groq,
     # Cerebras, OpenRouter, OpenCode Zen, custom) live under compat_*.
     "scoring_ai_provider": "local",
+    # The install-wide positioning doctrine for lanes without their own. Blank
+    # means the neutral built-in default in llm.prompts.
+    "default_positioning_doctrine": "",
     "scoring_model": "",
     "compat_base_url": "",
     "compat_api_key": "",
