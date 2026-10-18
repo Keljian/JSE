@@ -568,7 +568,7 @@ def command_events_add(payload):
 def command_analysis_run(payload):
     app_logic = import_app_logic()
     include_all = bool(payload.get("include_all_profiles"))
-    profiles = db.get_all_profiles() if include_all else [db.get_profile_by_id(payload.get("profile_id", 1))]
+    profiles = db.get_all_lanes(include_inactive=False) if include_all else [db.get_profile_by_id(payload.get("profile_id", 1))]
     stage = payload.get("stage") or payload.get("status") or "new"
     lanes = [profile for profile in profiles if profile]
     for index, profile in enumerate(lanes, start=1):

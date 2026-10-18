@@ -162,7 +162,7 @@ def command_scrape_run(payload):
     if not sources:
         raise ValueError("No scraper plugins are available. Import a plugin or create one in Settings > Searchers.")
     include_all = bool(payload.get("include_all_profiles"))
-    profiles = [profile for profile in (db.get_all_profiles() if include_all else [db.get_profile_by_id(payload.get("profile_id", 1))]) if profile]
+    profiles = [profile for profile in (db.get_all_lanes(include_inactive=False) if include_all else [db.get_profile_by_id(payload.get("profile_id", 1))]) if profile]
     if not profiles:
         raise ValueError("No active lane is available for search. Add or select a lane before running search.")
     run_id = db.record_scraper_run(payload.get("profile_id"), "all_profiles" if include_all else "profile", sources, "running")
