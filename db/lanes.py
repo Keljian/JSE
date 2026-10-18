@@ -1211,6 +1211,81 @@ def save_profile_terms(profile_id, keywords):
         conn.commit()
 
 
+def _term_key(term):
+    return re.sub(r"\s+", " ", str(term or "")).strip().casefold()
+
+
+def record_empty_search(lane_id, term, source):
+    """Note that `term` found no listings at all on `source` for this lane."""
+    key = _term_key(term)
+    if not key:
+        return
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT sources FROM search_term_retries WHERE lane_id = ? AND term_key = ?",
+            (lane_id, key),
+        ).fetchone()
+        sources = sorted({s for s in str((row["sources"] if row else "") or "").split(",") if s} | {str(source)})
+        conn.execute(
+            """
+            INSERT INTO search_term_retries (lane_id, term_key, term, sources, empty_count, last_empty_at)
+            VALUES (?, ?, ?, ?, 1, datetime('now'))
+            ON CONFLICT(lane_id, term_key) DO UPDATE SET
+                sources = excluded.sources,
+                empty_count = search_term_retries.empty_count + 1,
+                last_empty_at = excluded.last_empty_at,
+                -- An earlier "no better term" answer is asked again once the
+                -- term comes back empty again; a real suggestion is kept.
+                suggested_at = CASE WHEN search_term_retries.suggested_term IS NULL
+                                    THEN NULL ELSE search_term_retries.suggested_at END
+            """,
+            (lane_id, key, _clean(term), ",".join(sources)),
+        )
+        conn.commit()
+
+
+def get_search_term_suggestion(lane_id, term):
+    """The broader term analysis stored for an empty search, if any."""
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT suggested_term FROM search_term_retries WHERE lane_id = ? AND term_key = ?",
+            (lane_id, _term_key(term)),
+        ).fetchone()
+    return (row["suggested_term"] if row else None) or None
+
+
+def get_empty_searches_needing_suggestion(lane_id, limit=20):
+    """Empty search terms analysis has not yet found a broader term for."""
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT term FROM search_term_retries
+            WHERE lane_id = ? AND suggested_at IS NULL
+            ORDER BY last_empty_at DESC
+            LIMIT ?
+            """,
+            (lane_id, limit),
+        ).fetchall()
+    return [row["term"] for row in rows]
+
+
+def save_search_term_suggestion(lane_id, term, suggested_term):
+    """Store analysis' broader term. None records that no better term exists."""
+    clean = _clean(suggested_term) if suggested_term else None
+    if clean and _term_key(clean) == _term_key(term):
+        clean = None
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE search_term_retries
+            SET suggested_term = ?, suggested_at = datetime('now')
+            WHERE lane_id = ? AND term_key = ?
+            """,
+            (clean, lane_id, _term_key(term)),
+        )
+        conn.commit()
+
+
 def save_lane_terms(lane_id, keywords, source="generated", confidence=0.75):
     save_profile_terms(lane_id, keywords)
     with get_db_connection() as conn:

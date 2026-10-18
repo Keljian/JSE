@@ -34,8 +34,14 @@ def _scraper_plugin_row(row, lane_row=None):
 # and has not succeeded for this many days, has almost certainly stopped working
 # (a changed API, a blocked request) even though nothing raised. HiringCafe sat
 # at "healthy" through 70 empty runs and a month of silence before this existed.
+#
+# "Empty" means the search found no listings at all. A search whose listings
+# were all already saved is recorded as a success (the dispatcher counts
+# listings), so the streak no longer fills up with duplicate-only searches and
+# a short window is safe. With the old 7-day window, SEEK returned nothing for
+# a week (an unrecognised suburb location) before anything flagged it.
 STALE_MIN_EMPTY_RUNS = 10
-STALE_AFTER_DAYS = 7
+STALE_AFTER_DAYS = 2
 
 
 def _parse_utc(value):

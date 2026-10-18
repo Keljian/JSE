@@ -30,9 +30,9 @@ DATABASE = Path(r"C:\JSE\settings\job_applications.db")
 LOW_SIGNAL_FLAGS = {"evidence_gap"}
 
 # Same rule as db/scrapers.py _apply_staleness: a source that keeps running and
-# returns nothing for a week has stopped working without raising.
+# returns no listings for a couple of days has stopped working without raising.
 STALE_MIN_EMPTY_RUNS = 10
-STALE_AFTER_DAYS = 7
+STALE_AFTER_DAYS = 2
 
 # Titles that are never the target, whatever the keyword match says. The
 # engineering lane pulls these in on hardware nouns; see the 17 Aug commentary.

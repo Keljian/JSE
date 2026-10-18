@@ -27,6 +27,30 @@ def _lane_location(profile_id, search_settings=None):
         return region.active_location()
 
 
+def fallback_search_terms(profile_id, search_settings=None):
+    """Search terms for a lane that has none saved, without the LLM.
+
+    Uses the lane's target titles, then its name. The scrape uses these for the
+    one sweep only; analysis generates and saves proper terms when it next runs.
+    """
+    try:
+        settings = search_settings or db.get_lane_settings(profile_id) or {}
+    except Exception:
+        settings = {}
+    terms, seen = [], set()
+    for chunk in re.split(r"[,;\n]+", str(settings.get("target_titles") or "")):
+        clean = re.sub(r"\s+", " ", chunk).strip(" -*\u2022\t")
+        if len(clean) > 2 and clean.casefold() not in seen:
+            terms.append(clean)
+            seen.add(clean.casefold())
+    if not terms:
+        lane = db.get_profile_by_id(profile_id)
+        name = (lane["name"] if lane else "") or ""
+        if name.strip():
+            terms.append(name.strip())
+    return terms
+
+
 def execute_keyword_generation(optimism, resume_text, log_callback, profile_id=1):
     # Search titles follow the lane's market: a Manchester lane gets UK titles.
     with region.use_location(_lane_location(profile_id)):
@@ -103,7 +127,7 @@ def _run_scraper_task(source, keyword, resume_text, status_callback, log_callbac
     if cancel_event.is_set(): return None
 
     status_callback(f"Scraping '{keyword}' from {source}...", True)
-    success = scraper_dispatcher.run_scraper_for_keyword(
+    search = scraper_dispatcher.run_scraper_search(
         source,
         keyword,
         status_callback,
@@ -111,9 +135,60 @@ def _run_scraper_task(source, keyword, resume_text, status_callback, log_callbac
         profile_id=profile_id,
         search_settings=search_settings,
     )
-    
+
     # The retry logic is now handled in the main thread after the futures complete.
-    return {'source': source, 'keyword': keyword, 'success': success}
+    return {
+        'source': source,
+        'keyword': keyword,
+        'success': search["saved"],
+        'outcome': search["outcome"],
+        'listings': search["listings"],
+    }
+
+
+# Seniority and level words a board's own search treats as a hard filter. Dropping
+# them is the one broadening that is safe to do without judgement; anything
+# subtler (which qualifier is the specialised one) is left to analysis, which
+# stores an LLM-suggested broader term for the next sweep.
+_LEVEL_WORDS = re.compile(
+    r"\b(senior|snr|sr|lead|principal|junior|jnr|jr|graduate|grad|entry[- ]level|"
+    r"experienced|trainee|level\s*\d+|i{1,3}|iv)\b\.?",
+    re.IGNORECASE,
+)
+
+
+def broaden_search_term(term):
+    """A broader version of a search term, without the LLM. None if there is none."""
+    original = re.sub(r"\s+", " ", str(term or "")).strip()
+    broader = re.sub(r"[\(\[].*?[\)\]]", " ", original)
+    broader = re.split(r"\s+[-|\u2013\u2014]\s+", broader)[0]
+    broader = _LEVEL_WORDS.sub(" ", broader)
+    broader = re.sub(r"\s+", " ", broader).strip(" ,/-")
+    if not broader or broader.casefold() == original.casefold():
+        return None
+    return broader
+
+
+def _search_found_listings(result):
+    """Whether a search proves its source is up, for missing-job accounting.
+
+    A source that returned nothing (an outage, a bad location) must not count
+    as a completed sweep, or every unreviewed job from it ticks toward being
+    archived as "no longer listed".
+    """
+    return bool(result) and result.get('outcome') in (scraper_dispatcher.SAVED, scraper_dispatcher.NO_NEW)
+
+
+def _retry_term_for(task, profile_id):
+    """The term to retry an empty search with: analysis' stored suggestion first."""
+    try:
+        suggested = db.get_search_term_suggestion(profile_id, task['keyword'])
+    except Exception:
+        suggested = None
+    if suggested and suggested.casefold() != task['keyword'].casefold():
+        return suggested, "suggested by analysis"
+    broader = broaden_search_term(task['keyword'])
+    return (broader, "seniority words dropped") if broader else (None, None)
 
 def execute_scraping_and_analysis(keywords, sources, resume_text, status_callback, log_callback, update_keywords_callback=None, live_analysis_stop_event=None, profile_id=1, search_settings=None, progress_callback=None):
     """
@@ -183,54 +258,67 @@ def execute_scraping_and_analysis(keywords, sources, resume_text, status_callbac
                     phase="scraping",
                     detail=f"{result['source']}: '{result['keyword']}'" if result else None,
                 )
-                if result and not result['success']:
+                # Only a search that found no listings at all says anything
+                # about the term. Duplicate-only or rate-limited searches did
+                # find the market; retrying them with a broader term was noise.
+                if result and result.get('outcome') == scraper_dispatcher.EMPTY:
                     # Don't retry keyword-independent scrapers
                     if result['source'] not in keyword_independent_scrapers:
                          failed_tasks.append(result)
-                if result:
+                if _search_found_listings(result):
                     completed_sweep_sources.add(result['source'])
             except Exception as e:
                 log_callback(f"A scraper thread generated an exception: {e}")
 
-    # --- Handle failures concurrently: each worker generalizes its own keyword
-    # with the LLM, then re-runs the scraper, so one slow LLM call cannot
-    # serialize the whole retry pass. The shared keyword list is lock-guarded.
-    if failed_tasks and not cancel_event.is_set() and resume_text:
-        log_callback(f"\n--- Retrying {len(failed_tasks)} failed searches with new keywords... ---")
+    # --- Retry searches that found nothing. No LLM here: a scrape has to work
+    # with the endpoint down. Each empty term is recorded; analysis later asks
+    # the LLM for a broader one and stores it, and the retry below uses that
+    # stored term, or failing that drops seniority words.
+    for task in failed_tasks:
+        try:
+            db.record_empty_search(profile_id, task['keyword'], task['source'])
+        except Exception as exc:
+            log_callback(f"Could not record empty search '{task['keyword']}': {exc}")
+    retry_plan = []
+    for task in failed_tasks:
+        new_keyword, reason = _retry_term_for(task, profile_id)
+        if new_keyword:
+            retry_plan.append((task, new_keyword, reason))
+        else:
+            log_callback(
+                f"'{task['keyword']}' on {task['source']} found no listings. "
+                "No broader term yet; analysis will suggest one for the next search."
+            )
+    if retry_plan and not cancel_event.is_set():
+        log_callback(f"\n--- Retrying {len(retry_plan)} empty searches with broader terms... ---")
 
         # Retries are extra units of work, so grow the total rather than
         # letting the bar sit at 100% while the retry pass still runs.
-        total_tasks += len(failed_tasks)
+        total_tasks += len(retry_plan)
         report(completed_tasks, total_tasks, phase="retrying",
-               detail=f"Retrying {len(failed_tasks)} empty search(es) with new terms…")
+               detail=f"Retrying {len(retry_plan)} empty search(es) with broader terms…")
 
-
-        def _retry_failed_task(task):
+        def _retry_failed_task(task, new_keyword, reason):
             if cancel_event.is_set():
                 return None
-            log_callback(f"'{task['keyword']}' on {task['source']} yielded no results. Asking LLM for a better term...")
-            # A worker thread starts with no search location; give it the lane's.
-            with region.use_location(_lane_location(profile_id, search_settings)):
-                new_keyword = llm_handler.generalize_search_term(task['keyword'], resume_text)
-            if not new_keyword or new_keyword.lower() == task['keyword'].lower():
-                return None
-            log_callback(f"LLM suggested '{new_keyword}'. Retrying on {task['source']}.")
-
+            log_callback(
+                f"'{task['keyword']}' on {task['source']} found no listings. "
+                f"Retrying as '{new_keyword}' ({reason})."
+            )
             # The broader term is used for this retry only. Saving it over the
             # lane's terms let one empty search rewrite a curated list, and
             # repeated retries collapsed several terms into the same generic one.
-
             return _run_scraper_task(task['source'], new_keyword, resume_text, status_callback, log_callback, profile_id, search_settings)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as retry_executor:
-            retry_futures = [retry_executor.submit(_retry_failed_task, task) for task in failed_tasks]
+            retry_futures = [retry_executor.submit(_retry_failed_task, *planned) for planned in retry_plan]
 
             # Wait for retries to complete
             for future in concurrent.futures.as_completed(retry_futures):
                  if cancel_event.is_set(): break
                  try:
                      result = future.result()
-                     if result:
+                     if _search_found_listings(result):
                          completed_sweep_sources.add(result['source'])
                  except Exception as e:
                      log_callback(f"A retry scraper thread generated an exception: {e}")
@@ -256,6 +344,83 @@ def execute_scraping_and_analysis(keywords, sources, resume_text, status_callbac
     if live_analysis_stop_event:
         live_analysis_stop_event.set() # Signal the live analysis thread to stop
         log_callback("Live analysis thread has been signalled to stop.")
+
+
+def _scoring_endpoint_unreachable():
+    """True when job matching runs locally and nothing is listening there.
+
+    A refused connection is the common case (the server isn't started), and
+    checking it takes milliseconds where the request path retries with backoff.
+    Hosted providers are not probed.
+    """
+    import socket
+    from urllib.parse import urlparse
+    from llm import providers as llm_providers
+    try:
+        settings = db.get_app_settings() or {}
+        if (settings.get("scoring_ai_provider") or "local").lower() != "local":
+            return False
+        parsed = urlparse(llm_providers._local_ai_settings()["base_url"])
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except Exception:
+        return False
+    if not host:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return False
+    except OSError:
+        return True
+
+
+def prepare_lane_search_terms(profile_id, resume_text, log_callback, optimism=3):
+    """The LLM side of searching, run from analysis rather than the scrape.
+
+    Generates terms for a lane that has none, and stores a broader term for each
+    search the scrape recorded as finding no listings, so the next scrape can
+    retry with it. Never raises: analysis carries on without it.
+    """
+    try:
+        has_terms = bool(db.get_profile_terms(profile_id))
+        pending = db.get_empty_searches_needing_suggestion(profile_id)
+    except Exception as exc:
+        log_callback(f"Search-term upkeep skipped: {exc}")
+        return {"generated": 0, "suggested": 0}
+    if has_terms and not pending:
+        return {"generated": 0, "suggested": 0}
+    if _scoring_endpoint_unreachable():
+        log_callback("Search-term upkeep skipped: the LLM endpoint is not reachable.")
+        return {"generated": 0, "suggested": 0}
+
+    generated = 0
+    if not has_terms and resume_text:
+        try:
+            log_callback("Lane has no saved search terms. Generating them...")
+            generated = len(execute_keyword_generation(optimism, resume_text, log_callback, profile_id) or [])
+        except OperationCancelledError:
+            raise
+        except Exception as exc:
+            log_callback(f"Search-term generation failed: {exc}")
+
+    suggested = 0
+    with region.use_location(_lane_location(profile_id)):
+        for term in pending:
+            if cancel_event.is_set():
+                raise OperationCancelledError("Operation cancelled.")
+            new_term = llm_handler.generalize_search_term(term, resume_text or "")
+            if new_term and new_term.casefold() != term.casefold():
+                db.save_search_term_suggestion(profile_id, term, new_term)
+                suggested += 1
+                log_callback(f"Empty search '{term}': the next search will retry it as '{new_term}'.")
+            elif _scoring_endpoint_unreachable():
+                # generalize_search_term swallows errors and returns the term
+                # unchanged; leave the rest pending for the next analysis.
+                log_callback("LLM endpoint went away; remaining empty searches left for the next analysis.")
+                break
+            else:
+                db.save_search_term_suggestion(profile_id, term, None)
+    return {"generated": generated, "suggested": suggested}
 
 
 def execute_live_analysis(stop_event, resume_text, log_callback, profile_id=1):

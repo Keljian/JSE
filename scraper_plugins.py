@@ -220,6 +220,31 @@ def build_config(plugin, search_settings=None):
     return config
 
 
+# User plugins are loaded from their file. Re-executing that file for every
+# search reset each plugin's module state: LinkedIn's lock (meant to serialise
+# its searches) and its rate-limit cooldown were new objects on every call, so
+# concurrent workers hit LinkedIn at once and the cooldown never held. Reuse
+# the loaded module while its file is unchanged; an edit or a repair (a
+# different path) still loads fresh.
+_USER_MODULES = {}
+_USER_MODULES_LOCK = threading.Lock()
+
+
+def _load_user_module(unique_name, module_path):
+    stat = module_path.stat()
+    key = (str(module_path.resolve()), stat.st_mtime_ns, stat.st_size)
+    with _USER_MODULES_LOCK:
+        cached = _USER_MODULES.get(unique_name)
+        if cached and cached[0] == key:
+            return cached[1]
+        spec = importlib.util.spec_from_file_location(unique_name, module_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[unique_name] = module
+        spec.loader.exec_module(module)
+        _USER_MODULES[unique_name] = (key, module)
+        return module
+
+
 def load_callable(plugin):
     if not plugin:
         raise ValueError("Unknown scraper plugin.")
@@ -235,10 +260,7 @@ def load_callable(plugin):
         module_path = plugin_path / module_name
         if module_path.suffix == ".py" and module_path.exists():
             unique_name = f"jse_user_scraper_{plugin['id']}"
-            spec = importlib.util.spec_from_file_location(unique_name, module_path)
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[unique_name] = module
-            spec.loader.exec_module(module)
+            module = _load_user_module(unique_name, module_path)
         else:
             if str(plugin_path) not in sys.path:
                 sys.path.insert(0, str(plugin_path))

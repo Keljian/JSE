@@ -6,6 +6,7 @@ import sqlite3
 import re
 import hashlib
 import json
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from . import connection as _connection
@@ -896,8 +897,40 @@ def save_application_kit_review(application_kit_id, review, provider="local"):
     return True
 
 
+# Scrapers report success as "saved at least one new job", which cannot tell a
+# search that found only already-saved listings apart from one that found
+# nothing. Every scraper hands each listing to add_job, so counting calls per
+# thread lets the dispatcher make that distinction without changing the plugin
+# return contract. Scraper tasks each run on their own worker thread.
+_listing_counter = threading.local()
+
+
+def reset_listing_count():
+    """Start counting listings offered to add_job on the current thread."""
+    _listing_counter.count = 0
+    _listing_counter.saved = 0
+
+
+def listing_count():
+    """Listings offered to add_job on this thread since reset_listing_count()."""
+    return getattr(_listing_counter, "count", 0)
+
+
+def saved_listing_count():
+    """Listings add_job stored as new on this thread since reset_listing_count()."""
+    return getattr(_listing_counter, "saved", 0)
+
+
 def add_job(job_data, source, profile_id=1, log_callback=None):
     """Adds a new job to the database, ignoring duplicates."""
+    _listing_counter.count = getattr(_listing_counter, "count", 0) + 1
+    saved = _add_job(job_data, source, profile_id, log_callback)
+    if saved:
+        _listing_counter.saved = getattr(_listing_counter, "saved", 0) + 1
+    return saved
+
+
+def _add_job(job_data, source, profile_id=1, log_callback=None):
     source = normalize_source(source)
     if not _should_store_scraped_job(job_data, source, profile_id, log_callback):
             return False

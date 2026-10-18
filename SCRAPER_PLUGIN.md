@@ -145,7 +145,7 @@ Supported schema item keys are intentionally simple:
 
 ## Callable Contract
 
-Your scraper function is called by `scraper_dispatcher.run_scraper_for_keyword`.
+Your scraper function is called by `scraper_dispatcher.run_scraper_search`.
 
 ```python
 def scrape_example_jobs(
@@ -173,9 +173,20 @@ Your function should also accept the keys defined in `config_schema`. Adding
 
 Return value:
 
-- Return `True` if the scraper ran and found/stored at least one useful result.
-- Return `False` if it failed or found no useful results.
+- Return `True` if the scraper ran and stored at least one new job.
+- Return `False` otherwise. You do not need to say whether listings were
+  found: the dispatcher counts every listing handed to `database_manager.add_job`
+  on the scraper's thread, so a search whose listings were all already saved is
+  told apart from one that found nothing.
+- Return `{"ok": False, "skipped": "<reason>"}` when the search did not run at
+  all (a rate-limit cooldown, say), so it is neither retried nor counted as empty.
 - Raise `OperationCancelledError` only when cancellation is requested.
+
+The dispatcher turns this into one outcome per search: `saved`, `no_new`
+(listings found, none new), `empty` (no listings), or `skipped`. Only `empty`
+counts toward the source's empty streak in health, is retried with a broader
+term, and is recorded for analysis to suggest a better term. The scrape itself
+never calls the LLM.
 
 ## Cancellation And Pause
 

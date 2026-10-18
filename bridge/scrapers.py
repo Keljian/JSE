@@ -179,14 +179,13 @@ def command_scrape_run(payload):
             # Search terms and live analysis see the cover letter too.
             resume_text = read_fit_evidence_text(profile_id)
             if not terms:
-                emit("log", message=f"No saved terms for {profile['name']}. Generating terms first.")
-                reporter(0, None, phase="terms", detail="Generating search terms…")
-                terms = app_logic.execute_keyword_generation(
-                    payload.get("optimism", 3),
-                    resume_text,
-                    lambda message: emit("log", message=message),
-                    profile_id,
-                )
+                # A scrape never calls the LLM; generating terms is analysis'
+                # job. Search on the lane's target titles for now.
+                terms = app_logic.fallback_search_terms(profile_id)
+                if not terms:
+                    emit("log", message=f"No saved terms or target titles for {profile['name']}; skipping it. Add terms, or run analysis to generate them.")
+                    continue
+                emit("log", message=f"No saved terms for {profile['name']}. Searching its target titles ({', '.join(terms)}); analysis will generate full terms.")
             app_logic.execute_scraping_and_analysis(
                 terms,
                 sources,

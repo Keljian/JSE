@@ -91,7 +91,8 @@ class ScraperStalenessTests(_DbTestCase):
 
     def test_a_few_empty_keywords_are_not_stale(self):
         self._health_row("seek", 3, 30)
-        self._health_row("deakin", 40, 2)
+        # A long empty streak inside the STALE_AFTER_DAYS window is still healthy.
+        self._health_row("deakin", 40, 1)
         self.assertEqual("healthy", db.get_scraper_health("seek")["status"])
         self.assertEqual("healthy", db.get_scraper_health("deakin")["status"])
 

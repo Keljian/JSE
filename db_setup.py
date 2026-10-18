@@ -738,6 +738,24 @@ def setup_database():
         )
     ''')
 
+    # Search terms that came back with no listings at all. The scrape records
+    # them and retries with a stored broader term; the LLM work of finding that
+    # broader term happens later, in analysis, so a scrape never needs the LLM.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS search_term_retries (
+            lane_id INTEGER NOT NULL,
+            term_key TEXT NOT NULL,
+            term TEXT NOT NULL,
+            sources TEXT,
+            empty_count INTEGER NOT NULL DEFAULT 0,
+            last_empty_at TEXT,
+            suggested_term TEXT,
+            suggested_at TEXT,
+            PRIMARY KEY (lane_id, term_key),
+            FOREIGN KEY (lane_id) REFERENCES profiles(id) ON DELETE CASCADE
+        )
+    ''')
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS job_postings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

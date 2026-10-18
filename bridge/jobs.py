@@ -584,6 +584,14 @@ def command_analysis_run(payload):
             "lane_index": index,
             "lane_count": len(lanes),
         })
+        # Term generation and broadening empty searches need the LLM, so they
+        # live here rather than in the scrape.
+        app_logic.prepare_lane_search_terms(
+            profile["id"],
+            resume_text,
+            lambda message: emit("log", message=f"[{profile['name']}] {message}"),
+            payload.get("optimism", 3),
+        )
         app_logic.run_analysis_on_existing(
             resume_text,
             False,
