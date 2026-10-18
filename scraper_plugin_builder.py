@@ -16,6 +16,22 @@ import scraper_plugins
 
 
 APP_ROOT = Path(__file__).resolve().parent
+# The test child is started with `python -c`, which normally puts the working
+# directory on sys.path. The bundled Windows runtime is the embeddable Python
+# with a python311._pth file, and a ._pth forces isolated mode: cwd and
+# PYTHONPATH are both ignored, so a bare `import scraper_plugin_builder` fails
+# in the installed app even though it works from a source checkout. Put the app
+# root (passed as argv[1]) on sys.path explicitly, plus the per-user
+# site-packages the bridge also appends, before importing anything from JSE.
+_ISOLATED_TEST_BOOTSTRAP = (
+    "import site, sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "user_site = site.getusersitepackages()\n"
+    "if user_site and user_site not in sys.path:\n"
+    "    sys.path.append(user_site)\n"
+    "import scraper_plugin_builder as b\n"
+    "b._isolated_test_main()\n"
+)
 PLUGIN_ROOT = Path(scraper_plugins.LOCAL_PLUGIN_DIR)
 REPAIR_ROOT = Path(scraper_plugins.USER_PLUGIN_DIR)
 REPAIR_BACKUP_ROOT = Path(scraper_plugins.DATA_DIR) / "scraper_repair_backups"
@@ -1290,13 +1306,13 @@ def test_plugin(plugin_id, profile_id=1, keyword=None, max_pages=1, plugin_root=
     }
     env = dict(os.environ)
     env["JSE_DATA_DIR"] = tmp_dir
+    env.setdefault("JSE_APP_ROOT", str(APP_ROOT))
     if plugin_root:
         env["JSE_LOCAL_PLUGIN_DIR"] = str(plugin_root)
     try:
         try:
             proc = subprocess.run(
-                [sys.executable or "python", "-c",
-                 "import scraper_plugin_builder as b; b._isolated_test_main()"],
+                [sys.executable or "python", "-c", _ISOLATED_TEST_BOOTSTRAP, str(APP_ROOT)],
                 input=json.dumps(request),
                 cwd=str(APP_ROOT),
                 env=env,

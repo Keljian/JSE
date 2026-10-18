@@ -1,5 +1,8 @@
 """Regression tests for resilient local-LLM scraper generation."""
 import json
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -74,6 +77,23 @@ class ScraperPluginBuilderTests(unittest.TestCase):
             ["structured_json", "json_text", "python"],
             [call.kwargs["output_mode"] for call in generate.call_args_list],
         )
+
+    def test_isolated_test_bootstrap_imports_builder_under_isolated_python(self):
+        # The bundled Windows runtime has a ._pth file, which forces isolated
+        # mode: cwd and PYTHONPATH are ignored. -I reproduces that here.
+        entry = "b._isolated_test_main()\n"
+        self.assertTrue(builder._ISOLATED_TEST_BOOTSTRAP.endswith(entry))
+        script = builder._ISOLATED_TEST_BOOTSTRAP[: -len(entry)] + "print(b.__name__)\n"
+        with tempfile.TemporaryDirectory() as cwd:
+            proc = subprocess.run(
+                [sys.executable, "-I", "-c", script, str(builder.APP_ROOT)],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual("scraper_plugin_builder", proc.stdout.strip().splitlines()[-1])
 
 
 if __name__ == "__main__":
