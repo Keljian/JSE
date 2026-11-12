@@ -755,7 +755,7 @@ OUTPUT CONTRACT
 
 DECISION RULES
 - "relevant" = plausibly worth full analysis. Includes credible step-ups and adjacent senior roles.
-- "not relevant" = wrong level (junior/graduate or executive C-suite the resume cannot evidence), wrong function (sales, clinical, trades, etc.), missing mandatory eligibility (clearance, registration, citizenship), or no credible skill overlap.
+- "not relevant" = wrong level (junior/graduate or executive C-suite the resume cannot evidence), wrong function for this resume (clinical, trades, or sales when the resume is not a commercial one), missing mandatory eligibility (clearance, registration, citizenship), or no credible skill overlap.
 - A vague recruiter ad with weak signal but plausible family fit -> relevant with low confidence.
 
 REQUIRED JSON SHAPE

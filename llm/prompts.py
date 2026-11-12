@@ -219,7 +219,7 @@ You are also given the ad's mandatory-requirement lines, pulled out deterministi
 
 FLAG TYPES (use only these)
 - "credential_gate": the ad states a mandatory credential, registration, licence, clearance, citizenship, visa status, completed degree, or trade ticket that the resume does not evidence. Only when framed as mandatory ("must", "essential", "required", "you will need"). Anything framed as "preferred", "desirable", "advantageous", "highly regarded", "ideally" is NEVER this — at most an evidence_gap.
-- "domain_mismatch": the day-to-day work sits in a professional domain the resume does not practise (clinical care, legal practice, accounting sign-off, field trades, sales quota carrying, front-line support). Shared tooling, shared industry, or a shared word in the title is not domain overlap.
+- "domain_mismatch": the day-to-day work sits in a professional domain the resume does not practise (clinical care, legal practice, accounting sign-off, field trades, front-line support, or quota-carrying sales when the candidate positioning does not target commercial roles). A role family the candidate positioning names as a target is never a domain mismatch. Shared tooling, shared industry, or a shared word in the title is not domain overlap.
 - "seniority_below": scoped or priced materially under the resume's demonstrated ceiling (coordinator, officer, graduate, junior, L1/L2). Worth flagging because overqualification screening is a common rejection cause and it changes how the documents must be written.
 - "seniority_above": needs a level the resume cannot evidence.
 - "evidence_gap": a concrete, checkable thing the ad asks for that the resume does not show — named platforms, team sizes, sector experience, years in a discipline.

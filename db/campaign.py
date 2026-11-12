@@ -13,6 +13,9 @@ from .constants import (
 from .text import (
     _row_dict,
 )
+from .settings import (
+    get_lane_settings,
+)
 from .lanes import (
     _profile_filter_clause,
     _sync_lane_opportunity_for_job,
@@ -105,6 +108,32 @@ CAMPAIGN_HANDS_ON_ENGINEER_TERMS = [
     "conditional access", "mfa", "iaas", "paas", "az-104", "ms-102", "hands-on",
     "hands on", "configuration", "administration",
 ]
+
+
+# Global penalty terms that are the target, not a warning, in a lane that hunts
+# commercial roles (account management, relationship, sales engineering).
+CAMPAIGN_COMMERCIAL_PENALTY_TERMS = {"sales executive", "commission", "presales", "pre-sales"}
+CAMPAIGN_COMMERCIAL_LANE_MARKERS = (
+    "account manager", "relationship manager", "business development", "sales",
+)
+
+
+def _campaign_penalty_terms(profile_id):
+    """CAMPAIGN_PENALTY_TERMS, minus the sales terms when the job's lane targets them.
+
+    The lane decides: a lane whose target titles name commercial roles should not
+    have those same roles marked down in the campaign view.
+    """
+    if not profile_id:
+        return CAMPAIGN_PENALTY_TERMS
+    try:
+        settings = get_lane_settings(profile_id) or {}
+    except Exception:
+        return CAMPAIGN_PENALTY_TERMS
+    targets = str(dict(settings).get("target_titles") or "").lower()
+    if not any(marker in targets for marker in CAMPAIGN_COMMERCIAL_LANE_MARKERS):
+        return CAMPAIGN_PENALTY_TERMS
+    return [term for term in CAMPAIGN_PENALTY_TERMS if term not in CAMPAIGN_COMMERCIAL_PENALTY_TERMS]
 
 
 def _campaign_haystack(job):
@@ -209,7 +238,7 @@ def score_campaign_job(row, warm_index=None):
     service_enablement_anchors = _matched_terms(haystack, CAMPAIGN_SERVICE_ENABLEMENT_ANCHORS)
     service_enablement_matches = _matched_terms(haystack, CAMPAIGN_SERVICE_ENABLEMENT_TERMS)
     ot_matches = _matched_terms(haystack, CAMPAIGN_OT_TERMS)
-    penalty_matches = _matched_terms(haystack, CAMPAIGN_PENALTY_TERMS)
+    penalty_matches = _matched_terms(haystack, _campaign_penalty_terms(job.get("profile_id")))
     direct_matches = _matched_terms(haystack, CAMPAIGN_DIRECT_EMPLOYER_TERMS)
     recruiter_matches = _matched_terms(_campaign_advertiser_haystack(job), CAMPAIGN_RECRUITER_TERMS)
     leadership_matches = _matched_terms(haystack, CAMPAIGN_LEADERSHIP_TERMS)
