@@ -1,16 +1,30 @@
 # JSE
 
-A local-first desktop assistant for the whole job hunt: find listings, score them against one or more career lanes, manage the application pipeline on a Kanban board, research employers, generate tailored application material in your own voice, and read the market around you — all on your own machine.
+A local-first desktop assistant for the whole job hunt: find listings, score them against one or more career lanes, manage the application pipeline on a Kanban board, research employers, generate tailored application material in your own voice, and read the market around you, all on your own machine.
 
 Your data stays yours. JSE runs locally, stores everything locally, and can run its matching and assessment entirely against a local LLM with no cloud calls. It also gets smarter the more you use it: every application you write becomes part of a private knowledge base it draws on to match and pitch you better next time.
 
 > [!NOTE]
-> Free and staying that way. If it saves you some time or sanity, you can [buy me a coffee](https://ko-fi.com/keljian) — it keeps me caffeinated and the commits coming.
+> Free and staying that way. If it saves you some time or sanity, you can [buy me a coffee](https://ko-fi.com/keljian). It keeps me caffeinated and the commits coming.
 
 > [!IMPORTANT]
 > The current packaged betas are unsigned. Download them only from the official
 > JSE release page. Windows users should follow the
 > [Windows installation and checksum guide](INSTALL_WINDOWS.md).
+
+## How It Works
+
+JSE is an Electron and React desktop app over a Python worker, with SQLite for storage and a provider layer that talks to local OpenAI-compatible servers (LM Studio, Ollama, llama.cpp, vLLM) or hosted models (Gemini, Claude, OpenAI). The parts worth knowing about technically:
+
+- **Fragment engine.** JSE doesn't match against a single static resume. It mines the user's whole history of resumes, cover letters and selection-criteria responses into specific, evidence-anchored fragments: one quantified claim each, tagged with theme, skills, domains, job families, ATS keywords, seniority, reuse guidance and confidence. Near-duplicate document variants are de-duplicated before mining, resume and cover-letter evidence are mined in separate passes (letters carry the projects and stories a resume leaves out), and a fingerprint with a support count lets the same achievement reinforce itself across documents instead of piling up as copies. Fragments from applications that reached interview are weighted above merely submitted material. The fragment bank feeds fit scoring, search-term generation and document generation, with TF-IDF retrieval pulling the most relevant source documents for each target role.
+- **Staged LLM assessment.** A cheap triage pass scores every scraped ad and raises evidence-backed flags that name the ad's own requirement. Roles that survive get an evidence-anchored full analysis, and high scorers go through a stricter deep gatekeeper. Every stage returns structured JSON, and the pipeline is built around a single-slot local model, so the expensive calls are rationed.
+- **Scoring checked against outcomes.** Every application is snapshotted when it is submitted, and conversion to interview is tracked by score band, source, lane and other segments. Observed conversion applies a bounded adjustment to future scores (a minimum sample per bucket, and it can never on its own push a job past the auto-reject line), so the model's scores are tested against what actually happened.
+- **Self-repairing scrapers.** When a source breaks, the local model gets the plugin, fresh page reconnaissance and the diagnostics, proposes up to three fixes, and a fix is applied only after its dry run passes. Every repair can be rolled back.
+- **Agent access over MCP.** The pipeline is exposed as MCP tools, so an external agent can run searches, read analysis, prepare documents and record outcomes through the same commands the UI uses.
+
+Full workflows and dataflows are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+---
 
 ## Download JSE
 
@@ -27,6 +41,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 
 ## Contents
 
+- [How It Works](#how-it-works)
 - [Download JSE](#download-jse)
 - [Features](#features)
 - [Quick Start](#quick-start)
@@ -57,7 +72,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 - **Plugin-driven scraping.** Pull listings from multiple job sites via per-source scraper plugins, enabled globally or per lane with configurable location and page limits.
 - **Self-repairing searchers.** Diagnose an unhealthy scraper, have the configured local LLM produce and verify a replacement in an isolated dry run, and roll back the applied repair if needed.
 - **Multiple lanes, run in parallel.** Maintain several career pathways (lanes) and search, score, and manage them all at the same time, each against its own resume and rules.
-- **Tiered assessment.** Jobs are triaged in stages — quick initial match first, then a deeper fragment/full match with approach notes covering candidate strengths, weaknesses, and how to position against the role — so cheap passes filter before expensive ones run.
+- **Tiered assessment.** Jobs are triaged in stages (a quick initial match first, then a deeper fragment/full match with approach notes covering candidate strengths, weaknesses, and how to position against the role), so cheap passes filter before expensive ones run.
 - **Choose who does the matching.** Triage and scoring default to your local model, but the **Job matching** workflow has its own provider and model setting, so you can point high-volume scoring at a fast hosted or free OpenAI-compatible endpoint while documents keep using a heavier model. Switching matching off-device prompts a privacy warning first, because it sends every scraped ad and your resume context to that provider.
 - **Parallel analysis.** Score several jobs at once (default 2, up to 8). Hosted providers handle 4–8 comfortably; local endpoints need server-side parallel slots to benefit. Pause and cancel still take effect immediately.
 
@@ -66,7 +81,7 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 - **Your applications become a corpus.** Past applications and documents are broken into fragments and indexed, so the system actually learns about you as a candidate rather than re-reading a single static resume.
 - **Better-fitting matches.** That accumulated knowledge feeds matching, surfacing roles that genuinely fit your background, not just keyword overlap.
 - **A managed Evidence Library.** **Settings → Evidence** indexes your prior resumes, cover letters, KSC responses, and position descriptions, shows what has been ingested by type, and lets you re-index, re-mine fragments, reclassify a document's type, or remove individual files.
-- **Interview-validated evidence.** When a job reaches an interview, JSE mines its description and your submitted documents into fragments and weights them above merely-submitted material in scoring and keyword generation — an interview is your strongest signal about what actually works.
+- **Interview-validated evidence.** When a job reaches an interview, JSE mines its description and your submitted documents into fragments and weights them above merely-submitted material in scoring and keyword generation, because an interview is your strongest signal about what actually works.
 
 ### Application generation
 
@@ -84,10 +99,10 @@ Your data stays yours. JSE runs locally, stores everything locally, and can run 
 
 ### Outcome learning
 
-- **Funnel Insights.** JSE snapshots every application at the moment it reaches *Applied* and compares which segments actually convert to interviews — by source, advertiser, employer type, match-score band, salary band, seniority, and lane. Segments with fewer than three applications are suppressed rather than presented as signal.
+- **Funnel Insights.** JSE snapshots every application at the moment it reaches *Applied* and compares which segments actually convert to interviews by source, advertiser, employer type, match-score band, salary band, seniority, and lane. Segments with fewer than three applications are suppressed rather than presented as signal.
 - **Conversion feeds scoring.** Observed conversion rates apply a bounded nudge to composite scores. The prior needs at least five outcomes in a bucket before it takes effect, and can never on its own push a job past the auto-reject threshold.
 - **Honest counting.** A role re-advertised under two titles collapses to a single role, so conversion statistics don't double-count. Outcome snapshots survive job deletion, so lane cleanup and duplicate removal can't erase interview history.
-- **Interview Learnings.** A dedicated tab lists every interviewed role with one-click mining and shows the resulting fragments — the claim, its keywords, reuse guidance, and which roles it came from.
+- **Interview Learnings.** A dedicated tab lists every interviewed role with one-click mining and shows the resulting fragments: the claim, its keywords, reuse guidance, and which roles it came from.
 
 ### Market intelligence
 
@@ -126,7 +141,7 @@ For the packaged Windows, macOS, or Ubuntu beta, you need:
 - 64-bit Windows, an Apple Silicon/Intel Mac, or Ubuntu 22.04+ x64, with enough free space for the application, local data, and any local AI models you download.
 - [Google Chrome](https://www.google.com/chrome/) for browser-based job searchers.
 - A base resume in `.docx` format for your first search lane.
-- One local AI runtime—[LM Studio](https://lmstudio.ai/download) or [Ollama](https://ollama.com/download)—plus a downloaded chat/instruct model for private, high-volume matching.
+- One local AI runtime ([LM Studio](https://lmstudio.ai/download) or [Ollama](https://ollama.com/download)) plus a downloaded chat/instruct model for private, high-volume matching.
 - Internet access when downloading JSE or models and when visiting employer and job-search sites.
 
 You do **not** need to install Node.js, npm, Python, Electron, or Python packages
@@ -207,7 +222,7 @@ changing `requirements.txt`.
 1. Open **Settings**.
 2. In the **Lane/Profile** area, choose or import your resume.
 3. Set your preferred location, work modes, page limits, and matching rules.
-4. Seed the candidate knowledge base: copy any past applications, cover letters, or older resumes into the `older_applications/` folder, then open **Settings -> Evidence** and click **Re-index**. JSE indexes these into fragments so matching and generated documents draw on your real history, not just the single resume above. This is optional but recommended — it's the difference between keyword overlap and matching that understands you as a candidate. You can add to this folder at any time and re-index later.
+4. Seed the candidate knowledge base: copy any past applications, cover letters, or older resumes into the `older_applications/` folder, then open **Settings -> Evidence** and click **Re-index**. JSE indexes these into fragments so matching and generated documents draw on your real history, not just the single resume above. This is optional but recommended: it's the difference between keyword overlap and matching that understands you as a candidate. You can add to this folder at any time and re-index later.
 5. In **AI & Credentials**, choose your Document AI provider, and optionally set a separate provider and model for **Job matching**.
 6. In **Searchers**, import scraper plugins or use **Build A Scraper Plugin** to
    generate one with your configured local LLM, then run a dry run before using
@@ -220,7 +235,7 @@ changing `requirements.txt`.
 
 ## Local LLM Setup
 
-JSE uses a local model for job assessment and matching by default, and it stays the recommended choice for that workload — matching reads every ad you scrape, so it is both the highest-volume and the most privacy-sensitive workflow. The Local provider expects an OpenAI-compatible chat completions endpoint:
+JSE uses a local model for job assessment and matching by default, and it stays the recommended choice for that workload, because matching reads every ad you scrape, so it is both the highest-volume and the most privacy-sensitive workflow. The Local provider expects an OpenAI-compatible chat completions endpoint:
 
 ```text
 POST <base_url>/chat/completions
@@ -253,13 +268,13 @@ Notes:
 - Larger context windows improve analysis and document quality. A practical target is 16k–32k context or higher.
 - Check the context the model was **loaded** with, not the context the model supports. Runtimes commonly
   default to a small window (Unsloth Studio will load a 262k-native model at 4096), and a server does not
-  report that as an error — it truncates the answer mid-sentence. **Test connection** shows the window it
+  report that as an error; it truncates the answer mid-sentence. **Test connection** shows the window it
   found and warns when it is too small for JSE's prompts.
 - With Unsloth Studio, JSE can set the window for you: put the size in **Context window** and press
   **Apply context window**, which reloads the live model at that size over the Studio's API, keeping its
   quantisation and offload settings. Leave *Reload the model automatically…* ticked to have JSE do it the
   first time a request does not fit. The reload asks for a single decode slot, because llama-server divides
-  its KV budget across parallel slots and JSE only ever uses one — that alone is usually worth several times
+  its KV budget across parallel slots and JSE only ever uses one, and that alone is usually worth several times
   the window. Other runtimes are unaffected; JSE only reports their window.
 
 ---
@@ -281,12 +296,12 @@ where volume lives and a stronger model where quality matters:
 | Workflow | Setting | Typical choice |
 | --- | --- | --- |
 | Job matching (triage, scoring, analysis) | `Job matching` provider + `Matching model` | Local, or a fast/free hosted endpoint for high volume |
-| Application documents | `Document AI` | A capable cloud model — this is the "write it in my voice" step |
+| Application documents | `Document AI` | A capable cloud model; this is the "write it in my voice" step |
 | Employer research | `Document AI` | Cloud, or local if you want no outbound calls |
 
 > [!WARNING]
 > Matching runs against **every** scraped ad in bulk. Choosing a non-local
-> provider for it sends each job advert plus your resume context off-device —
+> provider for it sends each job advert plus your resume context off-device,
 > including to free tiers, which may log or train on that data. JSE asks you to
 > confirm this before switching, because it is the one setting that overrides the
 > local-first default.
@@ -390,7 +405,7 @@ JSE tracks which applications convert, and feeds that back into what it shows
 you next.
 
 **Funnel Insights** appears as a Dashboard card. When an application reaches
-*Applied*, JSE stores an immutable snapshot of its dimensions — title, company,
+*Applied*, JSE stores an immutable snapshot of its dimensions: title, company,
 advertiser, employer type, source, salary band, scores, seniority, lane, and how
 the documents were produced. The card then reports your baseline interview rate
 and your best- and worst-converting segments, with sample sizes. Recompute on
@@ -409,7 +424,7 @@ and it cannot by itself push a job below the auto-reject threshold.
 
 **Interview Learnings** is its own tab. It lists every role that reached an
 interview and mines that role's job description and your submitted documents into
-candidate fragments — the claim, its activating keywords, guidance on where to
+candidate fragments: the claim, its activating keywords, guidance on where to
 reuse it, and the roles it came from. Mining runs automatically when a job first
 reaches an interview; you can re-run it, or mine every un-mined role at once,
 from this tab. Where a role was interviewed without in-app-generated documents,
@@ -507,13 +522,13 @@ A few things to keep in mind:
 4. Enable scrapers for each lane.
 5. Generate or edit search terms.
 6. Run search across your active lanes.
-7. Let JSE triage new jobs — initial match first, then deeper fragment/full match with approach notes.
+7. Let JSE triage new jobs: initial match first, then deeper fragment/full match with approach notes.
 8. Move promising jobs across the Kanban board.
 9. Research companies, including questions to ask, where needed.
 10. Generate tailored application documents in your own voice.
 11. Track applications, interviews, interview feedback, follow-ups, outcomes, and feedback. Log anything you applied to outside JSE so the numbers stay complete.
 12. Work your follow-up schedule; stale, un-actioned applications auto-archive.
-13. Review market intelligence — hidden-market and current-market analysis — to steer where you focus next.
+13. Review market intelligence (hidden-market and current-market analysis) to steer where you focus next.
 14. Check **Funnel Insights** and **Interview Learnings** periodically to see which segments actually convert, and let interview-validated evidence sharpen the next round of matching.
 
 ---
@@ -551,12 +566,12 @@ A few things to keep in mind:
 
 ## More Documentation
 
-- `CHANGELOG.md` — notable product and behaviour changes.
+- `CHANGELOG.md`: notable product and behaviour changes.
 
-- `ARCHITECTURE.md` — workflows, dataflows, and system overview.
-- `CODE_REFERENCE.md` — app-owned source map.
-- `SCRAPER_PLUGIN.md` — scraper plugin contract.
-- `JSE_FUNCTIONALITY_BRIEF.md` — product/workflow summary.
+- `ARCHITECTURE.md`: workflows, dataflows, and system overview.
+- `CODE_REFERENCE.md`: app-owned source map.
+- `SCRAPER_PLUGIN.md`: scraper plugin contract.
+- `JSE_FUNCTIONALITY_BRIEF.md`: product/workflow summary.
 
 ---
 
