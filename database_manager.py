@@ -450,6 +450,8 @@ from db.jobs import (  # noqa: F401
     _archive_columns,
 )
 from db.campaign import (  # noqa: F401
+    CAMPAIGN_COMMERCIAL_LANE_MARKERS,
+    CAMPAIGN_COMMERCIAL_PENALTY_TERMS,
     CAMPAIGN_CORE_TERMS,
     CAMPAIGN_DIRECT_EMPLOYER_TERMS,
     CAMPAIGN_HANDS_ON_ENGINEER_TERMS,
@@ -463,6 +465,7 @@ from db.campaign import (  # noqa: F401
     _PLAN_JOB_FIELDS,
     _campaign_advertiser_haystack,
     _campaign_haystack,
+    _campaign_penalty_terms,
     _campaign_public_job,
     _campaign_recommendations,
     _campaign_stage_clause,
